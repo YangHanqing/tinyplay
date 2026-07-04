@@ -15,7 +15,7 @@
 #   AC_API_KEY_PATH path to AuthKey_XXXX.p8 (local), or
 #   AC_API_KEY      base64 of AuthKey_XXXX.p8 (CI)  + AC_KEY_ID + AC_ISSUER_ID
 #
-# Usage: make-dmg.sh "/path/to/TinyPlay.app" "/path/to/out/TinyPlay.dmg"
+# Usage: make-dmg.sh "/path/to/TinyPlay.app" "/path/to/out/TinyPlay-macos.dmg"
 set -euo pipefail
 
 APP="${1:?usage: make-dmg.sh <app> <out.dmg>}"
@@ -33,13 +33,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Lay out the DMG contents: the app plus an /Applications symlink to drag onto.
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-
 echo "==> building DMG: $DMG"
 rm -f "$DMG"
-hdiutil create -volname "$VOLNAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+
+# Preferred: create-dmg lays out a drag-to-Applications window (app on the left,
+# an arrow-less Applications drop-link on the right, sized nicely). It drives
+# Finder via AppleScript, which can be flaky on a headless CI runner, so if it
+# is missing or fails we fall back to a plain but functional hdiutil DMG.
+app_name="$(basename "$APP")"
+if command -v create-dmg >/dev/null 2>&1; then
+    ONLY_APP="$STAGE/only-app"
+    mkdir -p "$ONLY_APP"
+    cp -R "$APP" "$ONLY_APP/"
+    create-dmg \
+        --volname "$VOLNAME" \
+        --window-size 540 380 \
+        --icon-size 120 \
+        --icon "$app_name" 140 190 \
+        --app-drop-link 400 190 \
+        --no-internet-enable \
+        "$DMG" "$ONLY_APP" || true
+fi
+if [ ! -f "$DMG" ]; then
+    echo "==> create-dmg unavailable/failed; using plain hdiutil layout"
+    PLAIN="$STAGE/plain"
+    mkdir -p "$PLAIN"
+    cp -R "$APP" "$PLAIN/"
+    ln -s /Applications "$PLAIN/Applications"
+    hdiutil create -volname "$VOLNAME" -srcfolder "$PLAIN" -ov -format UDZO "$DMG"
+fi
 
 echo "==> signing DMG"
 codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"

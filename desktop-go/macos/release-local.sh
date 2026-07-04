@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build, sign, notarize and package a local macOS release.
-# Run from any directory; output is desktop-go/TinyPlay.dmg.
+# Run from any directory; output is desktop-go/TinyPlay-macos.dmg.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -35,7 +35,7 @@ ditto "$ROOT/build/TinyPlay.app" "$SIGN_STAGE/TinyPlay.app"
 xattr -cr "$SIGN_STAGE/TinyPlay.app"
 "$HERE/sign-notarize.sh" "$SIGN_STAGE/TinyPlay.app"
 
-rm -f "$ROOT/TinyPlay.dmg"
-"$HERE/make-dmg.sh" "$SIGN_STAGE/TinyPlay.app" "$ROOT/TinyPlay.dmg"
+rm -f "$ROOT/TinyPlay-macos.dmg"
+"$HERE/make-dmg.sh" "$SIGN_STAGE/TinyPlay.app" "$ROOT/TinyPlay-macos.dmg"
 
-echo "==> release ready: $ROOT/TinyPlay.dmg"
+echo "==> release ready: $ROOT/TinyPlay-macos.dmg"

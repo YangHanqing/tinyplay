@@ -27,6 +27,7 @@ import (
 
 func main() {
 	logPath := setupLogging()
+	guardSingleInstance() // exits a duplicate Windows launch before doing any work
 	cfg := config.Load()
 	log.Printf(i18n.System("log_start"), filepath.Dir(logPath))
 	p := player.New()

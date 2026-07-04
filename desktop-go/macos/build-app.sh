@@ -42,6 +42,9 @@ cp "$CORE_BIN"  "$RES/tvremote-core"
 cp "$HELPER_BIN" "$RES/avplayer-helper"
 chmod +x "$MACOS/TinyPlay" "$RES/tvremote-core" "$RES/avplayer-helper"
 
+# App icon (Finder / Dock / DMG). CFBundleIconFile below points at this.
+cp "$HERE/../assets/TinyPlay.icns" "$RES/TinyPlay.icns"
+
 if [ -n "${MPV_DIR:-}" ] && [ -d "$MPV_DIR" ]; then
     echo "==> bundling mpv from $MPV_DIR"
     rm -rf "$RES/mpv"
@@ -60,6 +63,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>TinyPlay</string>
     <key>CFBundleIdentifier</key><string>cn.hqyang.tinyplay.mac</string>
     <key>CFBundleExecutable</key><string>TinyPlay</string>
+    <key>CFBundleIconFile</key><string>TinyPlay</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>

@@ -11,7 +11,7 @@ DIST    := internal/webui/dist
 sync:
 	rm -rf $(DIST)
 	mkdir -p $(DIST)
-	cp $(WEB_SRC)/index.html $(WEB_SRC)/app.js $(WEB_SRC)/styles.css $(WEB_SRC)/i18n.js $(WEB_SRC)/manifest.webmanifest $(WEB_SRC)/sw.js $(WEB_SRC)/pwa-icon.svg $(DIST)/
+	cp $(WEB_SRC)/index.html $(WEB_SRC)/app.js $(WEB_SRC)/styles.css $(WEB_SRC)/i18n.js $(WEB_SRC)/manifest.webmanifest $(WEB_SRC)/sw.js $(WEB_SRC)/pwa-icon.svg $(WEB_SRC)/favicon.png $(DIST)/
 	touch $(DIST)/.gitkeep
 
 tidy:
@@ -27,7 +27,7 @@ build-core-mac: sync
 
 ## build-core-win: the Windows exe (tray + WebView2 shell, no console window)
 build-core-win: sync
-	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o build/tvremote.exe ./cmd/tvremote
+	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o build/TinyPlay.exe ./cmd/tvremote
 
 ## build-app-mac: assemble the native .app around the core (mpv via PATH unless
 ## MPV_DIR is set). CI sets MPV_DIR to a self-contained mpv; locally you can omit

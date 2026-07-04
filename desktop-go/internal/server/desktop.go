@@ -44,6 +44,7 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
 <html lang="%s"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TinyPlay</title>
+<link rel="icon" href="/static/favicon.png">
 <style>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif;

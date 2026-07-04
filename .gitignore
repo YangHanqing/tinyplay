@@ -19,6 +19,7 @@ desktop-go/internal/webui/dist/*
 *.exe
 *.zip
 *.7z
+*.syso
 
 # Editors and operating systems
 .DS_Store

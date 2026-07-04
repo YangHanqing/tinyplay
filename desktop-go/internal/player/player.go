@@ -246,7 +246,7 @@ func (p *Player) resetAspectOptions() {
 }
 
 // bundledMPV looks for an mpv shipped alongside our binary. The CI build places
-// it there: `mpv/mpv.exe` next to tvremote.exe on Windows, and inside the .app
+// it there: `mpv/mpv.exe` next to TinyPlay.exe on Windows, and inside the .app
 // bundle on macOS (where the Swift shell normally passes TVREMOTE_MPV_EXE, so
 // this is just a fallback). Returns "" if no bundled mpv is found.
 func bundledMPV() string {

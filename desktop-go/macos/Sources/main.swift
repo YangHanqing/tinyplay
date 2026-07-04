@@ -114,8 +114,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "play.tv", accessibilityDescription: "TV Remote")
-            button.image?.isTemplate = true
+            // Prefer the bundled TinyPlay logo; fall back to an SF Symbol.
+            if let iconURL = Bundle.main.url(forResource: "TinyPlay", withExtension: "icns"),
+               let logo = NSImage(contentsOf: iconURL) {
+                logo.size = NSSize(width: 18, height: 18)
+                logo.isTemplate = false
+                button.image = logo
+            } else {
+                button.image = NSImage(systemSymbolName: "play.tv", accessibilityDescription: "TinyPlay")
+                button.image?.isTemplate = true
+            }
         }
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: L("open_main"), action: #selector(openMainWindow), keyEquivalent: ""))
