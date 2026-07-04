@@ -117,11 +117,18 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="0.0.0-dev"; fi
           VERSION="$VER" MPV_DIR="$PWD/mpvstage" ./macos/build-app.sh
 
-      - name: Sign & notarize app
+      # Import the Developer ID cert into a keychain that persists for the whole
+      # job, so both the app-signing and DMG-signing steps below can use it.
+      - name: Import signing certificate
         if: ${{ env.HAS_SIGNING == 'true' }}
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: ./macos/import-cert.sh
+
+      - name: Sign & notarize app
+        if: ${{ env.HAS_SIGNING == 'true' }}
+        env:
           SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
           AC_API_KEY: ${{ secrets.AC_API_KEY }}
           AC_KEY_ID: ${{ secrets.AC_KEY_ID }}
