@@ -1,0 +1,18 @@
+{
+  "name": "TV Remote",
+  "short_name": "TV Remote",
+  "description": "Phone remote control for TV playback",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0c14",
+  "theme_color": "#0a0c14",
+  "icons": [
+    {
+      "src": "/static/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

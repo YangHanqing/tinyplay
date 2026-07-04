@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0a0c14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="TV Remote">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>TV Remote</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/pwa-icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/pwa-icon.svg">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- Header (library tab only) -->
+    <header class="header">
+      <div class="header-side"></div>
+      <div class="header-center">
+        <button class="server-btn" id="server-btn" onclick="toggleServerMenu(event)">
+          <span class="server-dot" id="server-dot"></span>
+          <span id="active-server-label">Not configured</span>
+          <svg class="chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="server-menu hidden" id="server-menu"></div>
+      </div>
+      <div class="header-side header-right">
+        <button class="topbar-action-btn" id="search-toggle" onclick="activateSearch()" aria-label="Search">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        </button>
+        <button class="topbar-action-btn hidden" id="btn-exit" onclick="openExitConfirm()" aria-label="End playback">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Library tab -->
+    <div class="main-panel active" id="tab-library">
+
+      <!-- Search area: sticky at top of scroll area when searching -->
+      <div class="lib-search-area hidden" id="lib-search-area">
+        <div class="lib-search-bar-wrap">
+          <svg class="lib-search-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <div id="search-input" class="search-input" role="searchbox" aria-label="Search media"
+               contenteditable="plaintext-only" data-placeholder="Search media..."
+               autocapitalize="none" autocorrect="off" spellcheck="false"
+               oninput="onSearchInput(getSearchValue())"
+               onfocus="enterSearchMode()"
+               onkeydown="onSearchKeydown(event)"></div>
+          <button class="search-cancel" id="search-cancel" onclick="cancelSearch()" aria-label="Cancel search">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></svg>
+          </button>
+        </div>
+        <div class="search-filter-row" id="search-filter-row">
+          <button class="filter-pill active" data-filter="all" onclick="setSearchFilter('all')">All</button>
+          <button class="filter-pill" data-filter="Movie" onclick="setSearchFilter('Movie')">Movie</button>
+          <button class="filter-pill" data-filter="Series" onclick="setSearchFilter('Series')">Series</button>
+          <button class="filter-pill" data-filter="BoxSet" onclick="setSearchFilter('BoxSet')">Collections</button>
+        </div>
+      </div>
+
+      <!-- Library toolbar: shown in browse mode -->
+      <div class="library-toolbar hidden" id="library-toolbar">
+        <div class="library-tabs-wrap">
+          <div class="library-tabs" id="library-tabs"></div>
+        </div>
+        <button class="library-filter-btn" id="library-filter-btn" onclick="openLibraryPicker()" aria-label="All categories">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="9" y1="18" x2="15" y2="18"/></svg>
+        </button>
+      </div>
+
+      <!-- Home view -->
+      <div id="lib-home-view">
+        <!-- Recent -->
+        <section class="home-section hidden" id="section-resume">
+          <div class="section-header">
+            <h2 class="section-title-h">Recent</h2>
+            <button class="section-more-btn" onclick="viewAllResume()">View all <svg class="chevron-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg></button>
+          </div>
+          <div class="resume-row" id="resume-row"></div>
+        </section>
+        <!-- Library categories -->
+        <section class="home-section" id="section-categories">
+          <div class="section-header">
+            <h2 class="section-title-h">Library</h2>
+          </div>
+          <div class="category-row" id="category-row"></div>
+        </section>
+        <!-- Dynamic type sections -->
+        <div id="home-type-sections"></div>
+      </div>
+
+      <!-- Browse view: specific library grid -->
+      <div id="lib-grid-view" class="hidden">
+        <section class="section" id="section-browse">
+          <h2 class="section-title-h browse-title-h" id="browse-title">Browse</h2>
+          <div class="poster-grid" id="poster-grid"></div>
+          <div class="load-more-wrap">
+            <button class="btn-load-more hidden" id="btn-load-more" onclick="loadMore()">Load more</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Search results view -->
+      <div id="lib-search-view" class="hidden">
+        <div id="search-results-container"></div>
+      </div>
+
+      <!-- File browser view (file sources) -->
+      <div id="lib-files-view" class="hidden">
+        <div class="files-breadcrumb" id="files-breadcrumb"></div>
+        <div class="files-list" id="files-list"></div>
+      </div>
+
+    </div>
+
+    <!-- Remote tab -->
+    <div class="main-panel" id="tab-remote">
+
+      <div class="remote-shell">
+
+        <!-- Empty state -->
+        <div class="remote-empty" id="remote-empty">
+          <svg class="remote-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="3" width="20" height="14" rx="2.5"/>
+            <path d="M8 21h8M12 17v4"/>
+          </svg>
+          <div class="remote-empty-title">Nothing playing</div>
+          <div class="remote-empty-hint">Choose something from the library to jump here automatically</div>
+          <button class="remote-empty-btn" onclick="switchTab('library')">Go to library</button>
+        </div>
+
+        <!-- Now playing card -->
+        <div class="now-playing hidden" id="now-playing">
+          <div class="now-playing-content">
+            <div class="poster-nav-wrap">
+              <div class="remote-poster-card" id="remote-poster-card">
+                <img id="remote-poster-img" alt="" loading="lazy" onerror="markPosterMissing(this)">
+                <div class="remote-poster-fallback">TV</div>
+              </div>
+            </div>
+            <div class="now-playing-copy">
+              <div class="now-playing-series hidden" id="remote-series-title"></div>
+              <div class="now-playing-episode hidden" id="remote-episode-label"></div>
+              <div class="now-playing-title" id="remote-title"></div>
+              <div class="now-playing-movie-info hidden" id="now-playing-movie-info">Movie</div>
+              <div class="ep-controls hidden" id="ep-controls">
+                <button class="ep-ctrl-btn" onclick="playPrevEpisode()" aria-label="Previous episode">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                </button>
+                <button class="ep-ctrl-btn ep-ctrl-episodes" onclick="openCurrentSeriesSheet()" aria-label="Episodes">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h11"/><path d="M8 12h11"/><path d="M8 18h11"/><path d="M3 6h1"/><path d="M3 12h1"/><path d="M3 18h1"/></svg>
+                  <span>Episodes</span>
+                </button>
+                <button class="ep-ctrl-btn" onclick="playNextEpisode()" aria-label="Next episode">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+              </div>
+              <div class="play-loading-tag hidden" id="play-loading-tag">Starting...</div>
+            </div>
+          </div>
+
+          <!-- Loading placeholder to prevent height jump during startup -->
+          <div class="player-info-placeholder hidden" id="player-info-placeholder">
+            <div class="pip-bar skeleton-shine"></div>
+            <div class="pip-times">
+              <div class="skeleton-line skeleton-shine" style="width:42px;height:10px;border-radius:4px"></div>
+              <div class="skeleton-line skeleton-shine" style="width:42px;height:10px;border-radius:4px"></div>
+            </div>
+          </div>
+
+          <!-- Progress & status -->
+          <div class="player-info hidden" id="player-info">
+            <div class="playback-progress">
+              <div class="progress-bar" id="progress-bar" role="slider" tabindex="0"
+                   aria-label="Playback progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+                   onpointerdown="onProgressPointerDown(event)"
+                   onpointermove="onProgressPointerMove(event)"
+                   onpointerup="onProgressPointerUp(event)"
+                   onpointercancel="onProgressPointerCancel(event)"
+                   onkeydown="onProgressKeydown(event)">
+                <div class="progress-cache-fill" id="progress-cache-fill"></div>
+                <div class="progress-bar-fill" id="progress-fill"></div>
+                <div class="progress-thumb" id="progress-thumb"></div>
+              </div>
+              <div class="progress-times">
+                <div class="progress-times-left">
+                  <span id="time-current">--:--</span>
+                  <span class="progress-health-inline" id="health-cache-speed"></span>
+                </div>
+                <span id="time-total">--:--</span>
+              </div>
+            </div>
+            <div class="health-row">
+              <div class="health-tags">
+                <span class="info-tag accent" id="health-badge">Playing</span>
+                <span class="info-tag" id="tag-aspect"></span>
+                <span class="info-tag" id="tag-audio"></span>
+                <span class="info-tag" id="tag-sub"></span>
+              </div>
+              <button class="health-info-btn" onclick="openPlaybackInfoSheet()" aria-label="Playback info">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 10v6"/><path d="M12 7h.01"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="remote-controls hidden" id="remote-controls">
+
+          <!-- Transport: 3-btn centered -->
+          <div class="transport-card">
+            <button class="tpt-btn" onclick="seekBackward()" aria-label="Rewind">
+              <svg class="tpt-ring-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.3 7.2A7 7 0 1 1 5.1 13"/><path d="M5 5v5h5"/></svg>
+              <span class="tpt-label" id="seek-backward-label">5</span>
+            </button>
+            <button class="tpt-btn tpt-primary" id="btn-pause-play" onclick="cmd(['cycle', 'pause'])" aria-label="Pause or resume">
+              <svg class="tpt-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M8 5v14M16 5v14"/></svg>
+            </button>
+            <button class="tpt-btn" onclick="seekForward()" aria-label="Fast-forward">
+              <svg class="tpt-ring-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.7 7.2A7 7 0 1 0 18.9 13"/><path d="M19 5v5h-5"/></svg>
+              <span class="tpt-label" id="seek-forward-label">30</span>
+            </button>
+          </div>
+
+          <!-- Volume -->
+          <div class="volume-strip">
+            <button class="volume-end" onclick="setVolumeByDelta(-10)" aria-label="Volume down">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M16 10a4 4 0 0 1 0 4"/></svg>
+            </button>
+            <div class="volume-track" role="slider" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+                 onpointerdown="onVolumePointer(event)"
+                 onpointermove="onVolumePointer(event)">
+              <div class="volume-fill" id="volume-fill"></div>
+              <div class="volume-thumb" id="volume-thumb"></div>
+            </div>
+            <button class="volume-end" onclick="setVolumeByDelta(10)" aria-label="Volume up">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M16 7a7 7 0 0 1 0 10"/><path d="M19 4a11 11 0 0 1 0 16"/></svg>
+            </button>
+          </div>
+
+          <!-- Tool grid -->
+          <div class="remote-tool-grid">
+            <button class="tool-tile" onclick="openAspectSheet()" aria-label="Aspect">
+              <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5h3"/><path d="M17 5h3v3"/><path d="M20 16v3h-3"/><path d="M7 19H4v-3"/><rect x="7" y="8" width="10" height="8" rx="1.5"/></svg>
+              <span>Aspect</span>
+            </button>
+
+            <button class="tool-tile" onclick="openSubTracksSheet()" aria-label="Subtitles">
+              <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 11h3M13 11h3M8 15h8"/></svg>
+              <span>Subtitles</span>
+            </button>
+
+            <button class="tool-tile" onclick="openAudioTracksSheet()" aria-label="Audio">
+              <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13h2"/><path d="M8 9v8"/><path d="M12 5v14"/><path d="M16 9v8"/><path d="M20 13h-2"/></svg>
+              <span>Audio</span>
+            </button>
+
+            <button class="tool-tile" onclick="openSpeedSheet()" aria-label="Speed">
+              <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 5.6a9 9 0 1 0 12.8 0"/><path d="M12 2v4"/><path d="M12 12l3-3"/></svg>
+              <span>Speed</span>
+            </button>
+          </div>
+
+          <!-- Player engine hint (only shown on macOS) -->
+          <div class="engine-hint hidden" id="engine-hint">
+            <button class="engine-link" onclick="openEngineSheet()" id="btn-engine-link">Player: mpv</button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings tab -->
+    <div class="main-panel" id="tab-settings">
+      <div class="settings-page">
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2>Language</h2>
+            <p>The page reloads after switching so all labels update.</p>
+          </div>
+          <div class="segmented-control" id="language-segments">
+            <button class="segment-btn" data-lang="zh-CN" onclick="setAppLanguage('zh-CN')">Chinese</button>
+            <button class="segment-btn" data-lang="en" onclick="setAppLanguage('en')">English</button>
+          </div>
+        </section>
+
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2 data-i18n="seekSettings">Seek time</h2>
+            <p data-i18n="seekSettingsHint">Applies to both the phone remote buttons and the Apple TV Siri Remote.</p>
+          </div>
+          <div class="seek-settings-row">
+            <div class="seek-setting-item">
+              <label class="setting-label" data-i18n="seekBackwardLabel">Rewind</label>
+              <select id="seek-backward-select" onchange="onSeekSettingChange()">
+              </select>
+            </div>
+            <div class="seek-setting-item">
+              <label class="setting-label" data-i18n="seekForwardLabel">Fast-forward</label>
+              <select id="seek-forward-select" onchange="onSeekSettingChange()">
+              </select>
+            </div>
+          </div>
+          <button class="settings-save-btn" id="seek-save-btn" onclick="saveSeekSettings()">Save settings</button>
+          <div class="settings-status" id="seek-settings-status"></div>
+        </section>
+
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2>Playback cache</h2>
+            <p>Use 30 minutes for unstable servers. Changes apply on the next play or episode switch.</p>
+          </div>
+          <label class="setting-label" for="cache-minutes-input">Cache duration</label>
+          <div class="cache-preset-row" id="cache-preset-row">
+            <button class="cache-preset-btn" data-minutes="5" onclick="setCacheMinutes(5)">5</button>
+            <button class="cache-preset-btn" data-minutes="15" onclick="setCacheMinutes(15)">15</button>
+            <button class="cache-preset-btn" data-minutes="30" onclick="setCacheMinutes(30)">30</button>
+            <button class="cache-preset-btn" data-minutes="60" onclick="setCacheMinutes(60)">60</button>
+          </div>
+          <div class="cache-custom-row">
+            <input type="number" id="cache-minutes-input" min="1" max="120" step="1" inputmode="numeric" value="5" oninput="onCacheMinutesInput()">
+            <span id="cache-minutes-unit">minutes</span>
+          </div>
+          <button class="settings-save-btn" id="settings-save-btn" onclick="saveSettings()">Save settings</button>
+          <div class="settings-status" id="settings-status"></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Video detail sheet -->
+    <div class="sheet-backdrop hidden" id="video-sheet-backdrop" onclick="onSheetBackdropClick(event)">
+      <section class="video-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeVideoSheet()" aria-label="Close">×</button>
+        <div id="video-sheet-content"></div>
+      </section>
+    </div>
+
+    <!-- Playback diagnostics sheet -->
+    <div class="sheet-backdrop hidden" id="playback-info-backdrop" onclick="onPlaybackInfoBackdropClick(event)">
+      <section class="video-sheet playback-info-sheet" role="dialog" aria-modal="true" aria-labelledby="playback-info-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closePlaybackInfoSheet()" aria-label="Close">×</button>
+        <div id="playback-info-content"></div>
+      </section>
+    </div>
+
+    <!-- Sub tracks sheet -->
+    <div class="sheet-backdrop hidden" id="sub-tracks-backdrop" onclick="onSubTracksBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="sub-tracks-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeSubTracksSheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="sub-tracks-title">Subtitles</h3>
+        </div>
+        <div class="track-pills sheet-track-pills" id="sub-track-list"></div>
+        <div class="track-delay-section">
+          <div class="track-delay-label">Subtitle delay</div>
+          <div class="fine-btns">
+            <button onclick="cmd(['add', 'sub-delay', -0.5])">-0.5s</button>
+            <button onclick="cmd(['add', 'sub-delay', -0.1])">-0.1s</button>
+            <span class="fine-val" id="info-sub-delay">0.0s</span>
+            <button onclick="cmd(['add', 'sub-delay', 0.1])">+0.1s</button>
+            <button onclick="cmd(['add', 'sub-delay', 0.5])">+0.5s</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Audio tracks sheet -->
+    <div class="sheet-backdrop hidden" id="audio-tracks-backdrop" onclick="onAudioTracksBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="audio-tracks-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeAudioTracksSheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="audio-tracks-title">Audio</h3>
+        </div>
+        <div class="track-pills sheet-track-pills" id="audio-track-list"></div>
+        <div class="track-delay-section">
+          <div class="track-delay-label">Audio delay</div>
+          <div class="fine-btns">
+            <button onclick="cmd(['add', 'audio-delay', -0.5])">-0.5s</button>
+            <button onclick="cmd(['add', 'audio-delay', -0.1])">-0.1s</button>
+            <span class="fine-val" id="info-audio-delay">0.0s</span>
+            <button onclick="cmd(['add', 'audio-delay', 0.1])">+0.1s</button>
+            <button onclick="cmd(['add', 'audio-delay', 0.5])">+0.5s</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Speed sheet -->
+    <div class="sheet-backdrop hidden" id="speed-backdrop" onclick="onSpeedBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="speed-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeSpeedSheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="speed-title">Speed</h3>
+        </div>
+        <div class="speed-list" id="speed-list">
+          <button class="speed-row-btn" data-speed="0.5"  onclick="setSpeed(0.5);closeSpeedSheet()"><span>0.5×</span></button>
+          <button class="speed-row-btn" data-speed="0.75" onclick="setSpeed(0.75);closeSpeedSheet()"><span>0.75×</span></button>
+          <button class="speed-row-btn" data-speed="1"    onclick="setSpeed(1);closeSpeedSheet()"><span>1×</span></button>
+          <button class="speed-row-btn" data-speed="1.25" onclick="setSpeed(1.25);closeSpeedSheet()"><span>1.25×</span></button>
+          <button class="speed-row-btn" data-speed="1.5"  onclick="setSpeed(1.5);closeSpeedSheet()"><span>1.5×</span></button>
+          <button class="speed-row-btn" data-speed="1.75" onclick="setSpeed(1.75);closeSpeedSheet()"><span>1.75×</span></button>
+          <button class="speed-row-btn" data-speed="2"    onclick="setSpeed(2);closeSpeedSheet()"><span>2×</span></button>
+          <button class="speed-row-btn" data-speed="2.5"  onclick="setSpeed(2.5);closeSpeedSheet()"><span>2.5×</span></button>
+          <button class="speed-row-btn" data-speed="3"    onclick="setSpeed(3);closeSpeedSheet()"><span>3×</span></button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Player engine sheet -->
+    <div class="sheet-backdrop hidden" id="engine-backdrop" onclick="onEngineBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="engine-sheet-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeEngineSheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="engine-sheet-title" data-i18n="engineChoiceTitle">Player selection</h3>
+          <p class="engine-sheet-sub" data-i18n="engineChoiceSubtitle">The change applies to the next video.</p>
+        </div>
+        <div class="engine-option-list" id="engine-option-list">
+          <button class="engine-option-row" id="engine-opt-mpv" onclick="setEngine('mpv')">
+            <div class="engine-opt-top">
+              <span class="engine-opt-name">mpv</span>
+              <span class="engine-opt-check" id="engine-check-mpv">✓</span>
+            </div>
+            <p class="engine-opt-desc" data-i18n="mpvEngineDescription">Broad format support with full subtitle, audio-track, and playback-speed controls.</p>
+          </button>
+          <button class="engine-option-row" id="engine-opt-avplayer" onclick="setEngine('avplayer')">
+            <div class="engine-opt-top">
+              <span class="engine-opt-name">Apple Player</span>
+              <span class="engine-opt-check hidden" id="engine-check-avplayer">✓</span>
+            </div>
+            <p class="engine-opt-desc" data-i18n="applePlayerDescription">Uses the Apple system pipeline for Dolby Vision, with fewer advanced controls.</p>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Aspect ratio sheet -->
+    <div class="sheet-backdrop hidden" id="aspect-backdrop" onclick="onAspectBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="aspect-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeAspectSheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="aspect-title">Aspect</h3>
+        </div>
+        <div class="speed-list" id="aspect-list"></div>
+      </section>
+    </div>
+
+    <!-- More sheet -->
+    <div class="sheet-backdrop hidden" id="more-backdrop" onclick="onMoreBackdropClick(event)">
+      <section class="video-sheet more-sheet" role="dialog" aria-modal="true" aria-labelledby="more-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeMoreSheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="more-title">More</h3>
+        </div>
+        <div class="more-actions-grid">
+          <button class="more-action-btn" id="btn-loop" onclick="toggleLoopMode()">
+            <svg class="more-action-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+            <span id="loop-label">Sequential</span>
+          </button>
+          <button class="more-action-btn" onclick="cmd(['screenshot', 'video']);closeMoreSheet()">
+            <svg class="more-action-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+            <span>Screenshot</span>
+          </button>
+          <button class="more-action-btn" onclick="cmd(['cycle', 'fullscreen'])">
+            <svg class="more-action-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+            <span>Fullscreen</span>
+          </button>
+          <button class="more-action-btn" onclick="cmd(['frame-step'])">
+            <svg class="more-action-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4" fill="currentColor" stroke="none"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+            <span>Frame step</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Library picker sheet -->
+    <div class="sheet-backdrop hidden" id="library-picker-backdrop" onclick="onLibraryPickerBackdropClick(event)">
+      <section class="video-sheet library-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="library-picker-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeLibraryPicker()" aria-label="Close">×</button>
+        <div class="library-picker-head">
+          <div>
+            <div class="sheet-subtitle">Library</div>
+            <h2 class="sheet-title" id="library-picker-title">Choose category</h2>
+          </div>
+        </div>
+        <div class="library-picker-list" id="library-picker-list"></div>
+      </section>
+    </div>
+
+    <!-- Server management sheet -->
+    <div class="sheet-backdrop hidden" id="server-manager-backdrop" onclick="onServerManagerBackdropClick(event)">
+      <section class="video-sheet server-manager-sheet" role="dialog" aria-modal="true" aria-labelledby="server-manager-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeServerManager()" aria-label="Close">×</button>
+        <div class="settings-section-header">
+          <h3 id="server-manager-title">Sources</h3>
+          <button class="btn-add" onclick="openServerForm()">+ Add</button>
+        </div>
+        <div id="server-list"></div>
+      </section>
+    </div>
+
+    <!-- Add / edit server sheet -->
+    <div class="sheet-backdrop hidden" id="server-form-backdrop" onclick="onServerFormBackdropClick(event)">
+      <section class="video-sheet server-form-sheet" role="dialog" aria-modal="true" aria-labelledby="server-form-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeServerForm()" aria-label="Close">×</button>
+        <div class="server-form" id="server-form">
+          <h4 id="server-form-title">Emby Server</h4>
+          <input type="hidden" id="form-server-id">
+
+          <!-- Source type -->
+          <div class="form-row">
+            <label>Type</label>
+            <div class="type-seg" id="form-type-seg">
+              <button type="button" class="type-seg-btn active" data-type="emby" onclick="setServerFormType('emby')">Emby</button>
+              <button type="button" class="type-seg-btn" data-type="jellyfin" onclick="setServerFormType('jellyfin')">Jellyfin</button>
+              <button type="button" class="type-seg-btn" data-type="plex" onclick="setServerFormType('plex')">Plex</button>
+              <button type="button" class="type-seg-btn" data-type="file" onclick="setServerFormType('file')">Files</button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <label>Name <span class="optional">Auto-generated if blank</span></label>
+            <input type="text" id="form-name" placeholder="Home NAS">
+          </div>
+
+          <!-- Media-server fields (emby / jellyfin / plex) -->
+          <div id="form-group-server">
+            <div class="form-row">
+              <label>Protocol</label>
+              <div class="radio-group">
+                <label><input type="radio" name="proto" value="http" checked> http</label>
+                <label><input type="radio" name="proto" value="https"> https</label>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>Address 1 <span class="required">*</span></label>
+              <input type="text" id="form-host0" placeholder="192.168.1.100 or emby.example.com">
+            </div>
+            <div class="form-row">
+              <label>Address 2 <span class="optional">Backup</span></label>
+              <input type="text" id="form-host1" placeholder="10.0.0.1 (optional)">
+            </div>
+            <div class="form-row">
+              <label>Address 3 <span class="optional">Backup</span></label>
+              <input type="text" id="form-host2" placeholder="emby.lan (optional)">
+            </div>
+            <div class="form-row">
+              <label>Address 4 <span class="optional">Backup</span></label>
+              <input type="text" id="form-host3" placeholder="(optional)">
+            </div>
+            <div class="form-row">
+              <label>Address 5 <span class="optional">Backup</span></label>
+              <input type="text" id="form-host4" placeholder="(optional)">
+            </div>
+            <div class="form-row">
+              <label>Port</label>
+              <input type="number" id="form-port" value="8096" min="1" max="65535">
+            </div>
+          </div>
+
+          <!-- File-source fields (type == file) -->
+          <div id="form-group-file" class="hidden">
+            <div class="form-row">
+              <label>Access</label>
+              <select id="form-file-protocol" class="form-select" onchange="onFileProtocolChange()"></select>
+            </div>
+            <div class="form-row">
+              <label>Folder / share address <span class="required">*</span></label>
+              <input type="text" id="form-root" placeholder="">
+              <div class="form-hint" id="form-root-hint"></div>
+            </div>
+          </div>
+
+          <!-- Plex token (plex only) -->
+          <div class="form-row hidden" id="form-row-token">
+            <label>Plex Token <span class="optional">Optional</span></label>
+            <input type="text" id="form-token" placeholder="xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+            <div class="form-hint" id="form-token-hint"></div>
+          </div>
+
+          <!-- Shared credentials (account for servers, optional creds for shares) -->
+          <div class="form-row">
+            <label>Username</label>
+            <input type="text" id="form-username" autocomplete="username">
+          </div>
+          <div class="form-row">
+            <label>Password</label>
+            <input type="password" id="form-password" autocomplete="current-password">
+            <div class="form-hint" id="form-cred-hint"></div>
+          </div>
+
+          <div class="form-status" id="form-status"></div>
+          <div class="form-actions">
+            <button class="btn-secondary" onclick="closeServerForm()">Cancel</button>
+            <button class="btn-primary" id="form-submit-btn" onclick="saveAndLogin()">Save and sign in</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Bottom navigation -->
+    <nav class="bottom-nav" id="bottom-nav">
+      <button class="nav-tab active" id="nav-library" onclick="switchTab('library')" aria-label="Library">
+        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+          <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+        </svg>
+        <span class="nav-label">Library</span>
+      </button>
+      <button class="nav-tab" id="nav-remote" onclick="switchTab('remote')" aria-label="Remote">
+        <span class="nav-dot hidden" id="nav-remote-dot"></span>
+        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="7" y="2.5" width="10" height="19" rx="5"/>
+          <circle cx="12" cy="8" r="1.5" fill="currentColor" stroke="none"/>
+          <path d="M10 13h4M12 11v4"/>
+          <circle cx="9.8" cy="17" r=".7" fill="currentColor" stroke="none"/>
+          <circle cx="14.2" cy="17" r=".7" fill="currentColor" stroke="none"/>
+        </svg>
+        <span class="nav-label">Remote</span>
+      </button>
+      <button class="nav-tab" id="nav-settings" onclick="switchTab('settings')" aria-label="Settings">
+        <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/>
+          <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.15 2.15 0 1 1-3.04 3.04l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65V21.4a2.15 2.15 0 1 1-4.3 0v-.09a1.8 1.8 0 0 0-1.08-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2.15 2.15 0 1 1-3.04-3.04l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.08h-.09a2.15 2.15 0 1 1 0-4.3h.09A1.8 1.8 0 0 0 4.6 8.54a1.8 1.8 0 0 0-.36-1.98l-.04-.04a2.15 2.15 0 1 1 3.04-3.04l.04.04a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.34 2.2v-.09a2.15 2.15 0 1 1 4.3 0v.09a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.15 2.15 0 1 1 3.04 3.04l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.08h.09a2.15 2.15 0 1 1 0 4.3h-.09A1.8 1.8 0 0 0 19.4 15Z"/>
+        </svg>
+        <span class="nav-label">Settings</span>
+      </button>
+    </nav>
+
+    <!-- Exit confirm dialog -->
+    <div class="confirm-overlay hidden" id="exit-confirm-overlay" onclick="if(event.target===this)closeExitConfirm()">
+      <div class="confirm-dialog">
+        <div class="confirm-title">Stop playback?</div>
+        <div class="confirm-body">Close the currently playing item</div>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn" onclick="closeExitConfirm()">Cancel</button>
+          <button class="confirm-ok-btn" onclick="confirmExit()">Stop playback</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/i18n.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

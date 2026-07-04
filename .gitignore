@@ -1,0 +1,27 @@
+# Local configuration and credentials
+data/
+config.json
+*.p8
+*.p12
+*.mobileprovision
+.env
+.env.*
+
+# Build outputs
+desktop-go/build/
+desktop-go/dist/
+desktop-go/mpvstage/
+desktop-go/mpv_extract/
+desktop-go/internal/webui/dist/*
+!desktop-go/internal/webui/dist/.gitkeep
+*.app
+*.dmg
+*.exe
+*.zip
+*.7z
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.log

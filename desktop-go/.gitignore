@@ -1,0 +1,20 @@
+# Synced frontend copy (single source of truth is repo-root web/)
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+
+# Build outputs
+/build/
+
+# Bundled mpv (downloaded during CI, never committed)
+/third_party/mpv/
+*.exe
+*.app
+*.dmg
+
+# CI packaging staging
+/dist/
+/mpvstage/
+/mpv_extract/
+mpv.7z
+*.zip
+*.7z
