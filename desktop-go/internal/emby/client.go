@@ -89,8 +89,8 @@ func (c *Client) authHeaderValue(token string) string {
 		version = "4.7.0.0"
 	}
 	parts := []string{
-		`Client="TV Remote MPV"`,
-		`Device="TV Remote MPV"`,
+		`Client="TinyPlay"`,
+		`Device="TinyPlay"`,
 		`DeviceId="` + deviceID + `"`,
 		`Version="` + version + `"`,
 	}

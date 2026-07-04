@@ -43,7 +43,7 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="%s"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TV Remote MPV</title>
+<title>TinyPlay</title>
 <style>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
@@ -57,7 +57,7 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
 	.runtime { font-size: 12px; max-width: 320px; overflow-wrap: anywhere; opacity: .65; }
 </style></head>
 <body>
-  <h1>TV Remote MPV</h1>
+  <h1>TinyPlay</h1>
   <p>%s</p>
   <img src="/desktop/qr.png" alt="QR">
   <code>%s</code>

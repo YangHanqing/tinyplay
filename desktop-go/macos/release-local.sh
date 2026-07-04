@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build, sign, notarize and package a local macOS release.
-# Run from any directory; output is desktop-go/tvremote-macos.zip.
+# Run from any directory; output is desktop-go/TinyPlay.dmg.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -31,11 +31,11 @@ VERSION="$VERSION" MPV_DIR="$ROOT/mpvstage" "$HERE/build-app.sh"
 # Workspaces under Documents may be managed by a File Provider that attaches a
 # protected com.apple.provenance xattr. Sign in a private temporary directory,
 # where those attributes can be removed reliably, then package from there.
-ditto "$ROOT/build/TV Remote MPV.app" "$SIGN_STAGE/TV Remote MPV.app"
-xattr -cr "$SIGN_STAGE/TV Remote MPV.app"
-"$HERE/sign-notarize.sh" "$SIGN_STAGE/TV Remote MPV.app"
+ditto "$ROOT/build/TinyPlay.app" "$SIGN_STAGE/TinyPlay.app"
+xattr -cr "$SIGN_STAGE/TinyPlay.app"
+"$HERE/sign-notarize.sh" "$SIGN_STAGE/TinyPlay.app"
 
-rm -f "$ROOT/tvremote-macos.zip"
-ditto -c -k --keepParent "$SIGN_STAGE/TV Remote MPV.app" "$ROOT/tvremote-macos.zip"
+rm -f "$ROOT/TinyPlay.dmg"
+"$HERE/make-dmg.sh" "$SIGN_STAGE/TinyPlay.app" "$ROOT/TinyPlay.dmg"
 
-echo "==> release ready: $ROOT/tvremote-macos.zip"
+echo "==> release ready: $ROOT/TinyPlay.dmg"

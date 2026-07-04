@@ -1,4 +1,4 @@
-// Native macOS menu-bar shell for TV Remote MPV.
+// Native macOS menu-bar shell for TinyPlay.
 //
 // This is a real AppKit app (NSStatusItem + WKWebView) — no Electron, no
 // webview wrapper framework. It is intentionally a single source file compiled
@@ -148,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 600),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered, defer: false)
-        w.title = "TV Remote MPV"
+        w.title = "TinyPlay"
         w.contentView = webView
         w.center()
         w.isReleasedWhenClosed = false

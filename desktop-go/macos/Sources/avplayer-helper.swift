@@ -1,5 +1,5 @@
 // avplayer-helper — a tiny native macOS video player used only as the Dolby
-// Vision Profile 5 fallback for the TV Remote MPV app.
+// Vision Profile 5 fallback for the TinyPlay app.
 //
 // Why it exists: mpv (and IINA) render single-layer Dolby Vision Profile 5 with
 // a purple tint on macOS because they don't process the DV RPU. Apple's

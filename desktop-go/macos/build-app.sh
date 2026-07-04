@@ -9,13 +9,13 @@
 # Inputs (env, all optional):
 #   CORE_BIN  path to the built Go core   (default: ../build/tvremote-core-darwin-arm64)
 #   MPV_DIR   dir copied to Contents/Resources/mpv; expects bin/mpv inside it
-#   OUT       output .app path            (default: ../build/TV Remote MPV.app)
+#   OUT       output .app path            (default: ../build/TinyPlay.app)
 #   VERSION   CFBundleShortVersionString  (default: 0.1.0)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CORE_BIN="${CORE_BIN:-$HERE/../build/tvremote-core-darwin-arm64}"
-OUT="${OUT:-$HERE/../build/TV Remote MPV.app}"
+OUT="${OUT:-$HERE/../build/TinyPlay.app}"
 VERSION="${VERSION:-0.1.0}"
 
 [ -f "$CORE_BIN" ] || { echo "core binary not found: $CORE_BIN (run make build-core-mac)"; exit 1; }
@@ -37,10 +37,10 @@ MACOS="$OUT/Contents/MacOS"
 RES="$OUT/Contents/Resources"
 mkdir -p "$MACOS" "$RES"
 
-cp "$SHELL_BIN" "$MACOS/TVRemote"
+cp "$SHELL_BIN" "$MACOS/TinyPlay"
 cp "$CORE_BIN"  "$RES/tvremote-core"
 cp "$HELPER_BIN" "$RES/avplayer-helper"
-chmod +x "$MACOS/TVRemote" "$RES/tvremote-core" "$RES/avplayer-helper"
+chmod +x "$MACOS/TinyPlay" "$RES/tvremote-core" "$RES/avplayer-helper"
 
 if [ -n "${MPV_DIR:-}" ] && [ -d "$MPV_DIR" ]; then
     echo "==> bundling mpv from $MPV_DIR"
@@ -56,10 +56,10 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>TV Remote MPV</string>
-    <key>CFBundleDisplayName</key><string>TV Remote MPV</string>
-    <key>CFBundleIdentifier</key><string>com.tvremote.mpv</string>
-    <key>CFBundleExecutable</key><string>TVRemote</string>
+    <key>CFBundleName</key><string>TinyPlay</string>
+    <key>CFBundleDisplayName</key><string>TinyPlay</string>
+    <key>CFBundleIdentifier</key><string>cn.hqyang.tinyplay.mac</string>
+    <key>CFBundleExecutable</key><string>TinyPlay</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>

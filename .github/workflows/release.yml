@@ -1,0 +1,160 @@
+# Builds the double-click TinyPlay desktop apps for Windows and macOS
+# (Apple Silicon), with mpv bundled, and attaches them to a GitHub Release when
+# you push a v* tag.
+#
+#   Windows → TinyPlay-windows.zip   (tvremote.exe + mpv/, unzip & double-click)
+#   macOS   → TinyPlay.dmg           (signed+notarized, drag TinyPlay.app to
+#                                     Applications). Before the signing secrets
+#                                     exist it falls back to an unsigned
+#                                     TinyPlay-macos.zip so the build still runs.
+#
+# macOS is Developer ID signed + notarized + stapled when the signing secrets
+# are present, so users are not blocked by Gatekeeper ("unidentified developer").
+# The signing job only runs on tag pushes / manual dispatch — never on pull
+# requests — so the certificate secrets are never exposed to untrusted forks.
+# Windows artifacts are UNSIGNED for now (no Windows code-signing certificate);
+# users may still see a SmartScreen "unknown publisher" prompt.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: desktop-go
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Sync frontend
+        shell: bash
+        run: make sync
+
+      - name: Download & bundle mpv
+        shell: bash
+        run: |
+          set -euo pipefail
+          api=$(curl -sL https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest)
+          # Pick the plain x86_64 build (not the -v3- or -dev- variants).
+          url=$(echo "$api" | grep -oE 'https://[^"]*mpv-x86_64-2[0-9]+[^"]*\.7z' | head -1)
+          echo "mpv archive: $url"
+          curl -L -o mpv.7z "$url"
+          7z x mpv.7z -ompv_extract
+          mpv_exe=$(find mpv_extract -name mpv.exe | head -1)
+          mpv_dir=$(dirname "$mpv_exe")
+          mkdir -p dist/mpv
+          cp "$mpv_exe" dist/mpv/
+          # These builds are mostly static, but copy any sibling DLLs just in case.
+          cp "$mpv_dir"/*.dll dist/mpv/ 2>/dev/null || true
+
+      - name: Build exe
+        shell: bash
+        run: go build -ldflags "-H windowsgui" -o dist/tvremote.exe ./cmd/tvremote
+
+      - name: Package zip
+        shell: bash
+        run: |
+          cd dist
+          7z a ../TinyPlay-windows.zip ./*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TinyPlay-windows
+          path: desktop-go/TinyPlay-windows.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop-go/TinyPlay-windows.zip
+
+  macos:
+    runs-on: macos-14 # Apple Silicon
+    env:
+      # 'true' only when the signing secrets exist; gates the sign step so the
+      # build still succeeds (unsigned) before you've added them.
+      HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.SIGN_IDENTITY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Sync frontend
+        run: make sync
+
+      - name: Build Go core (arm64)
+        run: GOOS=darwin GOARCH=arm64 go build -o build/tvremote-core-darwin-arm64 ./cmd/tvremote
+
+      - name: Download & bundle mpv (self-contained via dylibbundler)
+        run: |
+          set -euo pipefail
+          brew install mpv dylibbundler
+          mkdir -p mpvstage/bin/libs
+          real_mpv=$(readlink -f "$(brew --prefix)/bin/mpv")
+          cp "$real_mpv" mpvstage/bin/mpv
+          chmod u+w mpvstage/bin/mpv
+          # Copy every non-system dylib next to the binary and rewrite load paths
+          # so the bundle runs on a machine without Homebrew. -cd/-of/-od keep it
+          # non-interactive (it otherwise prompts to create/overwrite and aborts).
+          dylibbundler -cd -of -od -b -x mpvstage/bin/mpv -d mpvstage/bin/libs -p @executable_path/libs/
+
+      - name: Build .app
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="0.0.0-dev"; fi
+          VERSION="$VER" MPV_DIR="$PWD/mpvstage" ./macos/build-app.sh
+
+      - name: Sign & notarize app
+        if: ${{ env.HAS_SIGNING == 'true' }}
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          AC_API_KEY: ${{ secrets.AC_API_KEY }}
+          AC_KEY_ID: ${{ secrets.AC_KEY_ID }}
+          AC_ISSUER_ID: ${{ secrets.AC_ISSUER_ID }}
+        run: ./macos/sign-notarize.sh "$PWD/build/TinyPlay.app"
+
+      - name: Package signed DMG
+        if: ${{ env.HAS_SIGNING == 'true' }}
+        env:
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          AC_API_KEY: ${{ secrets.AC_API_KEY }}
+          AC_KEY_ID: ${{ secrets.AC_KEY_ID }}
+          AC_ISSUER_ID: ${{ secrets.AC_ISSUER_ID }}
+        run: ./macos/make-dmg.sh "$PWD/build/TinyPlay.app" "$PWD/TinyPlay.dmg"
+
+      - name: Package unsigned zip (fallback before secrets exist)
+        if: ${{ env.HAS_SIGNING != 'true' }}
+        run: |
+          cd build
+          ditto -c -k --keepParent "TinyPlay.app" ../TinyPlay-macos.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TinyPlay-macos
+          path: |
+            desktop-go/TinyPlay.dmg
+            desktop-go/TinyPlay-macos.zip
+          if-no-files-found: warn
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop-go/TinyPlay.dmg
+            desktop-go/TinyPlay-macos.zip

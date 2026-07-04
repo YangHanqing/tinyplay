@@ -17,7 +17,7 @@
 #   AC_KEY_ID               the key id (e.g. 2X9R4HXF34)
 #   AC_ISSUER_ID            the issuer uuid
 #
-# Usage: sign-notarize.sh "/path/to/TV Remote MPV.app"
+# Usage: sign-notarize.sh "/path/to/TinyPlay.app"
 set -euo pipefail
 
 APP="${1:?usage: sign-notarize.sh <app>}"
@@ -95,7 +95,7 @@ if [ -f "$AVPLAYER_BIN" ]; then
 fi
 
 echo "==> signing main executable + bundle"
-codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/TVRemote"
+codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/TinyPlay"
 codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 

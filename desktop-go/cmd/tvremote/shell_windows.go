@@ -28,7 +28,7 @@ func runShell(localURL string, httpSrv *http.Server) {
 
 	onReady := func() {
 		systray.SetIcon(trayIcon)
-		systray.SetTitle("TV Remote MPV")
+		systray.SetTitle("TinyPlay")
 		systray.SetTooltip(i18n.System("tooltip"))
 
 		mOpen := systray.AddMenuItem(i18n.System("open_main"), i18n.System("open_main_tip"))
@@ -82,7 +82,7 @@ func openWindow(url string) {
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug: false,
 		WindowOptions: webview2.WindowOptions{
-			Title:  "TV Remote MPV",
+			Title:  "TinyPlay",
 			Width:  360,
 			Height: 560,
 			Center: true,
