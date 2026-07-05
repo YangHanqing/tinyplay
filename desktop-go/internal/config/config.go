@@ -20,15 +20,23 @@ import (
 // ServerPatch holds the editable fields of a server; nil means "leave as-is".
 // Mirrors UpdateServerRequest in schemas.py.
 type ServerPatch struct {
-	Name     *string   `json:"name"`
-	Protocol *string   `json:"protocol"`
-	Hosts    *[]string `json:"hosts"`
-	Port     *int      `json:"port"`
+	Name         *string   `json:"name"`
+	Type         *string   `json:"type"`
+	Protocol     *string   `json:"protocol"`
+	Hosts        *[]string `json:"hosts"`
+	Port         *int      `json:"port"`
+	FileProtocol *string   `json:"file_protocol"`
+	Root         *string   `json:"root"`
+	Username     *string   `json:"username"`
+	Password     *string   `json:"password"`
 }
 
 func (p ServerPatch) apply(s *Server) {
 	if p.Name != nil {
 		s.Name = *p.Name
+	}
+	if p.Type != nil {
+		s.Type = NormalizeServerType(*p.Type)
 	}
 	if p.Protocol != nil {
 		s.Protocol = *p.Protocol
@@ -38,6 +46,18 @@ func (p ServerPatch) apply(s *Server) {
 	}
 	if p.Port != nil {
 		s.Port = *p.Port
+	}
+	if p.FileProtocol != nil {
+		s.FileProtocol = strings.ToLower(strings.TrimSpace(*p.FileProtocol))
+	}
+	if p.Root != nil {
+		s.Root = strings.TrimSpace(*p.Root)
+	}
+	if p.Username != nil {
+		s.Username = *p.Username
+	}
+	if p.Password != nil {
+		s.Password = *p.Password
 	}
 }
 
@@ -55,6 +75,7 @@ func newID() string {
 type Server struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
+	Type          string   `json:"type,omitempty"`
 	Protocol      string   `json:"protocol"`
 	Hosts         []string `json:"hosts"`
 	Port          int      `json:"port"`
@@ -65,6 +86,9 @@ type Server struct {
 	DeviceID      string   `json:"device_id"`
 	ClientVersion string   `json:"client_version"`
 	LastLibraryID string   `json:"last_library_id"`
+	FileProtocol  string   `json:"file_protocol,omitempty"`
+	Root          string   `json:"root,omitempty"`
+	Password      string   `json:"password,omitempty"`
 }
 
 // Config mirrors the top level of config.json.
@@ -75,6 +99,7 @@ type Config struct {
 	MpvPipe        string    `json:"mpv_pipe"`
 	MpvExe         string    `json:"mpv_exe"`
 	MpvCacheSecs   int       `json:"mpv_cache_secs"`
+	Language       string    `json:"language,omitempty"`
 }
 
 const (
@@ -100,12 +125,14 @@ func NormalizeMpvCacheSecs(secs int) int {
 func serverDefaults() Server {
 	return Server{
 		Name:          i18n.System("default_server_name"),
+		Type:          "emby",
 		Protocol:      "http",
 		Hosts:         []string{},
 		Port:          8096,
 		ActiveHost:    0,
 		DeviceID:      "tv-remote-mpv-001",
 		ClientVersion: "4.7.0.0",
+		FileProtocol:  "local",
 	}
 }
 
@@ -138,6 +165,13 @@ func loadLocked() *Config {
 	if cfg.Servers == nil {
 		cfg.Servers = []*Server{}
 	}
+	for _, srv := range cfg.Servers {
+		srv.Type = NormalizeServerType(srv.Type)
+		if srv.FileProtocol == "" {
+			srv.FileProtocol = "local"
+		}
+	}
+	cfg.Language = NormalizeLanguage(cfg.Language)
 	if cfg.ListenPort == 0 {
 		cfg.ListenPort = 8080
 	}
@@ -301,12 +335,42 @@ func SetAuth(id, username, token, userID string) {
 // Settings returns user-editable app settings.
 func Settings() map[string]any {
 	cfg := Load()
-	return map[string]any{"mpv_cache_secs": NormalizeMpvCacheSecs(cfg.MpvCacheSecs)}
+	return map[string]any{
+		"mpv_cache_secs": NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
+		"language":       NormalizeLanguage(cfg.Language),
+	}
 }
 
 func SetMpvCacheSecs(secs int) map[string]any {
 	patch(func(cfg *Config) { cfg.MpvCacheSecs = NormalizeMpvCacheSecs(secs) })
 	return Settings()
+}
+
+func NormalizeLanguage(lang string) string {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "zh", "zh-cn":
+		return "zh-CN"
+	case "en":
+		return "en"
+	default:
+		return "auto"
+	}
+}
+
+func SetLanguage(lang string) map[string]any {
+	lang = NormalizeLanguage(lang)
+	patch(func(cfg *Config) { cfg.Language = lang })
+	i18n.SetPreferred(lang)
+	return Settings()
+}
+
+func NormalizeServerType(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "jellyfin", "plex", "file":
+		return strings.ToLower(strings.TrimSpace(kind))
+	default:
+		return "emby"
+	}
 }
 
 // ── URL helpers ──────────────────────────────────────────────────────────────
@@ -326,7 +390,11 @@ func BuildServerURL(s *Server) string {
 	}
 	port := s.Port
 	if port == 0 {
-		port = 8096
+		if NormalizeServerType(s.Type) == "plex" {
+			port = 32400
+		} else {
+			port = 8096
+		}
 	}
 	return proto + "://" + s.Hosts[idx] + ":" + strconv.Itoa(port)
 }
@@ -344,6 +412,9 @@ func mergeServer(dst *Server, in Server) {
 	if in.Name != "" {
 		dst.Name = in.Name
 	}
+	if in.Type != "" {
+		dst.Type = NormalizeServerType(in.Type)
+	}
 	if in.Protocol != "" {
 		dst.Protocol = in.Protocol
 	}
@@ -352,5 +423,20 @@ func mergeServer(dst *Server, in Server) {
 	}
 	if in.Port != 0 {
 		dst.Port = in.Port
+	}
+	if in.FileProtocol != "" {
+		dst.FileProtocol = strings.ToLower(strings.TrimSpace(in.FileProtocol))
+	}
+	if in.Root != "" {
+		dst.Root = strings.TrimSpace(in.Root)
+	}
+	if in.Username != "" {
+		dst.Username = in.Username
+	}
+	if in.Password != "" {
+		dst.Password = in.Password
+	}
+	if in.AccessToken != "" {
+		dst.AccessToken = in.AccessToken
 	}
 }

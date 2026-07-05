@@ -6,6 +6,7 @@ import (
 	"context"
 	_ "embed"
 	"net/http"
+	"net/url"
 	"runtime"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"fyne.io/systray"
 	webview2 "github.com/jchv/go-webview2"
 
+	"tvremote/internal/config"
 	"tvremote/internal/i18n"
 )
 
@@ -24,7 +26,7 @@ var trayIcon []byte
 // quit. The mpv player window only appears when the user triggers
 // playback from their phone.
 func runShell(localURL string, httpSrv *http.Server) {
-	desktopURL := localURL + "/desktop"
+	desktopURL := func() string { return localURL + "/desktop?lang=" + url.QueryEscape(i18n.SystemLang()) }
 
 	onReady := func() {
 		systray.SetIcon(trayIcon)
@@ -33,14 +35,40 @@ func runShell(localURL string, httpSrv *http.Server) {
 
 		mOpen := systray.AddMenuItem(i18n.System("open_main"), i18n.System("open_main_tip"))
 		mLogs := systray.AddMenuItem(i18n.System("open_logs"), i18n.System("open_logs_tip"))
+		mLanguage := systray.AddMenuItem(i18n.System("language"), "")
+		selected := config.Load().Language
+		mAuto := mLanguage.AddSubMenuItemCheckbox(i18n.System("language_auto"), "", selected == "auto")
+		mChinese := mLanguage.AddSubMenuItemCheckbox(i18n.System("language_chinese"), "", selected == "zh-CN")
+		mEnglish := mLanguage.AddSubMenuItemCheckbox("English", "", selected == "en")
 		systray.AddSeparator()
 		mQuit := systray.AddMenuItem(i18n.System("quit"), i18n.System("quit_tip"))
+
+		applyLanguage := func(language string) {
+			config.SetLanguage(language)
+			mOpen.SetTitle(i18n.System("open_main"))
+			mOpen.SetTooltip(i18n.System("open_main_tip"))
+			mLogs.SetTitle(i18n.System("open_logs"))
+			mLogs.SetTooltip(i18n.System("open_logs_tip"))
+			mLanguage.SetTitle(i18n.System("language"))
+			mAuto.SetTitle(i18n.System("language_auto"))
+			mChinese.SetTitle(i18n.System("language_chinese"))
+			mQuit.SetTitle(i18n.System("quit"))
+			mQuit.SetTooltip(i18n.System("quit_tip"))
+			systray.SetTooltip(i18n.System("tooltip"))
+			for value, item := range map[string]*systray.MenuItem{"auto": mAuto, "zh-CN": mChinese, "en": mEnglish} {
+				if value == config.NormalizeLanguage(language) {
+					item.Check()
+				} else {
+					item.Uncheck()
+				}
+			}
+		}
 
 		go func() {
 			for {
 				select {
 				case <-mOpen.ClickedCh:
-					openWindow(desktopURL)
+					openWindow(desktopURL())
 				case <-mLogs.ClickedCh:
 					if resp, err := http.Get(localURL + "/desktop/open-logs"); err == nil {
 						resp.Body.Close()
@@ -48,12 +76,18 @@ func runShell(localURL string, httpSrv *http.Server) {
 				case <-mQuit.ClickedCh:
 					systray.Quit()
 					return
+				case <-mAuto.ClickedCh:
+					applyLanguage("auto")
+				case <-mChinese.ClickedCh:
+					applyLanguage("zh-CN")
+				case <-mEnglish.ClickedCh:
+					applyLanguage("en")
 				}
 			}
 		}()
 
 		// Show the window once on first launch so users see the QR immediately.
-		go openWindow(desktopURL)
+		go openWindow(desktopURL())
 	}
 
 	onExit := func() {

@@ -531,7 +531,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		p.send([]any{"set_property", "volume", 100})
 		p.resetAspectOptions()
 	} else {
-		mpvLog := mpvLogPath()
+		playerLog, mpvLog := openPlayerLog()
 		var exe string
 		var args []string
 		if useNative {
@@ -551,7 +551,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 			args = []string{
 				url,
 				"--input-ipc-server=" + p.socket,
-				"--no-terminal",
+				"--terminal=yes",
 				"--fullscreen",
 				// Without this, mpv can go fullscreen against the wrong
 				// display's dimensions on multi-monitor setups (e.g. an
@@ -565,11 +565,10 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 			}
 			args = append(args, cacheArgs()...)
 			args = append(args, aspectArgs()...)
-			if mpvLog != "" {
-				// mpv's own verbose log: the only way to see why a particular
-				// video makes mpv exit/crash, since the app is windowless and
-				// the user can't otherwise capture any output.
-				args = append(args, "--msg-level=all=v", "--log-file="+mpvLog)
+			if playerLog != nil {
+				// Verbose output is captured by Go's bounded writer below, so a
+				// long-lived mpv process cannot grow the log without limit.
+				args = append(args, "--msg-level=all=v")
 			}
 			if opt.StartSeconds > 0 {
 				args = append(args, "--start="+startValue)
@@ -581,14 +580,13 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		cmd := exec.Command(exe, args...)
 		// Also capture anything mpv writes to stderr/stdout (panics, loader
 		// errors) into the same logs dir.
-		errLog := openMpvStderr()
-		if errLog != nil {
-			cmd.Stdout = errLog
-			cmd.Stderr = errLog
+		if playerLog != nil {
+			cmd.Stdout = playerLog
+			cmd.Stderr = playerLog
 		}
 		if err := cmd.Start(); err != nil {
-			if errLog != nil {
-				errLog.Close()
+			if playerLog != nil {
+				playerLog.Close()
 			}
 			return map[string]any{"ok": false, "error": "Could not start the player: " + exe}
 		}
@@ -600,8 +598,8 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		p.mu.Unlock()
 		go func() {
 			err := cmd.Wait()
-			if errLog != nil {
-				errLog.Close()
+			if playerLog != nil {
+				playerLog.Close()
 			}
 			if err != nil {
 				// A non-zero exit or signal is the process crash the user observes.

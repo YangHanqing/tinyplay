@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"html"
 	"net/http"
 
 	"github.com/skip2/go-qrcode"
@@ -10,7 +9,6 @@ import (
 	"tvremote/internal/config"
 	"tvremote/internal/i18n"
 	"tvremote/internal/netutil"
-	"tvremote/internal/player"
 )
 
 // phoneURL is the address the phone should open, derived from the LAN IP and
@@ -30,16 +28,6 @@ func (s *Server) phoneURL() string {
 func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
 	url := s.phoneURL()
 	lang := i18n.RequestLang(r)
-	mpv := player.DetectMPV()
-	mpvStatus := i18n.T(lang, "mpv_unavailable")
-	if mpv.Available {
-		labels := map[string]string{
-			"custom":  i18n.T(lang, "mpv_source_custom"),
-			"bundled": i18n.T(lang, "mpv_source_bundled"),
-			"system":  i18n.T(lang, "mpv_source_system"),
-		}
-		mpvStatus = fmt.Sprintf("mpv: %s (%s)", labels[mpv.Source], html.EscapeString(mpv.Path))
-	}
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="%s"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -55,15 +43,13 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
   img { width: 240px; height: 240px; border-radius: 12px; background: #fff; padding: 12px; }
   code { font-size: 15px; padding: 4px 10px; border-radius: 6px;
          background: rgba(127,127,127,.15); }
-	.runtime { font-size: 12px; max-width: 320px; overflow-wrap: anywhere; opacity: .65; }
 </style></head>
 <body>
   <h1>TinyPlay</h1>
   <p>%s</p>
   <img src="/desktop/qr.png" alt="QR">
   <code>%s</code>
-	<div class="runtime">%s</div>
-</body></html>`, lang, i18n.T(lang, "desktop_intro"), url, mpvStatus)
+</body></html>`, lang, i18n.T(lang, "desktop_intro"), url)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }

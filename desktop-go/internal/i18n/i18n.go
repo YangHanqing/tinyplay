@@ -5,7 +5,24 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 )
+
+var preferred struct {
+	sync.RWMutex
+	value string
+}
+
+// SetPreferred selects auto, zh-CN, or en for native desktop UI/log messages.
+func SetPreferred(value string) {
+	value = strings.TrimSpace(value)
+	if value != ZH && value != EN {
+		value = "auto"
+	}
+	preferred.Lock()
+	preferred.value = value
+	preferred.Unlock()
+}
 
 const (
 	ZH = "zh-CN"
@@ -32,10 +49,6 @@ var messages = map[string]map[string]string{
 		"login_failed_short":       "登录失败",
 		"frontend_not_built":       "前端未构建（请运行 `make sync`）",
 		"desktop_intro":            "用手机扫描下方二维码，即可在浏览器中遥控本机的 mpv 播放器。请确保手机与本机处于同一局域网。",
-		"mpv_unavailable":          "未找到 mpv，请恢复完整应用或安装 mpv",
-		"mpv_source_custom":        "高级覆盖",
-		"mpv_source_bundled":       "内置",
-		"mpv_source_system":        "系统",
 		"weekday_monday":           "周一",
 		"weekday_tuesday":          "周二",
 		"weekday_wednesday":        "周三",
@@ -50,6 +63,9 @@ var messages = map[string]map[string]string{
 		"quit":                     "退出",
 		"quit_tip":                 "停止服务并退出",
 		"tooltip":                  "TinyPlay - 手机遥控 mpv",
+		"language":                 "语言",
+		"language_auto":            "自动",
+		"language_chinese":         "中文",
 		"log_start":                "TinyPlay 启动；日志目录: %s",
 		"log_ready":                "TinyPlay 已启动，手机访问： %s",
 		"log_already_running":      "TinyPlay 已在运行，退出这次重复启动。",
@@ -93,10 +109,6 @@ var messages = map[string]map[string]string{
 		"login_failed_short":       "Login failed",
 		"frontend_not_built":       "frontend not built (run `make sync`)",
 		"desktop_intro":            "Scan the QR code with your phone to control mpv in the browser. Make sure your phone and this computer are on the same local network.",
-		"mpv_unavailable":          "mpv unavailable — restore the app or install mpv",
-		"mpv_source_custom":        "custom",
-		"mpv_source_bundled":       "bundled",
-		"mpv_source_system":        "system",
 		"weekday_monday":           "Monday",
 		"weekday_tuesday":          "Tuesday",
 		"weekday_wednesday":        "Wednesday",
@@ -111,6 +123,9 @@ var messages = map[string]map[string]string{
 		"quit":                     "Quit",
 		"quit_tip":                 "Stop the service and quit",
 		"tooltip":                  "TinyPlay - phone remote for mpv",
+		"language":                 "Language",
+		"language_auto":            "Automatic",
+		"language_chinese":         "Chinese",
 		"log_start":                "TinyPlay starting; log directory: %s",
 		"log_ready":                "TinyPlay ready, phone URL: %s",
 		"log_already_running":      "TinyPlay is already running; exiting this duplicate launch.",
@@ -145,10 +160,19 @@ func Normalize(value string) string {
 }
 
 func SystemLang() string {
+	preferred.RLock()
+	override := preferred.value
+	preferred.RUnlock()
+	if override == ZH || override == EN {
+		return override
+	}
 	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
 		if value := os.Getenv(key); value != "" {
 			return Normalize(value)
 		}
+	}
+	if value := systemLocale(); value != "" {
+		return Normalize(value)
 	}
 	return EN
 }
@@ -156,6 +180,9 @@ func SystemLang() string {
 func RequestLang(r *http.Request) string {
 	if r == nil {
 		return SystemLang()
+	}
+	if query := r.URL.Query().Get("lang"); query == ZH || query == EN {
+		return query
 	}
 	header := r.Header.Get("Accept-Language")
 	if header == "" {

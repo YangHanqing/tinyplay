@@ -6,33 +6,51 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	"tvremote/internal/config"
 )
 
-// mpvLogPath returns the path mpv should write its verbose --log-file to, or ""
-// if the logs dir can't be created. Truncated on each fresh mpv launch.
-func mpvLogPath() string {
-	dir := config.LogDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "mpv.log")
+type boundedLogFile struct {
+	mu       sync.Mutex
+	file     *os.File
+	maxBytes int64
 }
 
-// openMpvStderr opens (truncating) the file that captures mpv's stdout/stderr,
-// or nil if it can't be created.
-func openMpvStderr() *os.File {
+func (b *boundedLogFile) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	offset, err := b.file.Seek(0, 2)
+	if err != nil {
+		return 0, err
+	}
+	if offset+int64(len(p)) > b.maxBytes {
+		if err = b.file.Truncate(0); err != nil {
+			return 0, err
+		}
+		if _, err = b.file.Seek(0, 0); err != nil {
+			return 0, err
+		}
+	}
+	return b.file.Write(p)
+}
+func (b *boundedLogFile) Close() error { b.mu.Lock(); defer b.mu.Unlock(); return b.file.Close() }
+
+// openPlayerLog captures verbose player output while enforcing a hard size
+// ceiling even when one mpv process runs for days. The file is reset for every
+// fresh process and again whenever it reaches 5 MiB.
+func openPlayerLog() (*boundedLogFile, string) {
 	dir := config.LogDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil
+		return nil, ""
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "mpv-stderr.log"),
+	path := filepath.Join(dir, "mpv.log")
+	f, err := os.OpenFile(path,
 		os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
-	return f
+	return &boundedLogFile{file: f, maxBytes: 5 << 20}, path
 }
 
 func randHex() string {

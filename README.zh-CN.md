@@ -1,53 +1,32 @@
 # TinyPlay
 
-> 用手机遥控电脑上的 mpv 播放器。
+> 把你已经在用的小主机变成客厅播放器，用手机轻松遥控。
 
-[English](README.md)
+[English](README.md) · **[查看 TinyPlay 静态介绍页](https://yanghanqing.github.io/tinyplay/)**
 
-## 为什么会有 TinyPlay
+TinyPlay 是为家里那台已经在跑下载任务、Docker 容器或家庭服务的 N100、NUC、
+迷你主机或 Apple Silicon Mac 准备的。把经常闲着的 HDMI 接口连到电视，它就能
+再兼任一台由手机遥控、以 mpv 为播放内核的客厅播放器。
 
-一台塞在电视柜里的 Mac mini 或 Windows NUC，是很好的家庭影音播放器：几乎
-什么格式都能放，想装什么应用都行，一台小小的静音主机价格也比其他方案便宜
-很多——相比之下，Apple TV 对格式和应用都有诸多限制，专业蓝光机则功能单一、
-只能干这一件事。
-
-问题在于操控：窝在沙发上，用鼠标键盘挑电影、调倍速，实在麻烦。这就是
-TinyPlay 存在的全部理由——它把手机变成遥控器，电脑只管播放，你再也不用碰
-鼠标。
-
-Apple TV 原生版本即将上线，敬请期待。
-
-播放内核用的是 **mpv**，几乎什么格式都能兼容——MKV、HEVC、DTS、TrueHD 等
-等——不需要额外安装任何解码包。
+桌面端支持连接 Emby、Jellyfin、Plex，也可以直接浏览 SMB/WebDAV 共享；它会驱动
+随应用捆绑的 mpv，并在家庭局域网内提供适合手机使用的媒体库和遥控页面。手机
+无需安装 App。
 
 ## 下载
 
-前往 [Releases 页面](../../releases/latest) 获取对应平台的最新发布包。
+前往 [GitHub Releases](../../releases/latest) 下载最新版本。
 
-## 支持平台
+- **Windows x86-64：**解压完整压缩包后运行 `TinyPlay.exe`。Windows 版本目前
+  尚未签名，系统可能显示 SmartScreen 警告。
+- **macOS：**仅支持 Apple Silicon。打开 DMG，把 TinyPlay 拖入“应用程序”。
 
-- **Windows**（x86-64）—— 系统托盘应用，使用系统自带的 WebView2 运行时。
-- **macOS** —— **仅支持 Apple Silicon（M 系列）**，原生 AppKit 菜单栏应用；
-  不支持 Intel Mac。
+手机和电脑需要连接同一个可信局域网。TinyPlay 的遥控页面没有独立身份验证，
+请勿将其端口暴露到公网。
 
-## 功能
-
-- **浏览与播放** —— 在手机浏览器里滚动 Emby 媒体库、继续观看"最近观看"，
-  或者搜索整个媒体库。
-- **完整的播放控制** —— 播放/暂停、跳转进度、音量、倍速，全部在手机上完成。
-- **音轨与字幕** —— 切换音轨和字幕轨、调整字幕延迟、调整画面比例/缩放，
-  不用碰电脑。
-- **系统音量控制** —— 直接从手机调节电脑系统输出音量，而不仅仅是 mpv 内部音量。
-- **手机零安装** —— 桌面端显示二维码，扫码即连，无需安装任何 App，也无需账号。
-- **安静运行** —— 常驻系统托盘/菜单栏，不打扰你，直到你在手机上发起播放。
-
-## 协同架构
-
-电脑上运行一个小巧的 Go 后端，负责与 Emby 服务器通信，并通过 JSON IPC
-套接字驱动 mpv，同时向手机浏览器提供同一套网页版遥控界面。手机只是遥控器，
-播放本身全部在电脑本地完成。
+产品截图、功能说明、使用流程和完整的客厅播放器选购指南，请查看
+**[TinyPlay 静态介绍页](https://yanghanqing.github.io/tinyplay/)**。
 
 ## 开源协议
 
-TinyPlay 自身源码采用 [MIT 协议](LICENSE) 开源。所捆绑的第三方组件（包括
-mpv）遵循各自的许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+TinyPlay 自身源码采用 [MIT 协议](LICENSE) 开源。捆绑的第三方组件遵循各自的
+许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

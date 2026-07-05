@@ -18,10 +18,10 @@ import (
 	"path/filepath"
 
 	"tvremote/internal/config"
-	"tvremote/internal/emby"
 	"tvremote/internal/i18n"
 	"tvremote/internal/netutil"
 	"tvremote/internal/player"
+	"tvremote/internal/provider"
 	"tvremote/internal/server"
 )
 
@@ -29,6 +29,11 @@ func main() {
 	logPath := setupLogging()
 	guardSingleInstance() // exits a duplicate Windows launch before doing any work
 	cfg := config.Load()
+	if lang := os.Getenv("TVREMOTE_LANGUAGE"); lang != "" {
+		config.SetLanguage(lang)
+		cfg = config.Load()
+	}
+	i18n.SetPreferred(cfg.Language)
 	log.Printf(i18n.System("log_start"), filepath.Dir(logPath))
 	p := player.New()
 	wireReporters(p)
@@ -73,12 +78,31 @@ func setupLogging() string {
 		return ""
 	}
 	path := filepath.Join(dir, "tvremote.log")
+	rotateLog(path, 5<<20, 3)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return ""
 	}
 	log.SetOutput(io.MultiWriter(os.Stderr, f))
 	return path
+}
+
+// rotateLog bounds the persistent core log. The long-lived core log keeps at
+// most three 5 MiB history files plus the active file; mpv.log has its own hard
+// ceiling in internal/player.
+func rotateLog(path string, maxBytes int64, backups int) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < maxBytes || backups < 1 {
+		return
+	}
+	_ = os.Remove(fmt.Sprintf("%s.%d", path, backups))
+	for i := backups - 1; i >= 1; i-- {
+		old := fmt.Sprintf("%s.%d", path, i)
+		if _, err := os.Stat(old); err == nil {
+			_ = os.Rename(old, fmt.Sprintf("%s.%d", path, i+1))
+		}
+	}
+	_ = os.Rename(path, path+".1")
 }
 
 // listen binds 0.0.0.0:want, then a few ports after it, then an OS-assigned free
@@ -112,12 +136,12 @@ func candidatePorts(want int) []int {
 // Emby server (mirrors api.py setting player._stop_reporter / _progress_reporter).
 func wireReporters(p *player.Player) {
 	p.StopReporter = func(itemID, sessionID string, posTicks int64, mediaSourceID string) {
-		if c, err := emby.FromActive(); err == nil {
+		if c, err := provider.Active(); err == nil {
 			c.ReportStopped(itemID, sessionID, posTicks, mediaSourceID)
 		}
 	}
 	p.ProgressReporter = func(itemID, sessionID string, posTicks int64, isPaused bool, mediaSourceID string) {
-		if c, err := emby.FromActive(); err == nil {
+		if c, err := provider.Active(); err == nil {
 			c.ReportProgress(itemID, sessionID, posTicks, isPaused, mediaSourceID)
 		}
 	}
@@ -129,7 +153,7 @@ func wireReporters(p *player.Player) {
 		if targetID == "" {
 			return nil
 		}
-		c, err := emby.FromActive()
+		c, err := provider.Active()
 		if err != nil {
 			return nil
 		}

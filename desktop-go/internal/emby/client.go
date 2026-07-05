@@ -27,7 +27,8 @@ type APIError struct {
 	Msg    string
 }
 
-func (e *APIError) Error() string { return e.Msg }
+func (e *APIError) Error() string   { return e.Msg }
+func (e *APIError) StatusCode() int { return e.Status }
 
 func errf(status int, format string, a ...any) *APIError {
 	return &APIError{Status: status, Msg: fmt.Sprintf(format, a...)}
@@ -101,11 +102,16 @@ func (c *Client) authHeaderValue(token string) string {
 }
 
 func (c *Client) headers(token string) http.Header {
-	return http.Header{
-		"Accept":               {"application/json"},
-		"Content-Type":         {"application/json; charset=utf-8"},
-		"X-Emby-Authorization": {c.authHeaderValue(token)},
+	h := http.Header{
+		"Accept":       {"application/json"},
+		"Content-Type": {"application/json; charset=utf-8"},
 	}
+	if c.server != nil && config.NormalizeServerType(c.server.Type) == "jellyfin" {
+		h.Set("Authorization", c.authHeaderValue(token))
+	} else {
+		h.Set("X-Emby-Authorization", c.authHeaderValue(token))
+	}
+	return h
 }
 
 // makeURL builds serverURL + path with query params; optionally adds api_key.
@@ -139,15 +145,21 @@ func (c *Client) makeURL(path string, addToken bool, params url.Values) (string,
 }
 
 // pathCandidates tolerates both /emby-prefixed and bare endpoints.
-func pathCandidates(path string) []string {
+func pathCandidates(path string, bareFirst bool) []string {
+	var paths []string
 	if strings.HasPrefix(path, "/emby/") {
-		return []string{path, strings.Replace(path, "/emby", "", 1)}
+		paths = []string{path, strings.Replace(path, "/emby", "", 1)}
+	} else {
+		p := path
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		paths = []string{"/emby" + p, p}
 	}
-	p := path
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
+	if bareFirst && len(paths) == 2 {
+		paths[0], paths[1] = paths[1], paths[0]
 	}
-	return []string{"/emby" + p, path}
+	return paths
 }
 
 // request performs the call, retrying across path candidates. Returns the raw
@@ -159,7 +171,8 @@ func (c *Client) request(method, path string, params url.Values, body any) ([]by
 	}
 
 	var lastErr error = errf(500, "Emby request failed")
-	for _, p := range pathCandidates(path) {
+	bareFirst := c.server != nil && config.NormalizeServerType(c.server.Type) == "jellyfin"
+	for _, p := range pathCandidates(path, bareFirst) {
 		u, err := c.makeURL(p, false, params)
 		if err != nil {
 			lastErr = err
@@ -212,7 +225,11 @@ func Authenticate(srv *config.Server, username, password string) (string, string
 	}
 
 	lastErr := "Login failed"
-	for _, path := range []string{"/emby/Users/AuthenticateByName", "/Users/AuthenticateByName"} {
+	paths := []string{"/emby/Users/AuthenticateByName", "/Users/AuthenticateByName"}
+	if config.NormalizeServerType(srv.Type) == "jellyfin" {
+		paths[0], paths[1] = paths[1], paths[0]
+	}
+	for _, path := range paths {
 		buf, _ := json.Marshal(map[string]string{"Username": username, "Pw": password})
 		req, err := http.NewRequest("POST", c.serverURL()+path, bytes.NewReader(buf))
 		if err != nil {

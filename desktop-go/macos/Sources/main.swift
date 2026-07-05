@@ -19,11 +19,15 @@ import WebKit
 import Network
 
 private func L(_ key: String) -> String {
-    let zh = Locale.current.language.languageCode?.identifier.lowercased().hasPrefix("zh") == true
-    let table: [String: (String, String)] = [
+	let preference = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
+	let zh = preference == "zh-CN" || (preference == "auto" && Locale.current.language.languageCode?.identifier.lowercased().hasPrefix("zh") == true)
+	let table: [String: (String, String)] = [
         "open_main": ("\u{6253}\u{5F00}\u{4E3B}\u{754C}\u{9762}", "Open Remote"),
         "open_logs": ("\u{6253}\u{5F00}\u{65E5}\u{5FD7}\u{76EE}\u{5F55}", "Open Logs"),
-        "quit": ("\u{9000}\u{51FA}", "Quit"),
+		"quit": ("\u{9000}\u{51FA}", "Quit"),
+		"language": ("\u{8BED}\u{8A00}", "Language"),
+		"automatic": ("\u{81EA}\u{52A8}", "Automatic"),
+		"chinese": ("\u{4E2D}\u{6587}", "Chinese"),
     ]
     guard let pair = table[key] else { return key }
     return zh ? pair.0 : pair.1
@@ -35,7 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let core = Process()
     private var coreURL: String = "http://127.0.0.1:8080"
     private let urlFile = NSTemporaryDirectory() + "tvremote-url-\(ProcessInfo.processInfo.processIdentifier).txt"
-    private var lanBrowser: NWBrowser?
+	private var lanBrowser: NWBrowser?
+	private var webView: WKWebView?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         primeLocalNetworkAccess()
@@ -78,9 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         core.executableURL = coreBin
         var env = ProcessInfo.processInfo.environment
-        if FileManager.default.fileExists(atPath: mpvBin.path) {
+		if FileManager.default.fileExists(atPath: mpvBin.path) {
             env["TVREMOTE_MPV_EXE"] = mpvBin.path
-        }
+		}
+		env["TVREMOTE_LANGUAGE"] = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
         env["TVREMOTE_URL_FILE"] = urlFile
         core.environment = env
 
@@ -111,27 +117,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu bar
 
-    private func setupMenuBar() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem.button {
-            // Prefer the bundled TinyPlay logo; fall back to an SF Symbol.
-            if let iconURL = Bundle.main.url(forResource: "TinyPlay", withExtension: "icns"),
-               let logo = NSImage(contentsOf: iconURL) {
-                logo.size = NSSize(width: 18, height: 18)
-                logo.isTemplate = false
-                button.image = logo
-            } else {
-                button.image = NSImage(systemSymbolName: "play.tv", accessibilityDescription: "TinyPlay")
-                button.image?.isTemplate = true
-            }
-        }
+	private func setupMenuBar() {
+		if statusItem == nil { statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength) }
+		if let button = statusItem.button {
+			// The original white template icon follows menu-bar light/dark mode and
+			// stays visually quiet beside the system status icons.
+			button.image = NSImage(systemSymbolName: "play.tv", accessibilityDescription: "TinyPlay")
+			button.image?.isTemplate = true
+		}
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: L("open_main"), action: #selector(openMainWindow), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: L("open_logs"), action: #selector(openLogs), keyEquivalent: ""))
+		menu.addItem(NSMenuItem(title: L("open_logs"), action: #selector(openLogs), keyEquivalent: ""))
+		let language = NSMenuItem(title: L("language"), action: nil, keyEquivalent: "")
+		let languageMenu = NSMenu()
+		let selected = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
+		for (value, title) in [("auto", L("automatic")), ("zh-CN", L("chinese")), ("en", "English")] {
+			let item = NSMenuItem(title: title, action: #selector(changeLanguage(_:)), keyEquivalent: "")
+			item.representedObject = value
+			item.state = value == selected ? .on : .off
+			languageMenu.addItem(item)
+		}
+		language.submenu = languageMenu
+		menu.addItem(language)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: L("quit"), action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
-    }
+		statusItem.menu = menu
+	}
+
+	@objc private func changeLanguage(_ sender: NSMenuItem) {
+		guard let value = sender.representedObject as? String else { return }
+		UserDefaults.standard.set(value, forKey: "TinyPlayLanguage")
+		setupMenuBar()
+		guard let url = URL(string: coreURL + "/api/settings") else { return }
+		var request = URLRequest(url: url)
+		request.httpMethod = "PUT"
+		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+		request.httpBody = try? JSONSerialization.data(withJSONObject: ["language": value])
+		URLSession.shared.dataTask(with: request).resume()
+		if let webView { webView.load(URLRequest(url: desktopURL())) }
+	}
 
     /// Ask the core to reveal its logs directory in Finder. The core knows the
     /// real path (it resolves the same data dir as config.json), so we just hit
@@ -143,14 +167,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Window
 
-    @objc private func openMainWindow() {
+	@objc private func openMainWindow() {
         if let w = window {
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 380, height: 600))
-        webView.load(URLRequest(url: URL(string: coreURL + "/desktop")!))
+		let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 380, height: 600))
+		webView.load(URLRequest(url: desktopURL()))
+		self.webView = webView
 
         let w = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 600),
@@ -164,7 +189,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window = w
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
+	}
+
+	private func desktopURL() -> URL {
+		let preference = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
+		let resolved = preference == "auto"
+			? (Locale.current.language.languageCode?.identifier.lowercased().hasPrefix("zh") == true ? "zh-CN" : "en")
+			: preference
+		return URL(string: coreURL + "/desktop?lang=" + resolved)!
+	}
 
     @objc private func quit() {
         NSApp.terminate(nil)
@@ -172,8 +205,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppDelegate: NSWindowDelegate {
-    func windowWillClose(_ notification: Notification) {
-        window = nil
+	func windowWillClose(_ notification: Notification) {
+		window = nil
+		webView = nil
     }
 }
 

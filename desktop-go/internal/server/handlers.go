@@ -5,12 +5,13 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strconv"
 
 	"tvremote/internal/config"
-	"tvremote/internal/emby"
 	"tvremote/internal/i18n"
+	"tvremote/internal/provider"
 	"tvremote/internal/sysvolume"
 )
 
@@ -34,9 +35,9 @@ func writeRaw(w http.ResponseWriter, r *http.Request, body []byte, err error) {
 
 func writeErr(w http.ResponseWriter, r *http.Request, err error) {
 	lang := i18n.RequestLang(r)
-	var apiErr *emby.APIError
+	var apiErr interface{ StatusCode() int }
 	if errors.As(err, &apiErr) {
-		writeJSON(w, apiErr.Status, map[string]string{"detail": i18n.LocalizeError(lang, apiErr.Msg)})
+		writeJSON(w, apiErr.StatusCode(), map[string]string{"detail": i18n.LocalizeError(lang, err.Error())})
 		return
 	}
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": i18n.LocalizeError(lang, err.Error())})
@@ -67,6 +68,9 @@ func safeServer(s *config.Server) map[string]any {
 		"username":        s.Username,
 		"user_id":         s.UserID,
 		"last_library_id": s.LastLibraryID,
+		"type":            config.NormalizeServerType(s.Type),
+		"file_protocol":   s.FileProtocol,
+		"root":            s.Root,
 	}
 }
 
@@ -78,15 +82,18 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		MpvCacheSecs *int `json:"mpv_cache_secs"`
+		MpvCacheSecs *int    `json:"mpv_cache_secs"`
+		Language     *string `json:"language"`
 	}
 	if !decode(r, &body) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
 		return
 	}
 	if body.MpvCacheSecs != nil {
-		writeJSON(w, http.StatusOK, config.SetMpvCacheSecs(*body.MpvCacheSecs))
-		return
+		config.SetMpvCacheSecs(*body.MpvCacheSecs)
+	}
+	if body.Language != nil {
+		config.SetLanguage(*body.Language)
 	}
 	writeJSON(w, http.StatusOK, config.Settings())
 }
@@ -103,7 +110,7 @@ func (s *Server) listServers(w http.ResponseWriter, r *http.Request) {
 	for _, srv := range config.Servers() {
 		m := safeServer(srv)
 		m["active"] = srv.ID == activeID
-		m["logged_in"] = srv.AccessToken != ""
+		m["logged_in"] = srv.AccessToken != "" || (config.NormalizeServerType(srv.Type) == "file" && srv.Root != "")
 		out = append(out, m)
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -111,12 +118,16 @@ func (s *Server) listServers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name     string   `json:"name"`
-		Protocol string   `json:"protocol"`
-		Hosts    []string `json:"hosts"`
-		Port     int      `json:"port"`
-		Username string   `json:"username"`
-		Password string   `json:"password"`
+		Name         string   `json:"name"`
+		Type         string   `json:"type"`
+		Protocol     string   `json:"protocol"`
+		Hosts        []string `json:"hosts"`
+		Port         int      `json:"port"`
+		Username     string   `json:"username"`
+		Password     string   `json:"password"`
+		Token        string   `json:"token"`
+		FileProtocol string   `json:"file_protocol"`
+		Root         string   `json:"root"`
 	}
 	if !decode(r, &in) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
@@ -124,10 +135,15 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	candidate := config.Server{
-		Name:     in.Name,
-		Protocol: in.Protocol,
-		Hosts:    in.Hosts,
-		Port:     in.Port,
+		Name:         in.Name,
+		Type:         in.Type,
+		Protocol:     in.Protocol,
+		Hosts:        in.Hosts,
+		Port:         in.Port,
+		FileProtocol: in.FileProtocol,
+		Root:         in.Root,
+		Username:     in.Username,
+		Password:     in.Password,
 	}
 
 	// When credentials are supplied, verify the connection + login BEFORE saving
@@ -135,9 +151,11 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	// Persist only after authentication succeeds. We authenticate against an
 	// in-memory candidate and only persist on success.
 	var token, userID string
-	if in.Username != "" && in.Password != "" {
+	kind := config.NormalizeServerType(candidate.Type)
+	shouldVerify := kind == "file" || in.Token != "" || (in.Username != "" && in.Password != "")
+	if shouldVerify {
 		var err error
-		token, userID, err = emby.Authenticate(&candidate, in.Username, in.Password)
+		token, userID, err = provider.Authenticate(&candidate, in.Username, in.Password, in.Token)
 		if err != nil {
 			writeErr(w, r, err)
 			return
@@ -201,17 +219,34 @@ func (s *Server) loginServer(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Token    string `json:"token"`
 	}
 	if !decode(r, &body) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
 		return
 	}
-	res, err := emby.New(nil).Login(r.PathValue("id"), body.Username, body.Password)
+	srv := config.GetServer(r.PathValue("id"))
+	if srv == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"detail": i18n.Request(r, "server_not_found")})
+		return
+	}
+	username := body.Username
+	if username == "" {
+		username = srv.Username
+	}
+	password := body.Password
+	if password == "" {
+		password = srv.Password
+	}
+	token, userID, err := provider.Authenticate(srv, username, password, body.Token)
 	if err != nil {
 		writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	if config.NormalizeServerType(srv.Type) != "file" {
+		config.SetAuth(srv.ID, username, token, userID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": username})
 }
 
 // ── Player ───────────────────────────────────────────────────────────────────
@@ -248,12 +283,35 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 		SeriesTitle  string `json:"series_title"`
 		EpisodeLabel string `json:"episode_label"`
 		PosterItemID string `json:"poster_item_id"`
+		Path         string `json:"path"`
 	}
 	if !decode(r, &req) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
 		return
 	}
-	client, err := emby.FromActive()
+	active := config.ActiveServer()
+	if active == nil {
+		writeErr(w, r, provider.Errorf(400, "No media source is available. Add one first."))
+		return
+	}
+	if config.NormalizeServerType(active.Type) == "file" {
+		files, err := provider.ActiveFile()
+		if err != nil {
+			writeErr(w, r, err)
+			return
+		}
+		_, err = files.ResolvePlayURL(req.Path)
+		if err != nil {
+			writeErr(w, r, err)
+			return
+		}
+		playURL := "http://127.0.0.1:" + strconv.Itoa(s.port) + "/api/files/stream?path=" + url.QueryEscape(req.Path)
+		opts := playOpts("", "", "", req.Title, "", "", "", 0, "")
+		result := s.player.Play(playURL, opts)
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	client, err := provider.Active()
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -271,7 +329,7 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 	// Emby remux URL that AVPlayer can play. Fall back to the direct URL if
 	// Emby can't produce one (AVPlayer still attempts to play it).
 	useNative := s.preferNative && runtime.GOOS == "darwin"
-	if useNative {
+	if useNative && client.Kind() != "plex" {
 		if nativeURL, nativeMSID, ok := client.NativePlayURL(req.ItemID); ok {
 			url, mediaSourceID = nativeURL, nativeMSID
 		}
@@ -294,7 +352,7 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 // ── Emby proxy ───────────────────────────────────────────────────────────────
 
 func (s *Server) embyLibraries(w http.ResponseWriter, r *http.Request) {
-	c, err := emby.FromActive()
+	c, err := provider.Active()
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -304,7 +362,7 @@ func (s *Server) embyLibraries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) embyResume(w http.ResponseWriter, r *http.Request) {
-	c, err := emby.FromActive()
+	c, err := provider.Active()
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -314,7 +372,7 @@ func (s *Server) embyResume(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) embyItems(w http.ResponseWriter, r *http.Request) {
-	c, err := emby.FromActive()
+	c, err := provider.Active()
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -331,7 +389,7 @@ func (s *Server) embyItems(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) embyItemDetail(w http.ResponseWriter, r *http.Request) {
-	c, err := emby.FromActive()
+	c, err := provider.Active()
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -341,7 +399,7 @@ func (s *Server) embyItemDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) embyEpisodes(w http.ResponseWriter, r *http.Request) {
-	c, err := emby.FromActive()
+	c, err := provider.Active()
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -361,7 +419,7 @@ func (s *Server) embyEpisodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) embyImage(w http.ResponseWriter, r *http.Request) {
-	c, err := emby.FromActive()
+	c, err := provider.Active()
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -375,6 +433,31 @@ func (s *Server) embyImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", ct)
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
+}
+
+func (s *Server) filesList(w http.ResponseWriter, r *http.Request) {
+	c, err := provider.ActiveFile()
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	listing, err := c.ListDir(r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listing)
+}
+
+func (s *Server) filesStream(w http.ResponseWriter, r *http.Request) {
+	c, err := provider.ActiveFile()
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if err := c.Serve(w, r, r.URL.Query().Get("path")); err != nil {
+		writeErr(w, r, err)
+	}
 }
 
 // ── Player engine picker ──────────────────────────────────────────────────────
