@@ -13,7 +13,7 @@
 <body>
   <header class="site-header">
     <a class="brand" href="#top" aria-label="TinyPlay 首页">
-      <span class="brand-mark" aria-hidden="true">▶</span>
+      <img class="brand-mark" src="assets/favicon.png" alt="" aria-hidden="true">
       <span>TinyPlay</span>
     </a>
     <nav aria-label="页面导航">
@@ -31,11 +31,11 @@
   <main id="top">
     <section class="hero section-shell">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="eyebrow-dash"></span> <span class="eyebrow-text" data-i18n="hero_eyebrow">为家里的闲置性能找一块屏幕</span></p>
-        <h1 data-i18n-html="hero_title">下载机，不只下载。<br><em>接上 HDMI，它也能管客厅。</em></h1>
-        <p class="hero-lead" data-i18n="hero_lead">让已经在跑 Docker、下载任务和家庭服务的 N100、NUC、迷你主机或 Mac mini，再兼任一台强大的电视播放器。TinyPlay 把手机变成遥控器，电脑负责播放，你不必再从沙发上找鼠标。</p>
+        <p class="eyebrow"><span class="eyebrow-dash"></span> <span class="eyebrow-text" data-i18n="hero_eyebrow">手机控制，电脑播放</span></p>
+        <h1 data-i18n-html="hero_title">手机是遥控器，<br><em>电脑负责播放。</em></h1>
+        <p class="hero-lead" data-i18n="hero_lead">接上电视的电脑负责真正的播放，你窝在沙发上用手机选片、拖进度条、调倍速——不用再摸键盘鼠标，也不用满沙发缝找遥控器。那台电脑正好可以是家里已经在跑 Docker 的 NUC、迷你主机，或一台 Mac mini。</p>
         <div class="hero-actions">
-          <a class="button primary" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS/Win App <span>↗</span></a>
+          <a class="button primary" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS / Windows <span>↗</span></a>
           <a class="button secondary" href="#" onclick="openAppleTvModal(event)" data-i18n="btn_view_appletv">查看 Apple TV</a>
         </div>
         <div class="platform-note">
@@ -44,8 +44,8 @@
       </div>
       <div class="hero-visual">
         <div class="visual-glow"></div>
-        <div class="phone-mock hero-image">
-          <img src="assets/screenshot-remote.png" alt="TinyPlay phone remote screenshot" loading="eager">
+        <div class="hero-shot">
+          <img src="assets/hero.png" alt="Phone controlling playback on a TV connected to a mini PC" loading="eager">
         </div>
         <div class="signal-card">
           <span class="signal-dot"></span>
@@ -68,7 +68,7 @@
         <article class="story-card featured">
           <span class="step">01</span>
           <h3 data-i18n="why1_title">性能已经在那里了</h3>
-          <p data-i18n="why1_body">很多人的 N100、NUC 或迷你主机，本来就在做下载机、跑 Docker、管理 NAS。它功耗不高、长期在线，还有一个经常闲着的 HDMI 接口。没必要再买一台只能做一件事的设备。</p>
+          <p data-i18n="why1_body">很多人家里那台 NUC 或迷你主机——哪怕只是台 N100——本来就在做下载机、跑 Docker、管理 NAS。它功耗不高、长期在线，还有一个经常闲着的 HDMI 接口。没必要再买一台只能做一件事的设备。</p>
         </article>
         <article class="story-card">
           <span class="step">02</span>
@@ -78,7 +78,7 @@
         <article class="story-card">
           <span class="step">03</span>
           <h3 data-i18n="why3_title">于是有了 TinyPlay</h3>
-          <p data-i18n="why3_body">桌面端连接 Emby、Jellyfin、Plex 或 SMB/WebDAV 共享并驱动 mpv，手机扫描二维码后就能浏览媒体库和控制播放。播放留在小主机，控制回到你手里。</p>
+          <p data-i18n="why3_body">选片、拖进度条、切换倍速——这些你会反复动手的操作，全部挪到手机上完成。桌面端连接 Emby、Jellyfin、Plex 或 SMB/WebDAV 共享并驱动内置的万能播放器，手机扫码即可浏览媒体库。播放留在电脑，控制回到你手里。</p>
         </article>
       </div>
     </section>
@@ -87,7 +87,7 @@
       <div class="product-copy">
         <p class="eyebrow"><span class="eyebrow-dash"></span> ONE SMALL APP</p>
         <h2 data-i18n-html="features_title">电脑负责兼容性，<br>手机负责顺手。</h2>
-        <p data-i18n="features_lead">mpv 负责真正的播放，TinyPlay 负责把媒体库、遥控器和桌面播放器连在一起。没有云端中转，操作都发生在你的家庭局域网里。</p>
+        <p data-i18n="features_lead">内置的万能播放器负责真正的播放，TinyPlay 负责把媒体库、遥控器和桌面播放器连在一起。没有云端中转，操作都发生在你的家庭局域网里。</p>
         <ul class="feature-list">
           <li><span>01</span><div><strong data-i18n="feature1_title">手机浏览媒体库</strong><small data-i18n="feature1_body">连接 Emby、Jellyfin、Plex，或直接浏览 SMB/WebDAV。</small></div></li>
           <li><span>02</span><div><strong data-i18n="feature2_title">完整播放控制</strong><small data-i18n="feature2_body">暂停、跳转、倍速、系统音量、画面比例与缩放。</small></div></li>
@@ -141,15 +141,16 @@
               <tr><th data-i18n="t_row_nas">本地媒体 / NAS</th><td class="highlight"><b data-i18n="t_nas_nuc">格式和软件选择最多</b></td><td data-i18n="t_nas_mac">很强</td><td data-i18n="t_nas_atv">需第三方播放器</td><td data-i18n="t_nas_bluray">不是主要场景</td></tr>
               <tr><th data-i18n="t_row_streaming">流媒体</th><td class="highlight" data-i18n="t_streaming_nuc">浏览器与桌面 App</td><td data-i18n="t_streaming_mac">浏览器与桌面 App</td><td><b data-i18n="t_streaming_atv">最省心</b></td><td data-i18n="t_streaming_bluray">能力有限</td></tr>
               <tr><th data-i18n="t_row_hd_audio">高清音频直通</th><td class="highlight"><b data-i18n="t_hd_audio_nuc">上限最高</b></td><td data-i18n="t_hd_audio_mac">不以源码直通见长</td><td data-i18n="t_hd_audio_atv">不以本地高清直通见长</td><td><b data-i18n="t_hd_audio_bluray">最稳妥</b></td></tr>
+              <tr><th data-i18n="t_row_hdr">HDR / 杜比视界</th><td class="highlight" data-i18n="t_hdr_nuc">看显卡与播放器，上限高但要自己调</td><td data-i18n="t_hdr_mac">支持 HDR10，杜比视界受限</td><td data-i18n="t_hdr_atv">开箱即用、最省心</td><td><b data-i18n="t_hdr_bluray">原生杜比视界，最稳</b></td></tr>
               <tr><th data-i18n="t_row_maintenance">维护成本</th><td class="highlight" data-i18n="t_maintenance_nuc">高</td><td data-i18n="t_maintenance_mac">中</td><td><b data-i18n="t_maintenance_atv">低</b></td><td><b data-i18n="t_maintenance_bluray">低</b></td></tr>
               <tr><th data-i18n="t_row_best_for">最适合</th><td class="highlight" data-i18n="t_best_nuc">已有小主机，愿意折腾并榨干性能</td><td data-i18n="t_best_mac">希望电视柜里也是一台完整电脑</td><td data-i18n="t_best_atv">流媒体优先、全家省心</td><td data-i18n="t_best_bluray">UHD 蓝光收藏与功放玩家</td></tr>
             </tbody>
           </table>
         </div>
         <div class="verdicts">
-          <article><span data-i18n="v1_tag">最省心</span><h3>Apple TV 4K</h3><p data-i18n="v1_body">流媒体与家庭使用体验最好，本地播放交给成熟的第三方 App。</p></article>
           <article class="active"><span data-i18n="v2_tag">最能榨干性能</span><h3 data-i18n="v2_title">NUC / Windows 小主机</h3><p data-i18n="v2_body">下载、Docker、NAS 管理和播放一机多用；自由度最高，也需要更多调校。</p></article>
-          <article><span data-i18n="v3_tag">最全能</span><h3 data-i18n="v3_title">Apple Silicon Mac mini</h3><p data-i18n="v3_body">播放、浏览、工作和家庭服务兼顾，适合想保留完整电脑体验的人。</p></article>
+          <article><span data-i18n="v3_tag">最全能</span><h3 data-i18n="v3_title">M 芯片 Mac mini</h3><p data-i18n="v3_body">播放、浏览、工作和家庭服务兼顾，适合想保留完整电脑体验的人。</p></article>
+          <article><span data-i18n="v1_tag">最省心</span><h3>Apple TV 4K</h3><p data-i18n="v1_body">流媒体与家庭使用体验最好，本地播放交给成熟的第三方 App。</p></article>
           <article><span data-i18n="v4_tag">最纯粹</span><h3 data-i18n="v4_title">专业蓝光机</h3><p data-i18n="v4_body">面向实体光盘、AV 功放和稳定的影音体验，但用途最单一。</p></article>
         </div>
         <p class="guide-note" data-i18n="guide_note">实际 HDR、Dolby Vision 与音频能力会随芯片、操作系统、驱动、播放器、片源封装和影音设备而变化，购买前请以具体设备规格为准。</p>
@@ -162,19 +163,14 @@
         <h2 data-i18n-html="download_title">让那台小主机，<br>今晚就接管电视。</h2>
       </div>
       <div class="download-actions">
-        <a class="button light-button" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS/Win App <span>↗</span></a>
+        <a class="button light-button" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS / Windows <span>↗</span></a>
         <p data-i18n="download_platforms">Windows x86-64 · macOS Apple Silicon</p>
       </div>
-    </section>
-
-    <section class="safety section-shell">
-      <strong data-i18n="safety_title">只在可信局域网内使用</strong>
-      <p data-i18n="safety_body">TinyPlay 的手机遥控页面没有独立登录验证。请勿将其监听端口暴露到公网；手机与播放器电脑应连接同一个可信家庭网络。</p>
     </section>
   </main>
 
   <footer>
-    <a class="brand" href="#top"><span class="brand-mark">▶</span><span>TinyPlay</span></a>
+    <a class="brand" href="#top"><img class="brand-mark" src="assets/favicon.png" alt=""><span>TinyPlay</span></a>
     <p data-i18n="footer_tagline">Turn the little box into the big screen.</p>
     <div><a href="https://github.com/YangHanqing/tinyplay">GitHub</a><a href="https://github.com/YangHanqing/tinyplay/releases/latest">Releases</a><a href="https://github.com/YangHanqing/tinyplay/blob/main/LICENSE" data-i18n="footer_license">MIT License</a></div>
   </footer>
