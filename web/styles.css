@@ -419,18 +419,16 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .sheet-close { position: absolute; top: 10px; right: 12px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface2); color: var(--text-muted); font-size: 20px; line-height: 1; cursor: pointer; z-index: 2; font-family: inherit; }
 .sheet-close:active { opacity: .75; }
 
-/* ── Playback support entry + user-shareable debug report ───────────────── */
-.playback-issue-btn {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  width: 100%; margin-top: 14px; padding: 14px 18px; border-radius: 14px;
-  border: 1px solid rgba(255,255,255,.07); background: var(--surface2);
-  color: var(--text); font-family: inherit; cursor: pointer; text-align: left;
+/* ── Playback support entry + user-shareable debug report ─────────────────
+   Deliberately understated: this is a rare, diagnostic action, not a normal
+   playback control, so it gets plain muted text rather than a card/button. */
+.playback-issue-link {
+  display: block; width: 100%; margin-top: 10px; padding: 4px 0;
+  border: none; background: none; color: var(--text-muted);
+  font-family: inherit; font-size: 11px; text-align: center;
+  cursor: pointer; opacity: .55; transition: opacity .15s;
 }
-.playback-issue-btn:active { opacity: .72; }
-.playback-issue-btn > span:first-child { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.playback-issue-btn strong { color: #fcd77f; font-size: 13px; font-weight: 750; }
-.playback-issue-btn small { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
-.playback-issue-arrow { color: var(--text-muted); font-size: 18px; }
+.playback-issue-link:hover, .playback-issue-link:active { opacity: .9; }
 .playback-debug-sub { font-size: 12px; color: var(--text-muted); margin: 2px 0 0; }
 .playback-debug-sheet { max-width: 720px; padding: 0 0 20px; }
 .playback-debug-content { padding: 0 14px; }

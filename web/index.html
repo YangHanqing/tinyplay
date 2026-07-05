@@ -282,16 +282,11 @@
             </button>
           </div>
 
-        </div>
+          <!-- Support: copy a redacted debug report to send to the developer.
+               Deliberately understated — this is a rare, diagnostic action. -->
+          <button class="playback-issue-link" id="playback-issue-btn" onclick="openPlaybackDebugSheet()" data-i18n="playbackIssue">Playback issue?</button>
 
-        <!-- Support: copy a redacted debug report to send to the developer -->
-        <button class="playback-issue-btn" id="playback-issue-btn" onclick="openPlaybackDebugSheet()">
-          <span>
-            <strong data-i18n="playbackIssue">Playback issue?</strong>
-            <small data-i18n="playbackIssueSubtitle">Copy a debug report to send to the developer</small>
-          </span>
-          <span class="playback-issue-arrow" aria-hidden="true">&rsaquo;</span>
-        </button>
+        </div>
 
       </div>
     </div>

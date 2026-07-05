@@ -340,6 +340,12 @@ func Settings() map[string]any {
 	return map[string]any{
 		"mpv_cache_secs": NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
 		"language":       NormalizeLanguage(cfg.Language),
+		// The Go file source only implements local/webdav/smb (nfs points the
+		// user at an OS-level mount instead); ftp/sftp exist in the Python
+		// branch but not here. The frontend uses this to hide options it can't
+		// actually serve, rather than letting the user pick a protocol that
+		// always fails at browse time.
+		"supported_file_protocols": []string{"local", "smb", "webdav", "nfs"},
 	}
 }
 

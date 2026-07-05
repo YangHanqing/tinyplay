@@ -62,6 +62,10 @@ let _aspectSheetOpen = false;
 let _currentAspect = 'fit';
 let _loopFile = false;
 let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30 };
+// null = unknown/unrestricted (Python branch never sends this field, and it
+// implements every protocol); an array restricts the file-source dropdown to
+// what this backend can actually browse (see desktop-go's config.Settings()).
+let _supportedFileProtocols = null;
 let _serviceOnline = true;
 let _serviceProbeInFlight = false;
 
@@ -84,10 +88,36 @@ const ASPECT_OPTIONS = [
 function aspectLabel(opt) { return tr(opt.labelKey); }
 function aspectDisplay(opt) { return tr(opt.displayKey); }
 
+/* ── Platform detection ──────────────────────────────────────────────────── */
+function detectPlatformAndPatchI18n() {
+  fetch('/desktop', { method: 'HEAD', cache: 'no-store' }).then(r => {
+    if (r.ok) patchServiceOfflineForDesktop();
+  }).catch(() => {});
+}
+
+function patchServiceOfflineForDesktop() {
+  const zh = window.I18N?.t;
+  if (!zh) return;
+  // Override the key lookup so tr('serviceOfflineBody') returns desktop text.
+  const origT = I18N.t;
+  I18N.t = (key, params) => {
+    if (key === 'serviceOfflineTitle') {
+      return window.I18N.isZh() ? 'TinyPlay 服务不在线' : 'TinyPlay is offline';
+    }
+    if (key === 'serviceOfflineBody') {
+      return window.I18N.isZh()
+        ? '手机页面还在，但现在连不上桌面端服务。请确认 TinyPlay 正在运行。'
+        : 'The remote page is still here, but it cannot reach TinyPlay. Make sure TinyPlay is running on your computer.';
+    }
+    return origT(key, params);
+  };
+}
+
 /* ── Boot ─────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('click', onDocClick);
   registerPWA();
+  detectPlatformAndPatchI18n();
   setupServiceReachability();
 
   await refreshServerSwitcher();
@@ -2572,6 +2602,9 @@ async function loadSettings() {
       seek_backward_secs: Number(settings.seek_backward_secs) || 5,
       seek_forward_secs: Number(settings.seek_forward_secs) || 30,
     };
+    _supportedFileProtocols = Array.isArray(settings.supported_file_protocols)
+      ? settings.supported_file_protocols
+      : null;
     renderSettingsUi();
   } catch (_) {}
 }
@@ -2971,7 +3004,7 @@ function setServerFormType(type) {
 function _renderFileProtocolOptions(selected = 'local') {
   const sel = document.getElementById('form-file-protocol');
   if (!sel) return;
-  const opts = [
+  let opts = [
     ['local', tr('protoLocalOpt')],
     ['smb', tr('protoSmbOpt')],
     ['webdav', 'WebDAV'],
@@ -2979,6 +3012,12 @@ function _renderFileProtocolOptions(selected = 'local') {
     ['sftp', 'SFTP'],
     ['nfs', tr('protoNfsOpt')],
   ];
+  if (_supportedFileProtocols) {
+    // Always keep the currently-selected value visible even if unsupported,
+    // so editing an existing (e.g. previously-configured) source doesn't
+    // silently swap its protocol out from under it.
+    opts = opts.filter(([v]) => _supportedFileProtocols.includes(v) || v === selected);
+  }
   sel.innerHTML = opts.map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${esc(l)}</option>`).join('');
 }
 
