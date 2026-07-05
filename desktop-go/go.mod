@@ -14,8 +14,12 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 )
 
+require github.com/itchyny/volume-go v0.2.2
+
 require (
+	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
+	github.com/moutend/go-wca v0.2.0 // indirect
 	golang.org/x/sys v0.15.0 // indirect
 )

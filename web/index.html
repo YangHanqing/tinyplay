@@ -270,11 +270,6 @@
             </button>
           </div>
 
-          <!-- Player engine hint (only shown on macOS) -->
-          <div class="engine-hint hidden" id="engine-hint">
-            <button class="engine-link" onclick="openEngineSheet()" id="btn-engine-link">Player: mpv</button>
-          </div>
-
         </div>
       </div>
     </div>
@@ -290,6 +285,29 @@
           <div class="segmented-control" id="language-segments">
             <button class="segment-btn" data-lang="zh-CN" onclick="setAppLanguage('zh-CN')">Chinese</button>
             <button class="segment-btn" data-lang="en" onclick="setAppLanguage('en')">English</button>
+          </div>
+        </section>
+
+        <section class="settings-card hidden" id="engine-hint">
+          <div class="settings-card-head">
+            <h2 data-i18n="engineChoiceTitle">Player selection</h2>
+            <p class="engine-sheet-sub" data-i18n="engineChoiceSubtitle">The change applies to the next video.</p>
+          </div>
+          <div class="engine-option-list" id="engine-option-list">
+            <button class="engine-option-row" id="engine-opt-mpv" onclick="setEngine('mpv')">
+              <div class="engine-opt-top">
+                <span class="engine-opt-name">mpv</span>
+                <span class="engine-opt-check" id="engine-check-mpv">✓</span>
+              </div>
+              <p class="engine-opt-desc" data-i18n="mpvEngineDescription">Broad format support with full subtitle, audio-track, and playback-speed controls.</p>
+            </button>
+            <button class="engine-option-row" id="engine-opt-avplayer" onclick="setEngine('avplayer')">
+              <div class="engine-opt-top">
+                <span class="engine-opt-name">Apple Player</span>
+                <span class="engine-opt-check hidden" id="engine-check-avplayer">✓</span>
+              </div>
+              <p class="engine-opt-desc" data-i18n="applePlayerDescription">Uses the Apple system pipeline for Dolby Vision, with fewer advanced controls.</p>
+            </button>
           </div>
         </section>
 
@@ -310,7 +328,6 @@
               </select>
             </div>
           </div>
-          <button class="settings-save-btn" id="seek-save-btn" onclick="saveSeekSettings()">Save settings</button>
           <div class="settings-status" id="seek-settings-status"></div>
         </section>
 
@@ -330,7 +347,6 @@
             <input type="number" id="cache-minutes-input" min="1" max="120" step="1" inputmode="numeric" value="5" oninput="onCacheMinutesInput()">
             <span id="cache-minutes-unit">minutes</span>
           </div>
-          <button class="settings-save-btn" id="settings-save-btn" onclick="saveSettings()">Save settings</button>
           <div class="settings-status" id="settings-status"></div>
         </section>
       </div>
@@ -416,34 +432,6 @@
           <button class="speed-row-btn" data-speed="2"    onclick="setSpeed(2);closeSpeedSheet()"><span>2×</span></button>
           <button class="speed-row-btn" data-speed="2.5"  onclick="setSpeed(2.5);closeSpeedSheet()"><span>2.5×</span></button>
           <button class="speed-row-btn" data-speed="3"    onclick="setSpeed(3);closeSpeedSheet()"><span>3×</span></button>
-        </div>
-      </section>
-    </div>
-
-    <!-- Player engine sheet -->
-    <div class="sheet-backdrop hidden" id="engine-backdrop" onclick="onEngineBackdropClick(event)">
-      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="engine-sheet-title">
-        <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeEngineSheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
-          <h3 id="engine-sheet-title" data-i18n="engineChoiceTitle">Player selection</h3>
-          <p class="engine-sheet-sub" data-i18n="engineChoiceSubtitle">The change applies to the next video.</p>
-        </div>
-        <div class="engine-option-list" id="engine-option-list">
-          <button class="engine-option-row" id="engine-opt-mpv" onclick="setEngine('mpv')">
-            <div class="engine-opt-top">
-              <span class="engine-opt-name">mpv</span>
-              <span class="engine-opt-check" id="engine-check-mpv">✓</span>
-            </div>
-            <p class="engine-opt-desc" data-i18n="mpvEngineDescription">Broad format support with full subtitle, audio-track, and playback-speed controls.</p>
-          </button>
-          <button class="engine-option-row" id="engine-opt-avplayer" onclick="setEngine('avplayer')">
-            <div class="engine-opt-top">
-              <span class="engine-opt-name">Apple Player</span>
-              <span class="engine-opt-check hidden" id="engine-check-avplayer">✓</span>
-            </div>
-            <p class="engine-opt-desc" data-i18n="applePlayerDescription">Uses the Apple system pipeline for Dolby Vision, with fewer advanced controls.</p>
-          </button>
         </div>
       </section>
     </div>

@@ -1,84 +1,63 @@
 # TinyPlay
 
-> A phone-controlled mpv remote for Windows & macOS.
+> Control mpv on your desktop from your phone.
 
-[中文](#中文) | [English](#english)
+[中文说明](README.zh-CN.md)
 
-## 中文
+## Why TinyPlay
 
-TinyPlay 是一个轻量桌面应用，让你使用同一局域网中的手机浏览器浏览媒体库，
-并遥控电脑上的 mpv 播放器。
+A Mac mini or a Windows NUC tucked under the TV makes a great home media
+player: it plays literally any file format, runs whatever apps you want, and
+a small fanless box costs far less than the alternatives — while an Apple TV
+locks you out of a lot of formats and apps, and a dedicated Blu-ray player
+does one thing and nothing else.
 
-### 平台
+The catch is control: picking a movie and adjusting playback speed with a
+mouse and keyboard from the couch is annoying. That's the whole reason
+TinyPlay exists — it turns your phone into the remote, so the computer just
+plays and you never touch a mouse.
 
-- Windows x86-64：系统托盘应用，使用系统 WebView2。
-- macOS：**仅支持 Apple Silicon（M 系列）**，原生 AppKit 菜单栏应用；**不支持 Intel Mac**。
+An Apple TV native version is coming soon — stay tuned.
 
-### 功能
+Under the hood, playback runs on **mpv**, which plays almost anything you
+throw at it — MKV, HEVC, DTS, TrueHD, you name it — with no extra codec
+packs to install.
 
-- 浏览媒体库并发送影片到电脑播放；
-- 播放、暂停、跳转、音量和倍速控制；
-- 音轨、字幕轨、字幕延迟和画面比例控制；
-- 桌面端显示二维码，手机无需安装 App；
-- 发布包自带 mpv。
+## Download
 
-### 开发
+Grab the latest release for your platform from the [Releases page](../../releases/latest).
 
-需要 Go 1.22 或更高版本：
+## Platforms
 
-```sh
-cd desktop-go
-make sync
-go test ./...
-make run
-```
+- **Windows** (x86-64) — system tray app using the system WebView2 runtime.
+- **macOS** — **Apple Silicon (M-series) only**; native AppKit menu-bar app.
+  Intel Macs are not supported.
 
-### 安全
+## Features
 
-本服务面向可信家庭局域网，不应将 HTTP 端口直接暴露到互联网。请勿提交媒体服务器
-凭据、配置文件、签名证书或 Apple 公证密钥。
+- **Browse & play** — scroll your Emby library, resume "recently watched"
+  items, and search across your whole collection, right from the phone's
+  browser.
+- **Full playback control** — play/pause, seek, volume, and speed, all from
+  the phone.
+- **Audio & subtitles** — switch audio and subtitle tracks, nudge subtitle
+  delay, and adjust aspect ratio/zoom, without touching the computer.
+- **System volume control** — control the desktop's system output volume
+  directly from the phone, not just mpv's internal volume.
+- **Zero setup on the phone** — the desktop app shows a QR code; scan it and
+  you're connected. No install, no account.
+- **Runs quietly** — lives in the system tray / menu bar and stays out of the
+  way until you start playback from your phone.
 
-> 当前仍处于 1.0 之前的公开发布准备阶段，源码许可证和完整的二进制第三方许可清单
-> 尚未最终确定。
+## How it fits together
 
----
+A small Go backend runs on the desktop, talking to your Emby server and
+driving mpv over its JSON IPC socket; it serves the same web-based remote UI
+to your phone's browser. Your phone is just the remote — all playback
+happens locally on the computer.
 
-## English
+## License
 
-TinyPlay is a lightweight desktop application that lets a phone browser
-on the same local network browse a media library and control mpv playback on
-the computer.
-
-### Platforms
-
-- Windows x86-64: system tray application using the system WebView2 runtime.
-- macOS: **Apple Silicon (M-series) only** — native AppKit menu-bar app;
-  **Intel Macs are not supported**.
-
-### Features
-
-- Browse a media library and send videos to the desktop player.
-- Control playback, seeking, volume, and speed.
-- Select audio and subtitle tracks and adjust subtitle delay and aspect ratio.
-- Connect from a phone by scanning a QR code; no mobile app is required.
-- Release packages bundle mpv.
-
-### Development
-
-Go 1.22 or newer is required:
-
-```sh
-cd desktop-go
-make sync
-go test ./...
-make run
-```
-
-### Security
-
-The service is intended for trusted home networks. Do not expose its HTTP port
-directly to the public internet. Never commit media-server credentials,
-configuration files, signing certificates, or Apple notarization keys.
-
-> This project is still preparing for its pre-1.0 public release. The source
-> license and complete binary third-party license manifest are not final yet.
+TinyPlay's own source code is released under the [MIT License](LICENSE).
+Bundled third-party components, including mpv, are distributed under their
+own licenses — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

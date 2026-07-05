@@ -525,6 +525,10 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		}
 		p.send([]any{"set_property", "fullscreen", true})
 		p.send([]any{"set_property", "hwdec", "auto-safe"})
+		// The remote's volume slider controls the OS output level (see
+		// internal/sysvolume), so mpv itself is pinned at unity gain —
+		// otherwise the two controls would stack and fight each other.
+		p.send([]any{"set_property", "volume", 100})
 		p.resetAspectOptions()
 	} else {
 		mpvLog := mpvLogPath()
@@ -549,7 +553,15 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 				"--input-ipc-server=" + p.socket,
 				"--no-terminal",
 				"--fullscreen",
+				// Without this, mpv can go fullscreen against the wrong
+				// display's dimensions on multi-monitor setups (e.g. an
+				// ultrawide secondary monitor), leaving black bars on all
+				// sides instead of filling the screen it's actually on.
+				"--fs-screen=current",
 				"--hwdec=auto-safe",
+				// See the set_property call above: the phone's slider drives
+				// the OS volume, so mpv itself always stays at unity gain.
+				"--volume=100",
 			}
 			args = append(args, cacheArgs()...)
 			args = append(args, aspectArgs()...)

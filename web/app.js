@@ -94,6 +94,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadActiveSource();
   await loadSettings();
   fetchEngine();
+  fetchSystemVolume();
 });
 
 function registerPWA() {
@@ -236,16 +237,50 @@ function setSpeed(speed) {
   cmd(['set_property', 'speed', speed]);
 }
 
+// The volume slider controls the OS output level, not mpv's own gain (mpv
+// is pinned at unity gain by the backend) — see docs/CLAUDE.md.
+let _systemVolume = { volume: 80, muted: false };
+
+async function fetchSystemVolume() {
+  try {
+    const d = await api('GET', '/api/system/volume');
+    _systemVolume.volume = Number(d.volume);
+    _systemVolume.muted = Boolean(d.muted);
+    _renderSystemVolumeUi();
+  } catch (_) {}
+}
+
+async function pushSystemVolume(body) {
+  try {
+    const d = await api('POST', '/api/system/volume', body);
+    if (d.volume != null) _systemVolume.volume = Number(d.volume);
+    if (d.muted != null) _systemVolume.muted = Boolean(d.muted);
+    _renderSystemVolumeUi();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function _renderSystemVolumeUi() {
+  const safeVol = Math.max(0, Math.min(100, Math.round(_systemVolume.volume)));
+  _setText('volume-current', _systemVolume.muted ? tr('muted') : `${safeVol}%`);
+  updateVolumeUi(safeVol);
+  const muteBtn = document.getElementById('btn-mute');
+  if (muteBtn) {
+    muteBtn.classList.toggle('active', _systemVolume.muted);
+    muteBtn.setAttribute('aria-label', _systemVolume.muted ? tr('unmute') : tr('muted'));
+  }
+}
+
 function setVolumeByDelta(delta) {
-  const current = Number(_latestProps.volume);
-  const base = Number.isFinite(current) ? current : 80;
+  const base = Number.isFinite(_systemVolume.volume) ? _systemVolume.volume : 80;
   const next = Math.max(0, Math.min(100, Math.round(base + delta)));
-  cmd(['set_property', 'volume', next]);
+  pushSystemVolume({ volume: next });
 }
 
 function setVolume(value) {
   const next = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
-  cmd(['set_property', 'volume', next]);
+  pushSystemVolume({ volume: next });
 }
 
 function onVolumePointer(event) {
@@ -261,8 +296,7 @@ function onVolumePointer(event) {
 }
 
 function toggleMute() {
-  const next = !_latestProps.mute;
-  cmd(['set_property', 'mute', next]);
+  pushSystemVolume({ muted: !_systemVolume.muted });
 }
 
 function openCurrentSeriesSheet() {
@@ -528,6 +562,7 @@ function switchTab(tab) {
   document.getElementById('btn-exit')?.classList.toggle('hidden', tab !== 'remote');
   if (tab !== 'library' && isSearching) cancelSearch();
   if (tab === 'settings') renderSettingsUi();
+  if (tab === 'remote') fetchSystemVolume();
 }
 
 /* ── Playback info polling ────────────────────────────────────────────────── */
@@ -542,10 +577,18 @@ function stopPropPolling() {
   clearTimeout(_propPollTimer);
 }
 
+let _sysVolPollTicks = 0;
+
 function _schedulePropPoll() {
   if (!_propPolling) return;
   _propPollTimer = setTimeout(async () => {
-    if (!document.hidden) await _fetchAndUpdateProps();
+    if (!document.hidden) {
+      await _fetchAndUpdateProps();
+      // System volume can change outside the app (physical keys, another
+      // app); refresh it every ~5s while the remote tab is open, not every
+      // tick — each check spawns a native OS call.
+      if (_activeTab === 'remote' && ++_sysVolPollTicks % 5 === 0) fetchSystemVolume();
+    }
     _schedulePropPoll();
   }, 1000);
 }
@@ -617,15 +660,10 @@ function _applyProps(p) {
 
   // Status & health
   const paused = p['pause'];
-  const muted  = p['mute'];
-  const vol    = p['volume'];
   const speed  = p['speed'];
   const subDly = p['sub-delay']   ?? 0;
   const audDly = p['audio-delay'] ?? 0;
 
-  const safeVol = vol != null ? Math.max(0, Math.min(100, Math.round(Number(vol)))) : null;
-  _setText('volume-current', muted ? tr('muted') : (safeVol != null ? `${safeVol}%` : '--'));
-  if (safeVol != null) updateVolumeUi(safeVol);
   updateSpeedButtons(speed);
 
   // Health row
@@ -691,12 +729,6 @@ function _applyProps(p) {
   _setText('tag-sub', subNoneActive ? tr('subtitlesOff') : (subTrack && subTracks.length > 1 ? _trackLbl(subTrack) : ''));
 
   document.getElementById('play-loading-tag')?.classList.add('hidden');
-
-  const muteBtn = document.getElementById('btn-mute');
-  if (muteBtn) {
-    muteBtn.classList.toggle('active', Boolean(muted));
-    muteBtn.setAttribute('aria-label', muted ? tr('unmute') : tr('muted'));
-  }
 
   // Pause/play button icon
   const pauseBtn = document.getElementById('btn-pause-play');
@@ -2536,11 +2568,15 @@ function setAppLanguage(lang) {
   window.location.reload();
 }
 
+let _settingsSaveTimer = null;
+
 function setCacheMinutes(minutes) {
   const safe = Math.max(1, Math.min(120, Math.round(Number(minutes) || 30)));
   _settings.mpv_cache_secs = safe * 60;
   _setSettingsStatus('');
   renderSettingsUi();
+  clearTimeout(_settingsSaveTimer);
+  _settingsSaveTimer = setTimeout(saveSettings, 200);
 }
 
 function onCacheMinutesInput() {
@@ -2549,11 +2585,11 @@ function onCacheMinutesInput() {
   _settings.mpv_cache_secs = minutes * 60;
   _setSettingsStatus('');
   renderSettingsUi();
+  clearTimeout(_settingsSaveTimer);
+  _settingsSaveTimer = setTimeout(saveSettings, 200);
 }
 
 async function saveSettings() {
-  const btn = document.getElementById('settings-save-btn');
-  if (btn) btn.disabled = true;
   try {
     const saved = await api('PUT', '/api/settings', {
       mpv_cache_secs: Math.max(60, Math.min(7200, Math.round(Number(_settings.mpv_cache_secs) || 300))),
@@ -2563,8 +2599,6 @@ async function saveSettings() {
     _setSettingsStatus(tr('settingsSaved'), false);
   } catch (e) {
     _setSettingsStatus(e.message || tr('settingsSaveFailed'), true);
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
 
@@ -2575,6 +2609,8 @@ function _setSettingsStatus(message, isError = false) {
   el.className = 'settings-status' + (message ? (isError ? ' err' : ' ok') : '');
 }
 
+let _seekSettingsSaveTimer = null;
+
 function onSeekSettingChange() {
   const back = Number(document.getElementById('seek-backward-select')?.value) || 5;
   const fwd = Number(document.getElementById('seek-forward-select')?.value) || 30;
@@ -2582,11 +2618,11 @@ function onSeekSettingChange() {
   _settings.seek_forward_secs = fwd;
   _setSeekSettingsStatus('');
   renderSettingsUi();
+  clearTimeout(_seekSettingsSaveTimer);
+  _seekSettingsSaveTimer = setTimeout(saveSeekSettings, 200);
 }
 
 async function saveSeekSettings() {
-  const btn = document.getElementById('seek-save-btn');
-  if (btn) btn.disabled = true;
   try {
     const saved = await api('PUT', '/api/settings', {
       seek_backward_secs: _settings.seek_backward_secs || 5,
@@ -2598,8 +2634,6 @@ async function saveSeekSettings() {
     _setSeekSettingsStatus(tr('settingsSaved'), false);
   } catch (e) {
     _setSeekSettingsStatus(e.message || tr('settingsSaveFailed'), true);
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
 
@@ -3014,10 +3048,6 @@ async function fetchEngine() {
 }
 
 function _updateEngineUI() {
-  const label = _currentEngine === 'avplayer' ? 'Apple Player' : 'mpv';
-  const btn = document.getElementById('btn-engine-link');
-  if (btn) btn.textContent = tr('playerLabel', { name: label });
-
   const checkMpv = document.getElementById('engine-check-mpv');
   const checkAv  = document.getElementById('engine-check-avplayer');
   const rowMpv   = document.getElementById('engine-opt-mpv');
@@ -3036,25 +3066,11 @@ function _updateEngineUI() {
   }
 }
 
-function openEngineSheet() {
-  _updateEngineUI();
-  document.getElementById('engine-backdrop').classList.remove('hidden');
-  document.body.classList.add('sheet-open');
-}
-function closeEngineSheet() {
-  document.getElementById('engine-backdrop').classList.add('hidden');
-  document.body.classList.remove('sheet-open');
-}
-function onEngineBackdropClick(event) {
-  if (event.target.id === 'engine-backdrop') closeEngineSheet();
-}
-
 async function setEngine(engine) {
   try {
     const d = await api('POST', '/api/desktop/engine', { engine });
     _currentEngine = d.engine || 'mpv';
     _updateEngineUI();
-    closeEngineSheet();
   } catch (e) {
     toast(e.message || tr('engineSwitchFailed'), true);
   }

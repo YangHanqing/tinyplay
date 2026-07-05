@@ -68,6 +68,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/desktop/engine", s.engineGet)
 	mux.HandleFunc("POST /api/desktop/engine", s.engineSet)
 
+	// ── System output volume (remote's volume slider) ──
+	mux.HandleFunc("GET /api/system/volume", s.systemVolumeGet)
+	mux.HandleFunc("POST /api/system/volume", s.systemVolumeSet)
+
 	// ── Frontend (embedded) ──
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.webFS))))
 	mux.HandleFunc("GET /manifest.webmanifest", s.webManifest)
