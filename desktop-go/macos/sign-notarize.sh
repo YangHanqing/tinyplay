@@ -89,11 +89,6 @@ if [ -f "$CORE_BIN" ]; then
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$CORE_BIN"
 fi
 
-AVPLAYER_BIN="$APP/Contents/Resources/avplayer-helper"
-if [ -f "$AVPLAYER_BIN" ]; then
-    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$AVPLAYER_BIN"
-fi
-
 echo "==> signing main executable + bundle"
 codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/TinyPlay"
 codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP"

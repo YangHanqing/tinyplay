@@ -22,12 +22,16 @@ private func L(_ key: String) -> String {
 	let preference = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
 	let zh = preference == "zh-CN" || (preference == "auto" && Locale.current.language.languageCode?.identifier.lowercased().hasPrefix("zh") == true)
 	let table: [String: (String, String)] = [
-        "open_main": ("\u{6253}\u{5F00}\u{4E3B}\u{754C}\u{9762}", "Open Remote"),
+        "open_main": ("\u{6253}\u{5F00}\u{4E3B}\u{754C}\u{9762}", "Open Main Interface"),
         "open_logs": ("\u{6253}\u{5F00}\u{65E5}\u{5FD7}\u{76EE}\u{5F55}", "Open Logs"),
 		"quit": ("\u{9000}\u{51FA}", "Quit"),
 		"language": ("\u{8BED}\u{8A00}", "Language"),
 		"automatic": ("\u{81EA}\u{52A8}", "Automatic"),
 		"chinese": ("\u{4E2D}\u{6587}", "Chinese"),
+		"about": ("\u{5173}\u{4E8E} TinyPlay", "About TinyPlay"),
+		"version_label": ("\u{7248}\u{672C}", "Version"),
+		"third_party_notices": ("\u{67E5}\u{770B}\u{7B2C}\u{4E09}\u{65B9}\u{58F0}\u{660E}", "View Third-Party Notices"),
+		"ok": ("\u{597D}\u{7684}", "OK"),
     ]
     guard let pair = table[key] else { return key }
     return zh ? pair.0 : pair.1
@@ -37,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
     private let core = Process()
-    private var coreURL: String = "http://127.0.0.1:8080"
+    private var coreURL: String = "http://127.0.0.1:1980"
     private let urlFile = NSTemporaryDirectory() + "tvremote-url-\(ProcessInfo.processInfo.processIdentifier).txt"
 	private var lanBrowser: NWBrowser?
 	private var webView: WKWebView?
@@ -140,8 +144,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		language.submenu = languageMenu
 		menu.addItem(language)
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: L("about"), action: #selector(showAbout), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L("quit"), action: #selector(quit), keyEquivalent: "q"))
 		statusItem.menu = menu
+	}
+
+	/// Version comes from Info.plist (CFBundleShortVersionString/CFBundleVersion),
+	/// set by build-app.sh's VERSION at packaging time.
+	@objc private func showAbout() {
+		let info = Bundle.main.infoDictionary
+		let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+		let build = info?["CFBundleVersion"] as? String ?? shortVersion
+		let alert = NSAlert()
+		alert.messageText = "TinyPlay"
+		alert.informativeText = "\(L("version_label")) \(shortVersion) (\(build))"
+		alert.addButton(withTitle: L("ok"))
+		alert.addButton(withTitle: L("third_party_notices"))
+		NSApp.activate(ignoringOtherApps: true)
+		if alert.runModal() == .alertSecondButtonReturn {
+			openThirdPartyNotices()
+		}
+	}
+
+	private func openThirdPartyNotices() {
+		guard let url = Bundle.main.resourceURL?.appendingPathComponent("THIRD_PARTY_NOTICES.md") else { return }
+		NSWorkspace.shared.open(url)
 	}
 
 	@objc private func changeLanguage(_ sender: NSMenuItem) {

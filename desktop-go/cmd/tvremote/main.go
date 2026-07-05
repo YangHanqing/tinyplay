@@ -25,6 +25,10 @@ import (
 	"tvremote/internal/server"
 )
 
+// version is set at build time via -ldflags "-X main.version=1.2.3" (see
+// build-app.sh / release.yml); it defaults to "dev" for local `go run`/`go build`.
+var version = "dev"
+
 func main() {
 	logPath := setupLogging()
 	guardSingleInstance() // exits a duplicate Windows launch before doing any work
@@ -39,9 +43,9 @@ func main() {
 	wireReporters(p)
 
 	// Bind before doing anything else so we know the real port: if the
-	// configured one is taken (e.g. the user already runs the Python build on
-	// 8080), fall back to a free port instead of crashing. The actual port is
-	// then advertised everywhere (QR, intro page, handshake file).
+	// configured one is taken (e.g. the user already runs another build on
+	// the same port), fall back to a free port instead of crashing. The actual
+	// port is then advertised everywhere (QR, intro page, handshake file).
 	ln, port := listen(cfg.ListenPort)
 
 	srv := server.New(p)
@@ -123,7 +127,7 @@ func listen(want int) (net.Listener, int) {
 
 func candidatePorts(want int) []int {
 	if want <= 0 {
-		want = 8080
+		want = 1980
 	}
 	ports := make([]int, 0, 6)
 	for i := 0; i < 6; i++ {

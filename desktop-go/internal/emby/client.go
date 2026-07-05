@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -41,20 +40,11 @@ type Client struct {
 	server *config.Server
 }
 
-// PlayURLChoice is the selected Emby media source plus the stream traits that
-// affect player selection. The URL itself may contain a token; don't log it.
+// PlayURLChoice is the selected Emby media source's direct-play URL. The URL
+// itself may contain a token; don't log it.
 type PlayURLChoice struct {
 	URL           string
 	MediaSourceID string
-	Container     string
-	DVProfile5    bool
-	VideoCodec    string // e.g. "hevc", "h264"; empty if unknown
-	VideoRange    string // e.g. "SDR", "HDR", "DOVI"; empty if unknown
-}
-
-func (p PlayURLChoice) IsMatroska() bool {
-	c := normalizeContainer(p.Container)
-	return c == "mkv" || c == "matroska"
 }
 
 // FromActive returns a client bound to the active server, or an error if none.
@@ -454,28 +444,6 @@ func defaultDeviceProfile() map[string]any {
 	}
 }
 
-// avplayerDeviceProfile is used only for the macOS Dolby Vision P5 fallback. It
-// asks Emby to REMUX (stream-copy, not re-encode) the HEVC+DV bitstream into an
-// HLS/TS container that AVPlayer can read. hevc/eac3/ac3 are listed as allowed
-// codecs so Emby copies the streams untouched — the DV RPU is preserved and
-// there is no quality loss; only the container changes. mkv is intentionally
-// NOT a direct-play container here (AVPlayer can't demux it), which forces Emby
-// to emit a TranscodingUrl that does the copy-remux.
-func avplayerDeviceProfile() map[string]any {
-	return map[string]any{
-		"MaxStreamingBitrate": 200000000,
-		"DirectPlayProfiles": []any{
-			map[string]any{"Container": "mp4,m4v,mov", "Type": "Video",
-				"VideoCodec": "hevc,h264", "AudioCodec": "aac,ac3,eac3,alac"},
-		},
-		"TranscodingProfiles": []any{
-			map[string]any{"Container": "ts", "Type": "Video", "Protocol": "hls",
-				"VideoCodec": "hevc,h264", "AudioCodec": "eac3,ac3,aac",
-				"Context": "Streaming"},
-		},
-	}
-}
-
 func (c *Client) playbackInfoProfile(itemID string, profile map[string]any) (map[string]any, error) {
 	body := map[string]any{"DeviceProfile": profile}
 	q := url.Values{
@@ -550,10 +518,7 @@ func (c *Client) absolutizePlayURL(pathOrURL string) string {
 	return u
 }
 
-// ChoosePlayURL returns the direct-play URL plus source traits. DVProfile5 is
-// true when the chosen source is single-layer Dolby Vision Profile 5 (no HDR10
-// fallback) — the format mpv renders with a purple tint on macOS. The caller
-// uses it to decide whether to take the narrow native fallback path.
+// ChoosePlayURL returns the direct-play URL for the chosen media source.
 // MediaSourceID can differ from the item id and must be reported to Emby.
 func (c *Client) ChoosePlayURL(itemID string) (PlayURLChoice, error) {
 	info, err := c.playbackInfo(itemID)
@@ -571,16 +536,10 @@ func (c *Client) ChoosePlayURL(itemID string) (PlayURLChoice, error) {
 		mediaSourceID = itemID
 	}
 	container := normalizeContainer(strs(source["Container"]))
-	dvP5 := sourceIsDVProfile5(source)
-	videoCodec, videoRange := sourceVideoInfo(source)
 	if direct := strs(source["DirectStreamUrl"]); direct != "" {
 		return PlayURLChoice{
 			URL:           c.absolutizePlayURL(direct),
 			MediaSourceID: mediaSourceID,
-			Container:     container,
-			DVProfile5:    dvP5,
-			VideoCodec:    videoCodec,
-			VideoRange:    videoRange,
 		}, nil
 	}
 	u, err := c.makeURL("/emby/Videos/"+url.PathEscape(itemID)+"/stream."+container, true,
@@ -588,95 +547,7 @@ func (c *Client) ChoosePlayURL(itemID string) (PlayURLChoice, error) {
 	return PlayURLChoice{
 		URL:           u,
 		MediaSourceID: mediaSourceID,
-		Container:     container,
-		DVProfile5:    dvP5,
-		VideoCodec:    videoCodec,
-		VideoRange:    videoRange,
 	}, err
-}
-
-// sourceVideoInfo returns the codec and VideoRange of the first video stream in
-// the MediaSource. Both may be empty if Emby did not populate the fields.
-func sourceVideoInfo(source map[string]any) (codec, videoRange string) {
-	streams, _ := source["MediaStreams"].([]any)
-	for _, s := range streams {
-		m, _ := s.(map[string]any)
-		if m == nil || !strings.EqualFold(strs(m["Type"]), "Video") {
-			continue
-		}
-		codec = strings.ToLower(strs(m["Codec"]))
-		videoRange = strs(firstString(m, "VideoRange", "VideoRangeType"))
-		return
-	}
-	return
-}
-
-// sourceIsDVProfile5 reports whether the source's video stream is Dolby Vision
-// Profile 5. Emby metadata varies by server/version, so we check explicit
-// DvProfile first, then codec/profile text (dvhe.05/dvh1.05/P5), then a narrow
-// DOVI-only heuristic. JSON numbers decode to float64.
-func sourceIsDVProfile5(source map[string]any) bool {
-	if n, ok := dvProfileNumber(firstString(source,
-		"DvProfile", "DVProfile", "DolbyVisionProfile", "DoviProfile", "DoviProfileNumber",
-	)); ok {
-		return n == 5
-	}
-	if n, ok := dvProfileFromText(mediaStreamDVText(source)); ok {
-		return n == 5
-	}
-	if doviOnlyRange(source) {
-		return true
-	}
-
-	streams, _ := source["MediaStreams"].([]any)
-	for _, s := range streams {
-		m, _ := s.(map[string]any)
-		if m == nil || !strings.EqualFold(strs(m["Type"]), "Video") {
-			continue
-		}
-		if n, ok := dvProfileNumber(m["DvProfile"]); ok {
-			return n == 5
-		}
-		if n, ok := dvProfileNumber(firstString(m,
-			"DVProfile", "DolbyVisionProfile", "DoviProfile", "DoviProfileNumber",
-		)); ok {
-			return n == 5
-		}
-		if n, ok := dvProfileFromText(mediaStreamDVText(m)); ok {
-			return n == 5
-		}
-		if doviOnlyRange(m) {
-			return true
-		}
-	}
-	return false
-}
-
-// NativePlayURL asks Emby for a remuxed (stream-copy) HLS URL that AVPlayer can
-// play with Apple's native Dolby Vision decoder. Returns ok=false if Emby
-// doesn't offer a usable stream, in which case the caller should fall back to
-// the normal mpv URL. Used only on macOS for DV Profile 5 content.
-func (c *Client) NativePlayURL(itemID string) (string, string, bool) {
-	info, err := c.playbackInfoProfile(itemID, avplayerDeviceProfile())
-	if err != nil {
-		return "", "", false
-	}
-	sources, _ := info["MediaSources"].([]any)
-	if len(sources) == 0 {
-		return "", "", false
-	}
-	source, _ := sources[0].(map[string]any)
-	mediaSourceID := firstString(source, "Id", "MediaSourceId")
-	if mediaSourceID == "" {
-		mediaSourceID = itemID
-	}
-	if t := strs(source["TranscodingUrl"]); t != "" {
-		return c.absolutizePlayURL(t), mediaSourceID, true
-	}
-	if d := strs(source["DirectStreamUrl"]); d != "" {
-		return c.absolutizePlayURL(d), mediaSourceID, true
-	}
-	return "", "", false
 }
 
 // ── Playback session reporting (fire-and-forget) ─────────────────────────────
@@ -712,8 +583,6 @@ func (c *Client) ReportStopped(itemID, sessionID string, posTicks int64, mediaSo
 	})
 }
 
-var dvProfileTextRe = regexp.MustCompile(`(?i)\b(?:dv|dovi|dolby\s*vision|dvhe|dvh1)[\w .:_-]{0,32}(?:profile|p)?\s*0?([0-9]{1,2})\b|\b(?:profile|p)\s*0?([0-9]{1,2})\b[\w .:_-]{0,32}(?:dv|dovi|dolby\s*vision)\b`)
-
 func normalizeContainer(container string) string {
 	container = strings.ToLower(strings.TrimSpace(strings.Split(container, ",")[0]))
 	switch container {
@@ -722,85 +591,6 @@ func normalizeContainer(container string) string {
 	default:
 		return container
 	}
-}
-
-func dvProfileNumber(v any) (int, bool) {
-	switch x := v.(type) {
-	case float64:
-		return int(x), x > 0
-	case int:
-		return x, x > 0
-	case json.Number:
-		n, err := x.Int64()
-		return int(n), err == nil && n > 0
-	case string:
-		if n, err := strconv.Atoi(strings.TrimSpace(x)); err == nil {
-			return n, n > 0
-		}
-		return dvProfileFromText(x)
-	default:
-		return 0, false
-	}
-}
-
-func dvProfileFromText(text string) (int, bool) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return 0, false
-	}
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, "dvhe.05") || strings.Contains(lower, "dvh1.05") ||
-		strings.Contains(lower, "dvav.05") || strings.Contains(lower, "dovi p5") ||
-		strings.Contains(lower, "dolby vision p5") || strings.Contains(lower, "profile 5") ||
-		strings.Contains(lower, "profile:5") || strings.Contains(lower, "profile=5") {
-		return 5, true
-	}
-	if !strings.Contains(lower, "dovi") && !strings.Contains(lower, "dolby") &&
-		!strings.Contains(lower, "dvhe") && !strings.Contains(lower, "dvh1") &&
-		!strings.Contains(lower, "dvav") {
-		return 0, false
-	}
-	m := dvProfileTextRe.FindStringSubmatch(text)
-	if len(m) == 0 {
-		return 0, false
-	}
-	for _, group := range m[1:] {
-		if group == "" {
-			continue
-		}
-		n, err := strconv.Atoi(group)
-		return n, err == nil
-	}
-	return 0, false
-}
-
-func mediaStreamDVText(m map[string]any) string {
-	keys := []string{
-		"CodecTag", "CodecTagString", "Profile", "VideoProfile", "DisplayTitle",
-		"Title", "VideoRange", "VideoRangeType", "DvType", "DolbyVisionType",
-	}
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if s := strs(m[key]); s != "" {
-			parts = append(parts, s)
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
-func doviOnlyRange(m map[string]any) bool {
-	text := strings.ToLower(mediaStreamDVText(m))
-	if !strings.Contains(text, "dovi") && !strings.Contains(text, "dolby vision") {
-		return false
-	}
-	if strings.Contains(text, "hdr10") || strings.Contains(text, "hlg") ||
-		strings.Contains(text, "hybrid") || strings.Contains(text, "profile 7") ||
-		strings.Contains(text, "profile 8") || strings.Contains(text, "dvhe.07") ||
-		strings.Contains(text, "dvhe.08") || strings.Contains(text, "dvh1.07") ||
-		strings.Contains(text, "dvh1.08") {
-		return false
-	}
-	return true
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────

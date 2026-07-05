@@ -12,10 +12,9 @@ import (
 
 // Server holds the shared dependencies for the HTTP handlers.
 type Server struct {
-	player       *player.Player
-	webFS        fs.FS
-	port         int  // the actual bound port (may differ from config if it was taken)
-	preferNative bool // true → use AVPlayer on macOS; toggled via /api/desktop/engine
+	player *player.Player
+	webFS  fs.FS
+	port   int // the actual bound port (may differ from config if it was taken)
 }
 
 // New builds the server. The player's reporters should already be wired.
@@ -50,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/player/command", s.playerCommand)
 	mux.HandleFunc("POST /api/player/stop", s.playerStop)
 	mux.HandleFunc("GET /api/player/props", s.playerProps)
+	mux.HandleFunc("GET /api/player/debug-report", s.playerDebugReport)
 
 	// ── Emby ──
 	mux.HandleFunc("GET /api/emby/libraries", s.embyLibraries)
@@ -67,10 +67,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /desktop", s.desktopPage)
 	mux.HandleFunc("GET /desktop/qr.png", s.desktopQR)
 	mux.HandleFunc("GET /desktop/open-logs", s.openLogs)
-
-	// ── Player engine picker (macOS AVPlayer vs mpv) ──
-	mux.HandleFunc("GET /api/desktop/engine", s.engineGet)
-	mux.HandleFunc("POST /api/desktop/engine", s.engineSet)
 
 	// ── System output volume (remote's volume slider) ──
 	mux.HandleFunc("GET /api/system/volume", s.systemVolumeGet)

@@ -152,7 +152,7 @@ func Load() *Config {
 func loadLocked() *Config {
 	cfg := &Config{
 		Servers:      []*Server{},
-		ListenPort:   8080,
+		ListenPort:   1980,
 		MpvPipe:      `\\.\pipe\mpvsocket`,
 		MpvExe:       "mpv",
 		MpvCacheSecs: DefaultMpvCacheSecs,
@@ -172,8 +172,10 @@ func loadLocked() *Config {
 		}
 	}
 	cfg.Language = NormalizeLanguage(cfg.Language)
-	if cfg.ListenPort == 0 {
-		cfg.ListenPort = 8080
+	// 8080 was the old shared default across all three branches; treat a config
+	// still carrying it as unset so existing installs move to the new default.
+	if cfg.ListenPort == 0 || cfg.ListenPort == 8080 {
+		cfg.ListenPort = 1980
 	}
 	if cfg.MpvExe == "" {
 		cfg.MpvExe = "mpv"

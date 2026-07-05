@@ -25,7 +25,6 @@ type Media interface {
 	BackdropBytes(id string, maxHeight, index int) ([]byte, string)
 	ChoosePlayURL(id string) (PlayChoice, error)
 	ResumePositionSeconds(id string) float64
-	NativePlayURL(id string) (string, string, bool)
 	ReportStart(id, session, source string)
 	ReportProgress(id, session string, ticks int64, paused bool, source string)
 	ReportStopped(id, session string, ticks int64, source string)
@@ -56,9 +55,8 @@ func (m *embyMedia) ChoosePlayURL(a string) (PlayChoice, error) {
 	x, e := m.c.ChoosePlayURL(a)
 	return PlayChoice{x.URL, x.MediaSourceID}, e
 }
-func (m *embyMedia) ResumePositionSeconds(a string) float64        { return m.c.ResumePositionSeconds(a) }
-func (m *embyMedia) NativePlayURL(a string) (string, string, bool) { return m.c.NativePlayURL(a) }
-func (m *embyMedia) ReportStart(a, b, c string)                    { m.c.ReportStart(a, b, c) }
+func (m *embyMedia) ResumePositionSeconds(a string) float64 { return m.c.ResumePositionSeconds(a) }
+func (m *embyMedia) ReportStart(a, b, c string)             { m.c.ReportStart(a, b, c) }
 func (m *embyMedia) ReportProgress(a, b string, c int64, d bool, e string) {
 	m.c.ReportProgress(a, b, c, d, e)
 }
@@ -86,9 +84,8 @@ func (m *plexMedia) ChoosePlayURL(a string) (PlayChoice, error) {
 	x, e := m.c.ChoosePlayURL(a)
 	return PlayChoice{x.URL, x.MediaSourceID}, e
 }
-func (m *plexMedia) ResumePositionSeconds(a string) float64        { return m.c.ResumePositionSeconds(a) }
-func (m *plexMedia) NativePlayURL(a string) (string, string, bool) { return "", "", false }
-func (m *plexMedia) ReportStart(a, b, c string)                    { m.c.ReportStart(a, b, c) }
+func (m *plexMedia) ResumePositionSeconds(a string) float64 { return m.c.ResumePositionSeconds(a) }
+func (m *plexMedia) ReportStart(a, b, c string)             { m.c.ReportStart(a, b, c) }
 func (m *plexMedia) ReportProgress(a, b string, c int64, d bool, e string) {
 	m.c.ReportProgress(a, b, c, d, e)
 }

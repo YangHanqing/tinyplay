@@ -4,6 +4,7 @@
 
 WEB_SRC := ../web
 DIST    := internal/webui/dist
+VERSION ?= 0.0.0-dev
 
 .PHONY: sync tidy run build-core-mac build-core-win build-app-mac clean
 
@@ -23,11 +24,11 @@ run: sync
 
 ## build-core-mac: the macOS arm64 core binary (the SwiftUI app bundles this)
 build-core-mac: sync
-	GOOS=darwin GOARCH=arm64 go build -o build/tvremote-core-darwin-arm64 ./cmd/tvremote
+	GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=$(VERSION)" -o build/tvremote-core-darwin-arm64 ./cmd/tvremote
 
 ## build-core-win: the Windows exe (tray + WebView2 shell, no console window)
 build-core-win: sync
-	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o build/TinyPlay.exe ./cmd/tvremote
+	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -X main.version=$(VERSION)" -o build/TinyPlay.exe ./cmd/tvremote
 
 ## build-app-mac: assemble the native .app around the core (mpv via PATH unless
 ## MPV_DIR is set). CI sets MPV_DIR to a self-contained mpv; locally you can omit

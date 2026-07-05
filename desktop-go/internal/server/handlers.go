@@ -3,10 +3,8 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"net/url"
-	"runtime"
 	"strconv"
 
 	"tvremote/internal/config"
@@ -325,22 +323,10 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 	url := choice.URL
 	mediaSourceID := choice.MediaSourceID
 
-	// If the user has selected AVPlayer in the engine picker, try to get an
-	// Emby remux URL that AVPlayer can play. Fall back to the direct URL if
-	// Emby can't produce one (AVPlayer still attempts to play it).
-	useNative := s.preferNative && runtime.GOOS == "darwin"
-	if useNative && client.Kind() != "plex" {
-		if nativeURL, nativeMSID, ok := client.NativePlayURL(req.ItemID); ok {
-			url, mediaSourceID = nativeURL, nativeMSID
-		}
-		log.Printf("Using Apple Player, MediaSourceId=%s", mediaSourceID)
-	}
-
 	startSeconds := client.ResumePositionSeconds(req.ItemID)
 
 	opts := playOpts(req.ItemID, req.SeriesID, req.SeasonID,
 		req.Title, req.SeriesTitle, req.EpisodeLabel, req.PosterItemID, startSeconds, mediaSourceID)
-	opts.UseNative = useNative
 	result := s.player.Play(url, opts)
 
 	if ok, _ := result["ok"].(bool); ok {
@@ -458,41 +444,6 @@ func (s *Server) filesStream(w http.ResponseWriter, r *http.Request) {
 	if err := c.Serve(w, r, r.URL.Query().Get("path")); err != nil {
 		writeErr(w, r, err)
 	}
-}
-
-// ── Player engine picker ──────────────────────────────────────────────────────
-
-func (s *Server) engineGet(w http.ResponseWriter, r *http.Request) {
-	engine := "mpv"
-	if s.preferNative {
-		engine = "avplayer"
-	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"engine":   engine,
-		"platform": runtime.GOOS,
-	})
-}
-
-func (s *Server) engineSet(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Engine string `json:"engine"`
-	}
-	if !decode(r, &req) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "invalid body"})
-		return
-	}
-	switch req.Engine {
-	case "avplayer":
-		s.preferNative = true
-	default:
-		s.preferNative = false
-	}
-	engine := "mpv"
-	if s.preferNative {
-		engine = "avplayer"
-	}
-	log.Printf("Player engine switched to: %s", engine)
-	writeJSON(w, http.StatusOK, map[string]string{"engine": engine})
 }
 
 // ── System volume ─────────────────────────────────────────────────────────────

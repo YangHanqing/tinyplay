@@ -51,7 +51,6 @@ func (p *Player) updateScreensaver() {
 
 	p.mu.Lock()
 	ctx := p.ctx
-	nativeMode := p.nativeMode
 	p.mu.Unlock()
 
 	p.propsMu.Lock()
@@ -66,7 +65,7 @@ func (p *Player) updateScreensaver() {
 	}
 	p.propsMu.Unlock()
 
-	if !running || nativeMode || ctx.ItemID == "" || !pausedOK || !paused {
+	if !running || ctx.ItemID == "" || !pausedOK || !paused {
 		p.screensaverMu.Lock()
 		p.screensaver.pauseStarted = time.Time{}
 		p.screensaverMu.Unlock()

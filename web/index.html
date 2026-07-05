@@ -77,6 +77,18 @@
         </button>
       </div>
 
+      <!-- No media source configured yet -->
+      <div class="remote-empty hidden" id="lib-empty-state">
+        <svg class="remote-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <ellipse cx="12" cy="5" rx="8" ry="3"/>
+          <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/>
+          <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>
+        </svg>
+        <div class="remote-empty-title" data-i18n="noMediaSourceYet">No media source yet</div>
+        <div class="remote-empty-hint" data-i18n="noMediaSourceHint">Add an Emby, Jellyfin, Plex, or network folder to start browsing your library</div>
+        <button class="remote-empty-btn" onclick="openServerForm()" data-i18n="addMediaSource">Add media source</button>
+      </div>
+
       <!-- Home view -->
       <div id="lib-home-view">
         <!-- Recent -->
@@ -271,7 +283,44 @@
           </div>
 
         </div>
+
+        <!-- Support: copy a redacted debug report to send to the developer -->
+        <button class="playback-issue-btn" id="playback-issue-btn" onclick="openPlaybackDebugSheet()">
+          <span>
+            <strong data-i18n="playbackIssue">Playback issue?</strong>
+            <small data-i18n="playbackIssueSubtitle">Copy a debug report to send to the developer</small>
+          </span>
+          <span class="playback-issue-arrow" aria-hidden="true">&rsaquo;</span>
+        </button>
+
       </div>
+    </div>
+
+    <!-- User-shareable playback debug report -->
+    <div class="sheet-backdrop hidden" id="playback-debug-backdrop" onclick="onPlaybackDebugBackdropClick(event)">
+      <section class="video-sheet playback-debug-sheet" role="dialog" aria-modal="true" aria-labelledby="playback-debug-title">
+        <div class="sheet-handle"></div>
+        <div class="media-select-head">
+          <h3 id="playback-debug-title" data-i18n="playbackDebugTitle">Playback debug report</h3>
+          <p class="playback-debug-sub" id="playback-debug-subtitle" data-i18n="playbackDebugSubtitle">Copy playback details and recent logs to help diagnose the issue.</p>
+        </div>
+        <div class="playback-debug-content">
+          <div class="playback-debug-guide">
+            <strong id="playback-debug-guide-title" data-i18n="playbackDebugGuideTitle">How to report an issue</strong>
+            <ol>
+              <li id="playback-debug-step-copy" data-i18n="playbackDebugStepCopy">Select "Copy debug report" below.</li>
+              <li id="playback-debug-step-describe" data-i18n="playbackDebugStepDescribe">Email tinyday.app@gmail.com describing what happened, when it occurred, and the steps that led to it.</li>
+              <li id="playback-debug-step-paste" data-i18n="playbackDebugStepPaste">Paste the copied report at the end of the email.</li>
+            </ol>
+          </div>
+          <p class="playback-debug-privacy" id="playback-debug-privacy" data-i18n="playbackDebugPrivacy">Request headers and URL credentials are redacted.</p>
+          <pre class="playback-debug-preview" id="playback-debug-preview" data-i18n="playbackDebugLoading">Generating debug report...</pre>
+          <div class="playback-debug-actions">
+            <span class="playback-debug-status" id="playback-debug-status" role="status" aria-live="polite"></span>
+            <button class="playback-debug-copy" id="playback-debug-copy" type="button" onclick="copyPlaybackDebugReport()" data-i18n="playbackDebugCopy">Copy debug report</button>
+          </div>
+        </div>
+      </section>
     </div>
 
     <!-- Settings tab -->
@@ -285,29 +334,6 @@
           <div class="segmented-control" id="language-segments">
             <button class="segment-btn" data-lang="zh-CN" onclick="setAppLanguage('zh-CN')">Chinese</button>
             <button class="segment-btn" data-lang="en" onclick="setAppLanguage('en')">English</button>
-          </div>
-        </section>
-
-        <section class="settings-card hidden" id="engine-hint">
-          <div class="settings-card-head">
-            <h2 data-i18n="engineChoiceTitle">Player selection</h2>
-            <p class="engine-sheet-sub" data-i18n="engineChoiceSubtitle">The change applies to the next video.</p>
-          </div>
-          <div class="engine-option-list" id="engine-option-list">
-            <button class="engine-option-row" id="engine-opt-mpv" onclick="setEngine('mpv')">
-              <div class="engine-opt-top">
-                <span class="engine-opt-name">mpv</span>
-                <span class="engine-opt-check" id="engine-check-mpv">✓</span>
-              </div>
-              <p class="engine-opt-desc" data-i18n="mpvEngineDescription">Broad format support with full subtitle, audio-track, and playback-speed controls.</p>
-            </button>
-            <button class="engine-option-row" id="engine-opt-avplayer" onclick="setEngine('avplayer')">
-              <div class="engine-opt-top">
-                <span class="engine-opt-name">Apple Player</span>
-                <span class="engine-opt-check hidden" id="engine-check-avplayer">✓</span>
-              </div>
-              <p class="engine-opt-desc" data-i18n="applePlayerDescription">Uses the Apple system pipeline for Dolby Vision, with fewer advanced controls.</p>
-            </button>
           </div>
         </section>
 
@@ -347,6 +373,7 @@
             <input type="number" id="cache-minutes-input" min="1" max="120" step="1" inputmode="numeric" value="5" oninput="onCacheMinutesInput()">
             <span id="cache-minutes-unit">minutes</span>
           </div>
+          <p class="settings-hint-sm" id="cache-minutes-range-hint">1-120 minutes</p>
           <div class="settings-status" id="settings-status"></div>
         </section>
       </div>
@@ -544,25 +571,31 @@
               <input type="text" id="form-host0" placeholder="192.168.1.100 or emby.example.com">
             </div>
             <div class="form-row">
-              <label>Address 2 <span class="optional">Backup</span></label>
-              <input type="text" id="form-host1" placeholder="10.0.0.1 (optional)">
-            </div>
-            <div class="form-row">
-              <label>Address 3 <span class="optional">Backup</span></label>
-              <input type="text" id="form-host2" placeholder="emby.lan (optional)">
-            </div>
-            <div class="form-row">
-              <label>Address 4 <span class="optional">Backup</span></label>
-              <input type="text" id="form-host3" placeholder="(optional)">
-            </div>
-            <div class="form-row">
-              <label>Address 5 <span class="optional">Backup</span></label>
-              <input type="text" id="form-host4" placeholder="(optional)">
-            </div>
-            <div class="form-row">
               <label>Port</label>
               <input type="number" id="form-port" value="8096" min="1" max="65535">
             </div>
+            <details class="advanced-options" id="form-advanced-options">
+              <summary data-i18n="advancedOptions">Advanced options</summary>
+              <div class="advanced-body">
+                <div class="advanced-hint" data-i18n="backupAddressesHint">Add up to four backup addresses</div>
+                <div class="form-row">
+                  <label>Address 2 <span class="optional">Backup</span></label>
+                  <input type="text" id="form-host1" placeholder="10.0.0.1 (optional)">
+                </div>
+                <div class="form-row">
+                  <label>Address 3 <span class="optional">Backup</span></label>
+                  <input type="text" id="form-host2" placeholder="emby.lan (optional)">
+                </div>
+                <div class="form-row">
+                  <label>Address 4 <span class="optional">Backup</span></label>
+                  <input type="text" id="form-host3" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                  <label>Address 5 <span class="optional">Backup</span></label>
+                  <input type="text" id="form-host4" placeholder="(optional)">
+                </div>
+              </div>
+            </details>
           </div>
 
           <!-- File-source fields (type == file) -->
@@ -592,7 +625,12 @@
           </div>
           <div class="form-row">
             <label>Password</label>
-            <input type="password" id="form-password" autocomplete="current-password">
+            <div class="password-field">
+              <input type="password" id="form-password" autocomplete="current-password">
+              <button type="button" class="password-reveal" id="form-password-reveal"
+                      aria-label="Show password" aria-pressed="false"
+                      onclick="togglePasswordReveal()">&#128065;</button>
+            </div>
             <div class="form-hint" id="form-cred-hint"></div>
           </div>
 

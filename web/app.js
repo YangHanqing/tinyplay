@@ -15,6 +15,7 @@ let _navEpisodes = [];
 let _navContext = '';   // seasonId|seriesId the cached list belongs to
 
 let browseParentId = '';   // current library filter
+let browseMode = 'library'; // 'library' | 'resume' — what loadBrowse() fetches into #poster-grid
 let browseStart = 0;
 const PAGE_SIZE = 60;
 let browseHasMore = false;
@@ -67,6 +68,9 @@ let _serviceProbeInFlight = false;
 // Active source type drives whether the library tab shows the poster wall
 // (emby/jellyfin/plex) or the file browser (file). Set by refreshServerSwitcher.
 let _activeSourceType = 'emby';
+// Whether any server/source is configured at all. Set by refreshServerSwitcher;
+// starts true so the search icon isn't hidden for a flash before the first load.
+let _hasAnyServer = true;
 let _filesPath = '';            // current folder path in file mode
 let _serverFormType = 'emby';   // type chosen in the add/edit form
 
@@ -93,7 +97,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   _fetchAndUpdateProps();
   await loadActiveSource();
   await loadSettings();
-  fetchEngine();
   fetchSystemVolume();
 });
 
@@ -537,6 +540,11 @@ function updateEpisodeNavVisibility(isSeries) {
   }
 }
 
+function updateLibraryEmptyState(isEmpty) {
+  document.getElementById('lib-empty-state')?.classList.toggle('hidden', !isEmpty);
+  document.getElementById('lib-home-view')?.classList.toggle('hidden', isEmpty);
+}
+
 /* ── View mode ────────────────────────────────────────────────────────────── */
 function _setViewMode(mode) {
   _viewMode = mode;
@@ -558,7 +566,7 @@ function switchTab(tab) {
   document.getElementById('nav-library').classList.toggle('active', tab === 'library');
   document.getElementById('nav-remote').classList.toggle('active', tab === 'remote');
   document.getElementById('nav-settings').classList.toggle('active', tab === 'settings');
-  document.getElementById('search-toggle')?.classList.toggle('hidden', tab !== 'library' || _activeSourceType === 'file');
+  document.getElementById('search-toggle')?.classList.toggle('hidden', tab !== 'library' || _activeSourceType === 'file' || !_hasAnyServer);
   document.getElementById('btn-exit')?.classList.toggle('hidden', tab !== 'remote');
   if (tab !== 'library' && isSearching) cancelSearch();
   if (tab === 'settings') renderSettingsUi();
@@ -1410,6 +1418,14 @@ function _sourceBadge(type) {
   return `<span class="source-badge source-${t}">${esc(label)}</span>`;
 }
 
+// Avatar chip shown in the server dropdown/manager list: a colored square with
+// the source type's first letter (Emby/Jellyfin/Plex/file-share icon letter).
+function _sourceAvatarHtml(type) {
+  const t = _normType(type);
+  const label = t === 'file' ? tr('typeFile') : (t.charAt(0).toUpperCase() + t.slice(1));
+  return `<span class="smi-avatar st-${t}">${esc(label[0] || '?')}</span>`;
+}
+
 function _sourceMeta(s) {
   if (_normType(s.type) === 'file') {
     const proto = s.file_protocol || 'local';
@@ -1425,6 +1441,12 @@ async function refreshServerSwitcher() {
     const servers = await api('GET', '/api/servers');
     const active  = servers.find(s => s.active);
     _activeSourceType = _normType(active && active.type);
+    _hasAnyServer = servers.length > 0;
+    updateLibraryEmptyState(!_hasAnyServer);
+    document.getElementById('search-toggle')?.classList.toggle(
+      'hidden',
+      _activeTab !== 'library' || _activeSourceType === 'file' || !_hasAnyServer
+    );
 
     // Update header button
     const label = document.getElementById('active-server-label');
@@ -1448,18 +1470,29 @@ async function refreshServerSwitcher() {
             ${hosts.map((h, i) => `
               <button class="server-menu-host ${i === activeHostIndex ? 'active' : ''}"
                       onclick="switchServerHost(event, '${s.id}', ${i}, ${s.active})">
-                ${esc(h)}
+                <span class="smh-dot"></span>${esc(h)}
               </button>`).join('')}
           </div>`
         : '';
-      return `<div class="server-menu-item ${s.active ? 'active' : ''}"
-                   onclick="switchServer('${s.id}', '${jsStr(s.name || tr('server'))}')">
-        <div class="smi-name">${esc(s.name || tr('server'))} ${_sourceBadge(s.type)}</div>
-        <div class="smi-host">${esc(_sourceMeta(s))}</div>
+      return `<div class="server-menu-entry ${s.active ? 'active' : ''}">
+        <button class="server-menu-item" type="button"
+                onclick="switchServer('${s.id}', '${jsStr(s.name || tr('server'))}')">
+          ${_sourceAvatarHtml(s.type)}
+          <span class="smi-body">
+            <span class="smi-name">${esc(s.name || tr('server'))}</span>
+            <span class="smi-host">${esc(_sourceMeta(s))}</span>
+          </span>
+          <span class="smi-check" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          </span>
+        </button>
         ${hostButtons}
       </div>`;
     }).join('');
-    html += `<div class="server-menu-manage" onclick="openServerManager();closeServerMenu()">${tr('manageServers')}</div>`;
+    html += `<button class="server-menu-manage" type="button" onclick="openServerManager();closeServerMenu()">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.15 2.15 0 1 1-3.04 3.04l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65V21.4a2.15 2.15 0 1 1-4.3 0v-.09a1.8 1.8 0 0 0-1.08-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2.15 2.15 0 1 1-3.04-3.04l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.08h-.09a2.15 2.15 0 1 1 0-4.3h.09A1.8 1.8 0 0 0 4.6 8.54a1.8 1.8 0 0 0-.36-1.98l-.04-.04a2.15 2.15 0 1 1 3.04-3.04l.04.04a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.34 2.2v-.09a2.15 2.15 0 1 1 4.3 0v.09a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.15 2.15 0 1 1 3.04 3.04l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.08h.09a2.15 2.15 0 1 1 0 4.3h-.09A1.8 1.8 0 0 0 19.4 15Z"/></svg>
+      <span>${tr('manageServers')}</span>
+    </button>`;
     menu.innerHTML = html || `<div class="server-menu-empty">${tr('noServers')}</div>`;
 
     // Render settings list
@@ -1607,6 +1640,7 @@ function resetLibraryState() {
   _homeLibraries = [];
   currentLibraryName = tr('all');
   libraryLoadError = '';
+  browseMode = 'library';
   browseParentId = '';
   browseStart = 0;
   browseHasMore = false;
@@ -1760,8 +1794,17 @@ function viewAllByType(type) {
   if (lib) switchLibrary(lib.Id, lib.Name);
 }
 
-function viewAllResume() {
-  // Currently no dedicated "all resume" view — no-op
+async function viewAllResume() {
+  resetSearchUi();
+  closeLibraryPicker();
+  browseMode = 'resume';
+  browseParentId = '';
+  currentLibraryName = tr('recent');
+  updateLibraryPickerUi();
+  _updateCategoryChipActive();
+  _setViewMode('browse');
+  setBrowseTitle();
+  await loadBrowse(false, { loadingMessage: tr('loadingCategory', { name: currentLibraryName }) });
 }
 
 function setLibraryPickerBusy(isBusy) {
@@ -1806,6 +1849,7 @@ function renderLibraryPicker() {
 async function switchLibrary(libId, name) {
   resetSearchUi();
   closeLibraryPicker();
+  browseMode = 'library';
   browseParentId = libId;
   currentLibraryName = name || tr('all');
   updateLibraryPickerUi();
@@ -1838,20 +1882,30 @@ async function loadBrowse(append = false, opts = {}) {
     btn.textContent = tr('loadingMore');
   }
   try {
-    const qs = new URLSearchParams({ start: browseStart, limit: PAGE_SIZE });
-    if (browseParentId) qs.set('parent_id', browseParentId);
-    const data  = await api('GET', `/api/emby/items?${qs}`);
+    let items, totalCount;
+    if (browseMode === 'resume') {
+      const data = await api('GET', '/api/emby/resume');
+      items = data.Items || [];
+      totalCount = items.length;
+    } else {
+      const qs = new URLSearchParams({ start: browseStart, limit: PAGE_SIZE });
+      if (browseParentId) qs.set('parent_id', browseParentId);
+      const data = await api('GET', `/api/emby/items?${qs}`);
+      items = data.Items || [];
+      totalCount = data.TotalRecordCount || 0;
+    }
     if (requestId !== browseLoadSeq) return;
-    const items = data.Items || [];
-    browseHasMore = browseStart + items.length < (data.TotalRecordCount || 0);
+    browseHasMore = browseMode !== 'resume' && (browseStart + items.length < totalCount);
     browseStart  += items.length;
 
     const grid = document.getElementById('poster-grid');
     if (!append) grid.innerHTML = '';
+    grid.classList.toggle('resume-grid-mode', browseMode === 'resume');
     if (!items.length && !append) {
       grid.innerHTML = `<div class="search-state"><div class="search-state-title">${tr('noBrowseContentTitle')}</div><div class="search-state-subtitle">${tr('noBrowseContentSub')}</div></div>`;
     } else {
-      grid.insertAdjacentHTML('beforeend', items.map(posterCardHtml).join(''));
+      const cardHtml = browseMode === 'resume' ? resumeCardHtml : posterCardHtml;
+      grid.insertAdjacentHTML('beforeend', items.map(cardHtml).join(''));
     }
 
     if (btn) btn.classList.toggle('hidden', !browseHasMore);
@@ -1870,7 +1924,7 @@ function loadMore() { loadBrowse(true); }
 
 function setBrowseTitle() {
   document.getElementById('browse-title').textContent =
-    browseParentId ? currentLibraryName : tr('browse');
+    (browseMode === 'resume' || browseParentId) ? currentLibraryName : tr('browse');
 }
 
 function renderBrowseLoading(_message) {
@@ -2536,6 +2590,7 @@ function renderSettingsUi() {
   const saveBtn = document.getElementById('settings-save-btn');
   if (saveBtn) saveBtn.textContent = tr('saveSettings');
   _setText('cache-minutes-unit', tr('minutesUnit'));
+  _setText('cache-minutes-range-hint', tr('cacheMinutesRangeHint'));
 
   // Seek settings
   _renderSeekSelect('seek-backward-select', _settings.seek_backward_secs || 5);
@@ -2581,7 +2636,14 @@ function setCacheMinutes(minutes) {
 
 function onCacheMinutesInput() {
   const input = document.getElementById('cache-minutes-input');
-  const minutes = Math.max(1, Math.min(120, Math.round(Number(input?.value) || 30)));
+  const raw = Number(input?.value);
+  const minutes = Math.max(1, Math.min(120, Math.round(raw) || 30));
+  // Clamp the visible value immediately when it's out of range, instead of
+  // only clamping the saved value — otherwise the box can show e.g. 9999
+  // until the field loses focus, which looks like there's no real cap.
+  if (input && (Number.isNaN(raw) || raw > 120 || raw < 1)) {
+    input.value = String(minutes);
+  }
   _settings.mpv_cache_secs = minutes * 60;
   _setSettingsStatus('');
   renderSettingsUi();
@@ -2684,6 +2746,7 @@ function renderServerList(servers) {
     return `
       <div class="server-card ${s.active ? 'active-server' : ''}">
         <div class="server-card-header">
+        ${_sourceAvatarHtml(s.type)}
         <div class="server-card-name">${esc(s.name || tr('server'))} ${_sourceBadge(s.type)}</div>
           ${statusHtml}
           ${s.active ? `<span class="server-status active-badge">${tr('current')}</span>` : ''}
@@ -2719,6 +2782,9 @@ function openServerForm(serverId) {
     document.getElementById('form-password').value = '';
     document.getElementById('form-token').value    = '';
     document.getElementById('form-root').value     = '';
+    const advanced = document.getElementById('form-advanced-options');
+    if (advanced) advanced.open = false;
+    resetPasswordReveal();
   };
 
   clearForm();
@@ -2733,6 +2799,8 @@ function openServerForm(serverId) {
       ['form-host0','form-host1','form-host2','form-host3','form-host4'].forEach((id, i) => {
         document.getElementById(id).value = hosts[i] || '';
       });
+      const advanced = document.getElementById('form-advanced-options');
+      if (advanced) advanced.open = hosts.length > 1;
       document.getElementById('form-port').value     = s.port || 8096;
       document.getElementById('form-username').value = s.username || '';
       document.getElementById('form-password').value = '';
@@ -2745,6 +2813,28 @@ function openServerForm(serverId) {
   }
 
   form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function togglePasswordReveal() {
+  const input = document.getElementById('form-password');
+  const btn = document.getElementById('form-password-reveal');
+  if (!input || !btn) return;
+  const reveal = input.type === 'password';
+  input.type = reveal ? 'text' : 'password';
+  btn.classList.toggle('revealed', reveal);
+  btn.setAttribute('aria-pressed', reveal ? 'true' : 'false');
+  btn.setAttribute('aria-label', tr(reveal ? 'hidePassword' : 'showPassword'));
+}
+
+function resetPasswordReveal() {
+  const input = document.getElementById('form-password');
+  const btn = document.getElementById('form-password-reveal');
+  if (input) input.type = 'password';
+  if (btn) {
+    btn.classList.remove('revealed');
+    btn.setAttribute('aria-pressed', 'false');
+    btn.setAttribute('aria-label', tr('showPassword'));
+  }
 }
 
 function closeServerForm() {
@@ -3033,47 +3123,145 @@ function jsStr(str) {
     .replace(/\r?\n|\r/g, ' ');
 }
 
-/* ── Player engine picker ─────────────────────────────────────────────────── */
+/* ── Playback debug report ("Playback issue?" button) ────────────────────── */
+let _playbackDebugOpen = false;
+let _playbackDebugReportText = '';
 
-let _currentEngine = 'mpv';
-
-async function fetchEngine() {
-  try {
-    const d = await api('GET', '/api/desktop/engine');
-    if (d.platform !== 'darwin') return; // only show on macOS
-    _currentEngine = d.engine || 'mpv';
-    _updateEngineUI();
-    document.getElementById('engine-hint').classList.remove('hidden');
-  } catch (_) {}
+function openPlaybackDebugSheet() {
+  _playbackDebugOpen = true;
+  _playbackDebugReportText = '';
+  const backdrop = document.getElementById('playback-debug-backdrop');
+  const preview = document.getElementById('playback-debug-preview');
+  const status = document.getElementById('playback-debug-status');
+  const button = document.getElementById('playback-debug-copy');
+  if (preview) preview.textContent = tr('playbackDebugLoading');
+  if (status) { status.textContent = ''; status.className = 'playback-debug-status'; }
+  if (button) button.disabled = true;
+  if (backdrop) backdrop.classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  _loadPlaybackDebugReport();
 }
 
-function _updateEngineUI() {
-  const checkMpv = document.getElementById('engine-check-mpv');
-  const checkAv  = document.getElementById('engine-check-avplayer');
-  const rowMpv   = document.getElementById('engine-opt-mpv');
-  const rowAv    = document.getElementById('engine-opt-avplayer');
-  if (!checkMpv) return;
-  if (_currentEngine === 'avplayer') {
-    checkMpv.classList.add('hidden');
-    checkAv.classList.remove('hidden');
-    rowMpv.classList.remove('active');
-    rowAv.classList.add('active');
-  } else {
-    checkMpv.classList.remove('hidden');
-    checkAv.classList.add('hidden');
-    rowMpv.classList.add('active');
-    rowAv.classList.remove('active');
-  }
+function closePlaybackDebugSheet() {
+  _playbackDebugOpen = false;
+  document.getElementById('playback-debug-backdrop')?.classList.add('hidden');
+  document.body.classList.remove('sheet-open');
 }
 
-async function setEngine(engine) {
+function onPlaybackDebugBackdropClick(event) {
+  if (event.target.id === 'playback-debug-backdrop') closePlaybackDebugSheet();
+}
+
+async function _loadPlaybackDebugReport() {
+  const preview = document.getElementById('playback-debug-preview');
+  const button = document.getElementById('playback-debug-copy');
   try {
-    const d = await api('POST', '/api/desktop/engine', { engine });
-    _currentEngine = d.engine || 'mpv';
-    _updateEngineUI();
+    const data = await api('GET', '/api/player/debug-report');
+    if (!_playbackDebugOpen) return;
+    _playbackDebugReportText = _formatPlaybackDebugReport(data);
+    if (preview) preview.textContent = _playbackDebugReportText;
+    if (button) button.disabled = false;
   } catch (e) {
-    toast(e.message || tr('engineSwitchFailed'), true);
+    if (!_playbackDebugOpen) return;
+    _playbackDebugReportText = '';
+    if (preview) preview.textContent = e.message || tr('playbackDebugLoadFailed');
+    if (button) button.disabled = true;
   }
+}
+
+function _formatPlaybackDebugReport(data = {}) {
+  const report = {
+    ...data,
+    remote_client: {
+      user_agent: navigator.userAgent || '',
+      language: navigator.language || '',
+      online: navigator.onLine !== false,
+      page_protocol: location.protocol,
+    },
+  };
+  const safe = _englishPlaybackDebugData(_redactPlaybackDebugData(report));
+  return [
+    'TinyPlay Playback Debug Report',
+    'Describe the exact symptom and reproduction steps above this report.',
+    '============================================================',
+    JSON.stringify(safe, null, 2),
+  ].join('\n');
+}
+
+// Logs and titles can be in Chinese (app language, media names) but the report
+// is read by an English-speaking developer, so anything non-ASCII is dropped
+// rather than shipped untranslated.
+function _englishPlaybackDebugData(value) {
+  if (Array.isArray(value)) return value.map(_englishPlaybackDebugData);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      key, _englishPlaybackDebugData(child),
+    ]));
+  }
+  if (typeof value !== 'string') return value;
+  return value.replace(/[　-〿㐀-䶿一-鿿豈-﫿＀-￯]+/g, '[non-English text omitted]');
+}
+
+function _redactPlaybackDebugData(value, key = '') {
+  const sensitiveKey = /^(authorization|proxy-authorization|password|passwd|token|access_token|api_key|apikey|x-emby-token|http_headers?|headers)$/i;
+  if (sensitiveKey.test(key)) return '[redacted]';
+  if (Array.isArray(value)) return value.map(item => _redactPlaybackDebugData(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+      childKey,
+      _redactPlaybackDebugData(childValue, childKey),
+    ]));
+  }
+  if (typeof value !== 'string') return value;
+  return value
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, '$1[redacted]@')
+    .replace(/([?&](?:api_key|apikey|token|access_token|password|auth|authorization)=)[^&\s]*/gi, '$1redacted')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, '$1[redacted]');
+}
+
+async function copyPlaybackDebugReport() {
+  if (!_playbackDebugReportText) return;
+  const status = document.getElementById('playback-debug-status');
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(_playbackDebugReportText);
+    } else {
+      _copyTextWithTemporaryTextarea(_playbackDebugReportText);
+    }
+    if (status) { status.textContent = tr('playbackDebugCopied'); status.className = 'playback-debug-status'; }
+  } catch (_) {
+    try {
+      _copyTextWithTemporaryTextarea(_playbackDebugReportText);
+      if (status) { status.textContent = tr('playbackDebugCopied'); status.className = 'playback-debug-status'; }
+    } catch (_) {
+      _selectPlaybackDebugPreview();
+      if (status) { status.textContent = tr('playbackDebugCopyManual'); status.className = 'playback-debug-status manual'; }
+    }
+  }
+}
+
+function _selectPlaybackDebugPreview() {
+  const preview = document.getElementById('playback-debug-preview');
+  if (!preview || !window.getSelection || !document.createRange) return;
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(preview);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function _copyTextWithTemporaryTextarea(text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('copy failed');
 }
 
 function toast(msg, isError = false) {

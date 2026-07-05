@@ -67,7 +67,14 @@ jobs:
 
       - name: Build exe
         shell: bash
-        run: go build -ldflags "-H windowsgui" -o dist/TinyPlay.exe ./cmd/tvremote
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="0.0.0-dev"; fi
+          go build -ldflags "-H windowsgui -X main.version=$VER" -o dist/TinyPlay.exe ./cmd/tvremote
+
+      - name: Bundle third-party notices
+        shell: bash
+        run: cp ../THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
 
       - name: Package zip
         shell: bash

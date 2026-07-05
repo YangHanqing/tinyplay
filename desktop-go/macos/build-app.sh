@@ -26,11 +26,6 @@ SHELL_BIN="$HERE/../build/TVRemoteShell"
 swiftc -O -o "$SHELL_BIN" "$HERE/Sources/main.swift" \
     -framework AppKit -framework WebKit
 
-echo "==> compiling AVPlayer helper (Dolby Vision P5 fallback)"
-HELPER_BIN="$HERE/../build/avplayer-helper"
-swiftc -O -o "$HELPER_BIN" "$HERE/Sources/avplayer-helper.swift" \
-    -framework AppKit -framework AVKit -framework AVFoundation
-
 echo "==> assembling bundle: $OUT"
 rm -rf "$OUT"
 MACOS="$OUT/Contents/MacOS"
@@ -39,11 +34,21 @@ mkdir -p "$MACOS" "$RES"
 
 cp "$SHELL_BIN" "$MACOS/TinyPlay"
 cp "$CORE_BIN"  "$RES/tvremote-core"
-cp "$HELPER_BIN" "$RES/avplayer-helper"
-chmod +x "$MACOS/TinyPlay" "$RES/tvremote-core" "$RES/avplayer-helper"
+chmod +x "$MACOS/TinyPlay" "$RES/tvremote-core"
 
 # App icon (Finder / Dock / DMG). CFBundleIconFile below points at this.
 cp "$HERE/../assets/TinyPlay.icns" "$RES/TinyPlay.icns"
+
+# Third-party notices shown from the tray's About panel. The source path
+# differs by tree: the public repo has THIRD_PARTY_NOTICES.md at its root
+# (overlaid there at export time); the private repo only has the overlay's
+# copy of it, since public-export-overlay/ is where public-only files live.
+for NOTICES_SRC in "$HERE/../../THIRD_PARTY_NOTICES.md" "$HERE/../../public-export-overlay/THIRD_PARTY_NOTICES.md"; do
+    if [ -f "$NOTICES_SRC" ]; then
+        cp "$NOTICES_SRC" "$RES/THIRD_PARTY_NOTICES.md"
+        break
+    fi
+done
 
 if [ -n "${MPV_DIR:-}" ] && [ -d "$MPV_DIR" ]; then
     echo "==> bundling mpv from $MPV_DIR"

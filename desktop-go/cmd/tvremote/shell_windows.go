@@ -5,11 +5,17 @@ package main
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"fyne.io/systray"
 	webview2 "github.com/jchv/go-webview2"
@@ -41,6 +47,7 @@ func runShell(localURL string, httpSrv *http.Server) {
 		mChinese := mLanguage.AddSubMenuItemCheckbox(i18n.System("language_chinese"), "", selected == "zh-CN")
 		mEnglish := mLanguage.AddSubMenuItemCheckbox("English", "", selected == "en")
 		systray.AddSeparator()
+		mAbout := systray.AddMenuItem(i18n.System("about"), i18n.System("about_tip"))
 		mQuit := systray.AddMenuItem(i18n.System("quit"), i18n.System("quit_tip"))
 
 		applyLanguage := func(language string) {
@@ -52,6 +59,8 @@ func runShell(localURL string, httpSrv *http.Server) {
 			mLanguage.SetTitle(i18n.System("language"))
 			mAuto.SetTitle(i18n.System("language_auto"))
 			mChinese.SetTitle(i18n.System("language_chinese"))
+			mAbout.SetTitle(i18n.System("about"))
+			mAbout.SetTooltip(i18n.System("about_tip"))
 			mQuit.SetTitle(i18n.System("quit"))
 			mQuit.SetTooltip(i18n.System("quit_tip"))
 			systray.SetTooltip(i18n.System("tooltip"))
@@ -69,6 +78,8 @@ func runShell(localURL string, httpSrv *http.Server) {
 				select {
 				case <-mOpen.ClickedCh:
 					openWindow(desktopURL())
+				case <-mAbout.ClickedCh:
+					showAbout()
 				case <-mLogs.ClickedCh:
 					if resp, err := http.Get(localURL + "/desktop/open-logs"); err == nil {
 						resp.Body.Close()
@@ -128,4 +139,51 @@ func openWindow(url string) {
 	defer w.Destroy()
 	w.Navigate(url)
 	w.Run()
+}
+
+var (
+	user32          = syscall.NewLazyDLL("user32.dll")
+	procMessageBoxW = user32.NewProc("MessageBoxW")
+)
+
+const (
+	mbYesNo           = 0x00000004
+	mbIconInformation = 0x00000040
+	idYes             = 6
+)
+
+// messageBoxYesNo shows a native Yes/No dialog and reports whether Yes was
+// clicked. The button captions themselves follow the OS locale, not the app's.
+func messageBoxYesNo(title, text string) bool {
+	ret, _, _ := procMessageBoxW.Call(
+		0,
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(title))),
+		uintptr(mbYesNo|mbIconInformation),
+	)
+	return ret == idYes
+}
+
+// showAbout displays the version (baked in at build time via -ldflags -X
+// main.version=...) and offers to open the third-party notices file that
+// ships next to TinyPlay.exe.
+func showAbout() {
+	text := fmt.Sprintf(i18n.System("about_version_line")+"\n\n"+i18n.System("about_view_notices"), version)
+	if messageBoxYesNo("TinyPlay", text) {
+		openThirdPartyNotices()
+	}
+}
+
+// openThirdPartyNotices opens THIRD_PARTY_NOTICES.md next to the running exe
+// with the user's default handler for .md/text files.
+func openThirdPartyNotices() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(filepath.Dir(exe), "THIRD_PARTY_NOTICES.md")
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	_ = exec.Command("cmd", "/C", "start", "", path).Start()
 }

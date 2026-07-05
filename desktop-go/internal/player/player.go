@@ -64,20 +64,16 @@ type PlayOptions struct {
 	PosterItemID  string
 	StartSeconds  float64
 	MediaSourceID string
-	// UseNative selects the macOS AVPlayer helper instead of mpv (Dolby Vision
-	// Profile 5 fallback). Ignored off macOS / when the helper isn't bundled.
-	UseNative bool
 }
 
 // Player owns the mpv process and its IPC connection.
 type Player struct {
 	socket string
 
-	mu         sync.Mutex
-	proc       *exec.Cmd
-	running    bool
-	nativeMode bool // true when the running process is the AVPlayer helper, not mpv
-	ctx        PlayContext
+	mu      sync.Mutex
+	proc    *exec.Cmd
+	running bool
+	ctx     PlayContext
 
 	propsMu   sync.Mutex
 	liveProps map[string]any
@@ -166,23 +162,6 @@ func resolveMPV(candidate string) string {
 		return ""
 	}
 	return exe
-}
-
-// nativeHelperExe returns the bundled AVPlayer helper path, or "" if absent.
-// It lives next to the Go core inside Contents/Resources of the macOS .app.
-func nativeHelperExe() string {
-	if exe := os.Getenv("TVREMOTE_AVPLAYER_HELPER"); exe != "" {
-		return exe
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	cand := filepath.Join(filepath.Dir(self), "avplayer-helper")
-	if st, err := os.Stat(cand); err == nil && !st.IsDir() {
-		return cand
-	}
-	return ""
 }
 
 func cacheConfig() (int, int, int) {
@@ -489,32 +468,6 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		startValue = formatFloat(opt.StartSeconds)
 	}
 
-	// Resolve whether this play uses the native AVPlayer helper (macOS DV P5).
-	// If the helper isn't bundled, silently fall back to mpv.
-	useNative := opt.UseNative && runtime.GOOS == "darwin"
-	helperExe := ""
-	if useNative {
-		if helperExe = nativeHelperExe(); helperExe == "" {
-			useNative = false
-		}
-	}
-
-	// Switching player kind (mpv ⇄ AVPlayer) can't reuse the live socket — the
-	// two speak to different processes. Terminate the old one and respawn fresh.
-	p.mu.Lock()
-	kindMismatch := p.running && p.nativeMode != useNative
-	oldProc := p.proc
-	p.mu.Unlock()
-	if kindMismatch {
-		if oldProc != nil && oldProc.Process != nil {
-			_ = oldProc.Process.Kill()
-		}
-		p.clearConn()
-		for i := 0; i < 40 && p.isRunning(); i++ {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-
 	var result map[string]any
 	if p.isRunning() {
 		p.applyCacheOptions()
@@ -532,50 +485,34 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		p.resetAspectOptions()
 	} else {
 		playerLog, mpvLog := openPlayerLog()
-		var exe string
-		var args []string
-		if useNative {
-			// AVPlayer helper: mpv-IPC-compatible, only needs the URL, the
-			// socket to listen on, and an optional start position.
-			exe = helperExe
-			args = []string{
-				url,
-				"--input-ipc-server=" + p.socket,
-			}
-			if opt.StartSeconds > 0 {
-				args = append(args, "--start="+startValue)
-			}
-			log.Printf("Using Apple Player for Dolby Vision P5: %s", exe)
-		} else {
-			exe = p.mpvExe()
-			args = []string{
-				url,
-				"--input-ipc-server=" + p.socket,
-				"--terminal=yes",
-				"--fullscreen",
-				// Without this, mpv can go fullscreen against the wrong
-				// display's dimensions on multi-monitor setups (e.g. an
-				// ultrawide secondary monitor), leaving black bars on all
-				// sides instead of filling the screen it's actually on.
-				"--fs-screen=current",
-				"--hwdec=auto-safe",
-				// See the set_property call above: the phone's slider drives
-				// the OS volume, so mpv itself always stays at unity gain.
-				"--volume=100",
-			}
-			args = append(args, cacheArgs()...)
-			args = append(args, aspectArgs()...)
-			if playerLog != nil {
-				// Verbose output is captured by Go's bounded writer below, so a
-				// long-lived mpv process cannot grow the log without limit.
-				args = append(args, "--msg-level=all=v")
-			}
-			if opt.StartSeconds > 0 {
-				args = append(args, "--start="+startValue)
-			}
-			if opt.Title != "" {
-				args = append(args, "--title="+opt.Title)
-			}
+		exe := p.mpvExe()
+		args := []string{
+			url,
+			"--input-ipc-server=" + p.socket,
+			"--terminal=yes",
+			"--fullscreen",
+			// Without this, mpv can go fullscreen against the wrong
+			// display's dimensions on multi-monitor setups (e.g. an
+			// ultrawide secondary monitor), leaving black bars on all
+			// sides instead of filling the screen it's actually on.
+			"--fs-screen=current",
+			"--hwdec=auto-safe",
+			// See the set_property call above: the phone's slider drives
+			// the OS volume, so mpv itself always stays at unity gain.
+			"--volume=100",
+		}
+		args = append(args, cacheArgs()...)
+		args = append(args, aspectArgs()...)
+		if playerLog != nil {
+			// Verbose output is captured by Go's bounded writer below, so a
+			// long-lived mpv process cannot grow the log without limit.
+			args = append(args, "--msg-level=all=v")
+		}
+		if opt.StartSeconds > 0 {
+			args = append(args, "--start="+startValue)
+		}
+		if opt.Title != "" {
+			args = append(args, "--title="+opt.Title)
 		}
 		cmd := exec.Command(exe, args...)
 		// Also capture anything mpv writes to stderr/stdout (panics, loader
@@ -594,7 +531,6 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		p.mu.Lock()
 		p.proc = cmd
 		p.running = true
-		p.nativeMode = useNative
 		p.mu.Unlock()
 		go func() {
 			err := cmd.Wait()
