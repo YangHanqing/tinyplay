@@ -8,14 +8,18 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"tvremote/internal/i18n"
 )
+
+func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // ServerPatch holds the editable fields of a server; nil means "leave as-is".
 // Mirrors UpdateServerRequest in schemas.py.
@@ -29,6 +33,8 @@ type ServerPatch struct {
 	Root         *string   `json:"root"`
 	Username     *string   `json:"username"`
 	Password     *string   `json:"password"`
+	PlaylistURL  *string   `json:"playlist_url"`
+	EPGURL       *string   `json:"epg_url"`
 }
 
 func (p ServerPatch) apply(s *Server) {
@@ -59,6 +65,12 @@ func (p ServerPatch) apply(s *Server) {
 	if p.Password != nil {
 		s.Password = *p.Password
 	}
+	if p.PlaylistURL != nil {
+		s.PlaylistURL = strings.TrimSpace(*p.PlaylistURL)
+	}
+	if p.EPGURL != nil {
+		s.EPGURL = strings.TrimSpace(*p.EPGURL)
+	}
 }
 
 // newID returns a random uuid-ish hex string (no external dependency).
@@ -69,6 +81,13 @@ func newID() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	s := hex.EncodeToString(b)
 	return s[0:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:32]
+}
+
+// RecentChannel records a single IPTV channel watch for the "recently
+// watched" pseudo-category.
+type RecentChannel struct {
+	ChannelID string `json:"channel_id"`
+	WatchedAt string `json:"watched_at"`
 }
 
 // Server mirrors one entry of config.json "servers".
@@ -89,6 +108,12 @@ type Server struct {
 	FileProtocol  string   `json:"file_protocol,omitempty"`
 	Root          string   `json:"root,omitempty"`
 	Password      string   `json:"password,omitempty"`
+
+	// IPTV-only fields.
+	PlaylistURL   string          `json:"playlist_url,omitempty"`
+	EPGURL        string          `json:"epg_url,omitempty"`
+	IPTVFavorites []string        `json:"favorites,omitempty"`
+	IPTVRecent    []RecentChannel `json:"recently_watched,omitempty"`
 }
 
 // Config mirrors the top level of config.json.
@@ -240,8 +265,12 @@ func ActiveServer() *Server {
 func AddServer(in Server) *Server {
 	srv := serverDefaults()
 	mergeServer(&srv, in)
-	if strings.TrimSpace(srv.Name) == "" {
-		srv.Name = defaultServerName(srv.Hosts)
+	// Checked against the caller's raw input, not srv.Name: serverDefaults()
+	// already pre-fills Name with a generic placeholder, so checking the
+	// merged value here would never see it as blank and this per-type
+	// fallback (host, or the playlist's own host for iptv) would never run.
+	if strings.TrimSpace(in.Name) == "" {
+		srv.Name = defaultServerName(&srv)
 	}
 	srv.ID = newID()
 	out := srv
@@ -264,7 +293,7 @@ func UpdateServer(id string, data ServerPatch) *Server {
 			}
 			data.apply(s)
 			if data.Name != nil && strings.TrimSpace(*data.Name) == "" {
-				s.Name = defaultServerName(s.Hosts)
+				s.Name = defaultServerName(s)
 			}
 			result = s
 			break
@@ -334,6 +363,78 @@ func SetAuth(id, username, token, userID string) {
 	})
 }
 
+// ToggleIPTVFavorite adds/removes channelID from a server's favorites and
+// returns the updated list.
+func ToggleIPTVFavorite(serverID, channelID string) []string {
+	var result []string
+	patch(func(cfg *Config) {
+		for _, s := range cfg.Servers {
+			if s.ID != serverID {
+				continue
+			}
+			idx := -1
+			for i, id := range s.IPTVFavorites {
+				if id == channelID {
+					idx = i
+					break
+				}
+			}
+			if idx >= 0 {
+				s.IPTVFavorites = append(s.IPTVFavorites[:idx], s.IPTVFavorites[idx+1:]...)
+			} else {
+				s.IPTVFavorites = append(s.IPTVFavorites, channelID)
+			}
+			result = s.IPTVFavorites
+			break
+		}
+	})
+	return result
+}
+
+// IPTVFavorites returns a server's favorite channel ids.
+func IPTVFavorites(serverID string) []string {
+	if s := GetServer(serverID); s != nil {
+		return s.IPTVFavorites
+	}
+	return nil
+}
+
+// RecordIPTVRecent pushes a channel watch to the front of a server's
+// recently-watched list, deduplicating and capping it at limit entries.
+func RecordIPTVRecent(serverID, channelID string, limit int) []RecentChannel {
+	var result []RecentChannel
+	patch(func(cfg *Config) {
+		for _, s := range cfg.Servers {
+			if s.ID != serverID {
+				continue
+			}
+			entry := RecentChannel{ChannelID: channelID, WatchedAt: nowUTC()}
+			kept := make([]RecentChannel, 0, len(s.IPTVRecent)+1)
+			kept = append(kept, entry)
+			for _, r := range s.IPTVRecent {
+				if r.ChannelID != channelID {
+					kept = append(kept, r)
+				}
+			}
+			if limit > 0 && len(kept) > limit {
+				kept = kept[:limit]
+			}
+			s.IPTVRecent = kept
+			result = s.IPTVRecent
+			break
+		}
+	})
+	return result
+}
+
+// IPTVRecent returns a server's recently-watched channels, most recent first.
+func IPTVRecent(serverID string) []RecentChannel {
+	if s := GetServer(serverID); s != nil {
+		return s.IPTVRecent
+	}
+	return nil
+}
+
 // Settings returns user-editable app settings.
 func Settings() map[string]any {
 	cfg := Load()
@@ -374,7 +475,7 @@ func SetLanguage(lang string) map[string]any {
 
 func NormalizeServerType(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "jellyfin", "plex", "file":
+	case "jellyfin", "plex", "file", "iptv":
 		return strings.ToLower(strings.TrimSpace(kind))
 	default:
 		return "emby"
@@ -407,11 +508,17 @@ func BuildServerURL(s *Server) string {
 	return proto + "://" + s.Hosts[idx] + ":" + strconv.Itoa(port)
 }
 
-func defaultServerName(hosts []string) string {
-	if len(hosts) > 0 {
-		if h := strings.TrimSpace(hosts[0]); h != "" {
+func defaultServerName(s *Server) string {
+	if len(s.Hosts) > 0 {
+		if h := strings.TrimSpace(s.Hosts[0]); h != "" {
 			return h
 		}
+	}
+	if NormalizeServerType(s.Type) == "iptv" {
+		if u, err := url.Parse(s.PlaylistURL); err == nil && u.Host != "" {
+			return u.Host
+		}
+		return i18n.System("default_iptv_name")
 	}
 	return i18n.System("default_server_name")
 }
@@ -446,5 +553,11 @@ func mergeServer(dst *Server, in Server) {
 	}
 	if in.AccessToken != "" {
 		dst.AccessToken = in.AccessToken
+	}
+	if in.PlaylistURL != "" {
+		dst.PlaylistURL = strings.TrimSpace(in.PlaylistURL)
+	}
+	if in.EPGURL != "" {
+		dst.EPGURL = strings.TrimSpace(in.EPGURL)
 	}
 }

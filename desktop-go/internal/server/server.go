@@ -63,6 +63,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/files/list", s.filesList)
 	mux.HandleFunc("GET /api/files/stream", s.filesStream)
 
+	// ── IPTV (M3U/M3U8 + optional XMLTV EPG) ──
+	mux.HandleFunc("GET /api/iptv/summary", s.iptvSummary)
+	mux.HandleFunc("POST /api/iptv/refresh", s.iptvRefresh)
+	mux.HandleFunc("GET /api/iptv/categories", s.iptvCategories)
+	mux.HandleFunc("GET /api/iptv/channels", s.iptvChannels)
+	mux.HandleFunc("GET /api/iptv/channel/{id}", s.iptvChannelDetail)
+	mux.HandleFunc("GET /api/iptv/programme", s.iptvProgramme)
+	mux.HandleFunc("POST /api/iptv/favorite", s.iptvFavorite)
+	mux.HandleFunc("POST /api/iptv/recent", s.iptvRecent)
+
 	// ── Desktop intro + QR (used by the native shells) ──
 	mux.HandleFunc("GET /desktop", s.desktopPage)
 	mux.HandleFunc("GET /desktop/qr.png", s.desktopQR)

@@ -85,7 +85,7 @@
           <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>
         </svg>
         <div class="remote-empty-title" data-i18n="noMediaSourceYet">No media source yet</div>
-        <div class="remote-empty-hint" data-i18n="noMediaSourceHint">Add an Emby, Jellyfin, Plex, or network folder to start browsing your library</div>
+        <div class="remote-empty-hint" data-i18n="noMediaSourceHint">Add an Emby, Jellyfin, Plex, network folder, or IPTV playlist to start browsing your library</div>
         <button class="remote-empty-btn" onclick="openServerForm()" data-i18n="addMediaSource">Add media source</button>
       </div>
 
@@ -130,6 +130,13 @@
       <div id="lib-files-view" class="hidden">
         <div class="files-breadcrumb" id="files-breadcrumb"></div>
         <div class="files-list" id="files-list"></div>
+      </div>
+
+      <!-- IPTV channel browser (iptv sources) -->
+      <div id="lib-iptv-view" class="hidden">
+        <div class="iptv-source-status" id="iptv-source-status"></div>
+        <div class="iptv-category-row" id="iptv-category-row"></div>
+        <div class="iptv-channel-list" id="iptv-channel-list"></div>
       </div>
 
     </div>
@@ -230,14 +237,14 @@
 
           <!-- Transport: 3-btn centered -->
           <div class="transport-card">
-            <button class="tpt-btn" onclick="seekBackward()" aria-label="Rewind">
+            <button class="tpt-btn" id="btn-seek-backward" onclick="seekBackward()" aria-label="Rewind">
               <svg class="tpt-ring-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.3 7.2A7 7 0 1 1 5.1 13"/><path d="M5 5v5h5"/></svg>
               <span class="tpt-label" id="seek-backward-label">5</span>
             </button>
             <button class="tpt-btn tpt-primary" id="btn-pause-play" onclick="cmd(['cycle', 'pause'])" aria-label="Pause or resume">
               <svg class="tpt-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M8 5v14M16 5v14"/></svg>
             </button>
-            <button class="tpt-btn" onclick="seekForward()" aria-label="Fast-forward">
+            <button class="tpt-btn" id="btn-seek-forward" onclick="seekForward()" aria-label="Fast-forward">
               <svg class="tpt-ring-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.7 7.2A7 7 0 1 0 18.9 13"/><path d="M19 5v5h-5"/></svg>
               <span class="tpt-label" id="seek-forward-label">30</span>
             </button>
@@ -279,6 +286,16 @@
             <button class="tool-tile" onclick="openSpeedSheet()" aria-label="Speed">
               <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 5.6a9 9 0 1 0 12.8 0"/><path d="M12 2v4"/><path d="M12 12l3-3"/></svg>
               <span>Speed</span>
+            </button>
+
+            <button class="tool-tile hidden" id="tool-tile-iptv-quality" onclick="openIPTVQualitySheet()" aria-label="Quality">
+              <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 21h8"/><path d="M9 9l3 3-3 3"/></svg>
+              <span id="tool-tile-iptv-quality-label">Quality</span>
+            </button>
+
+            <button class="tool-tile hidden" id="tool-tile-iptv-guide" onclick="openIPTVProgrammeSheet()" aria-label="Programme guide">
+              <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M8 4v3"/><path d="M16 4v3"/></svg>
+              <span id="tool-tile-iptv-guide-label">Guide</span>
             </button>
           </div>
 
@@ -458,6 +475,30 @@
       </section>
     </div>
 
+    <!-- IPTV quality/variant switcher sheet -->
+    <div class="sheet-backdrop hidden" id="iptv-quality-backdrop" onclick="onIPTVQualityBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="iptv-quality-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeIPTVQualitySheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="iptv-quality-title">Quality</h3>
+        </div>
+        <div class="track-pills sheet-track-pills" id="iptv-quality-list"></div>
+      </section>
+    </div>
+
+    <!-- IPTV programme guide sheet -->
+    <div class="sheet-backdrop hidden" id="iptv-programme-backdrop" onclick="onIPTVProgrammeBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="iptv-programme-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeIPTVProgrammeSheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="iptv-programme-title">Programme guide</h3>
+        </div>
+        <div id="iptv-programme-list"></div>
+      </section>
+    </div>
+
     <!-- Aspect ratio sheet -->
     <div class="sheet-backdrop hidden" id="aspect-backdrop" onclick="onAspectBackdropClick(event)">
       <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="aspect-title">
@@ -544,6 +585,7 @@
               <button type="button" class="type-seg-btn" data-type="jellyfin" onclick="setServerFormType('jellyfin')">Jellyfin</button>
               <button type="button" class="type-seg-btn" data-type="plex" onclick="setServerFormType('plex')">Plex</button>
               <button type="button" class="type-seg-btn" data-type="file" onclick="setServerFormType('file')">Files</button>
+              <button type="button" class="type-seg-btn" data-type="iptv" onclick="setServerFormType('iptv')">IPTV</button>
             </div>
           </div>
 
@@ -606,6 +648,18 @@
             </div>
           </div>
 
+          <!-- IPTV fields (type == iptv) -->
+          <div id="form-group-iptv" class="hidden">
+            <div class="form-row">
+              <label id="form-iptv-playlist-label">Playlist URL <span class="required">*</span></label>
+              <input type="text" id="form-iptv-playlist" placeholder="https://example.com/playlist.m3u8">
+            </div>
+            <div class="form-row">
+              <label id="form-iptv-epg-label">EPG guide URL <span class="optional">Optional</span></label>
+              <input type="text" id="form-iptv-epg" placeholder="https://example.com/guide.xml.gz">
+            </div>
+          </div>
+
           <!-- Plex token (plex only) -->
           <div class="form-row hidden" id="form-row-token">
             <label>Plex Token <span class="optional">Optional</span></label>
@@ -614,19 +668,21 @@
           </div>
 
           <!-- Shared credentials (account for servers, optional creds for shares) -->
-          <div class="form-row">
-            <label>Username</label>
-            <input type="text" id="form-username" autocomplete="username">
-          </div>
-          <div class="form-row">
-            <label>Password</label>
-            <div class="password-field">
-              <input type="password" id="form-password" autocomplete="current-password">
-              <button type="button" class="password-reveal" id="form-password-reveal"
-                      aria-label="Show password" aria-pressed="false"
-                      onclick="togglePasswordReveal()">&#128065;</button>
+          <div id="form-group-credentials">
+            <div class="form-row">
+              <label>Username</label>
+              <input type="text" id="form-username" autocomplete="username">
             </div>
-            <div class="form-hint" id="form-cred-hint"></div>
+            <div class="form-row">
+              <label>Password</label>
+              <div class="password-field">
+                <input type="password" id="form-password" autocomplete="current-password">
+                <button type="button" class="password-reveal" id="form-password-reveal"
+                        aria-label="Show password" aria-pressed="false"
+                        onclick="togglePasswordReveal()">&#128065;</button>
+              </div>
+              <div class="form-hint" id="form-cred-hint"></div>
+            </div>
           </div>
 
           <div class="form-status" id="form-status"></div>

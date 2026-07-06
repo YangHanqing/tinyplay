@@ -5,10 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 
 	"tvremote/internal/config"
 	"tvremote/internal/i18n"
+	"tvremote/internal/iptv"
+	"tvremote/internal/player"
 	"tvremote/internal/provider"
 	"tvremote/internal/sysvolume"
 )
@@ -69,6 +73,8 @@ func safeServer(s *config.Server) map[string]any {
 		"type":            config.NormalizeServerType(s.Type),
 		"file_protocol":   s.FileProtocol,
 		"root":            s.Root,
+		"playlist_url":    s.PlaylistURL,
+		"epg_url":         s.EPGURL,
 	}
 }
 
@@ -108,7 +114,9 @@ func (s *Server) listServers(w http.ResponseWriter, r *http.Request) {
 	for _, srv := range config.Servers() {
 		m := safeServer(srv)
 		m["active"] = srv.ID == activeID
-		m["logged_in"] = srv.AccessToken != "" || (config.NormalizeServerType(srv.Type) == "file" && srv.Root != "")
+		m["logged_in"] = srv.AccessToken != "" ||
+			(config.NormalizeServerType(srv.Type) == "file" && srv.Root != "") ||
+			(config.NormalizeServerType(srv.Type) == "iptv" && srv.PlaylistURL != "")
 		out = append(out, m)
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -126,6 +134,8 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		Token        string   `json:"token"`
 		FileProtocol string   `json:"file_protocol"`
 		Root         string   `json:"root"`
+		PlaylistURL  string   `json:"playlist_url"`
+		EPGURL       string   `json:"epg_url"`
 	}
 	if !decode(r, &in) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
@@ -142,6 +152,8 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		Root:         in.Root,
 		Username:     in.Username,
 		Password:     in.Password,
+		PlaylistURL:  in.PlaylistURL,
+		EPGURL:       in.EPGURL,
 	}
 
 	// When credentials are supplied, verify the connection + login BEFORE saving
@@ -150,7 +162,7 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	// in-memory candidate and only persist on success.
 	var token, userID string
 	kind := config.NormalizeServerType(candidate.Type)
-	shouldVerify := kind == "file" || in.Token != "" || (in.Username != "" && in.Password != "")
+	shouldVerify := kind == "file" || kind == "iptv" || in.Token != "" || (in.Username != "" && in.Password != "")
 	if shouldVerify {
 		var err error
 		token, userID, err = provider.Authenticate(&candidate, in.Username, in.Password, in.Token)
@@ -164,6 +176,17 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	if token != "" {
 		config.SetAuth(srv.ID, in.Username, token, userID)
 		srv = config.GetServer(srv.ID)
+	}
+	if kind == "iptv" {
+		// The candidate has no id yet during provider.Authenticate above (the
+		// iptv cache is keyed by server id), so the real playlist/EPG fetch
+		// happens here, now that AddServer assigned one. A fetch failure rolls
+		// the add back rather than leaving a broken source behind.
+		if err := iptv.New(srv).Refresh(r.Context()); err != nil {
+			config.DeleteServer(srv.ID)
+			writeErr(w, r, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, safeServer(srv))
 }
@@ -282,6 +305,8 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 		EpisodeLabel string `json:"episode_label"`
 		PosterItemID string `json:"poster_item_id"`
 		Path         string `json:"path"`
+		ChannelID    string `json:"channel_id"`
+		VariantIndex int    `json:"variant_index"`
 	}
 	if !decode(r, &req) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
@@ -306,6 +331,26 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 		playURL := "http://127.0.0.1:" + strconv.Itoa(s.port) + "/api/files/stream?path=" + url.QueryEscape(req.Path)
 		opts := playOpts("", "", "", req.Title, "", "", "", 0, "")
 		result := s.player.Play(playURL, opts)
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if config.NormalizeServerType(active.Type) == "iptv" {
+		iptvClient, err := provider.ActiveIPTV()
+		if err != nil {
+			writeErr(w, r, err)
+			return
+		}
+		ch := iptvClient.ChannelByID(req.ChannelID)
+		if ch == nil || len(ch.Variants) == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"detail": i18n.Request(r, "channel_not_found")})
+			return
+		}
+		variantIndex := req.VariantIndex
+		if variantIndex < 0 || variantIndex >= len(ch.Variants) {
+			variantIndex = 0
+		}
+		result := s.player.Play(ch.Variants[variantIndex].URL, player.PlayOptions{Title: ch.Name, IsLive: true, ChannelID: ch.ID})
+		config.RecordIPTVRecent(active.ID, ch.ID, 50)
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
@@ -444,6 +489,213 @@ func (s *Server) filesStream(w http.ResponseWriter, r *http.Request) {
 	if err := c.Serve(w, r, r.URL.Query().Get("path")); err != nil {
 		writeErr(w, r, err)
 	}
+}
+
+// ── IPTV ─────────────────────────────────────────────────────────────────────
+
+// iptvClient resolves the ?server_id= query param to a Client, falling back
+// to the active server so the common case (browsing the currently-selected
+// IPTV source) needs no query param at all.
+func iptvClient(r *http.Request) (*iptv.Client, error) {
+	if id := r.URL.Query().Get("server_id"); id != "" {
+		return iptv.FromServer(id)
+	}
+	return iptv.FromActive()
+}
+
+func (s *Server) iptvSummary(w http.ResponseWriter, r *http.Request) {
+	c, err := iptvClient(r)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c.Summary())
+}
+
+func (s *Server) iptvRefresh(w http.ResponseWriter, r *http.Request) {
+	c, err := iptvClient(r)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if err := c.Refresh(r.Context()); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c.Summary())
+}
+
+func (s *Server) iptvCategories(w http.ResponseWriter, r *http.Request) {
+	c, err := iptvClient(r)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out := append([]string{"all", "favorites", "recent"}, c.Categories()...)
+	writeJSON(w, http.StatusOK, out)
+}
+
+func iptvChannelRow(c *iptv.Client, ch iptv.Channel, favorites map[string]bool) map[string]any {
+	row := map[string]any{
+		"id":            ch.ID,
+		"name":          ch.Name,
+		"logo_url":      ch.LogoURL,
+		"group_title":   ch.GroupTitle,
+		"quality":       ch.Quality,
+		"variant_count": len(ch.Variants),
+		"is_favorite":   favorites[ch.ID],
+		"has_epg":       false,
+	}
+	if p := c.CurrentProgramme(ch.ID); p != nil {
+		row["has_epg"] = true
+		row["current_programme"] = map[string]any{"title": p.Title}
+	} else {
+		row["current_programme"] = nil
+	}
+	return row
+}
+
+func (s *Server) iptvChannels(w http.ResponseWriter, r *http.Request) {
+	serverID := r.URL.Query().Get("server_id")
+	c, err := iptvClient(r)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if serverID == "" {
+		if active := config.ActiveServer(); active != nil {
+			serverID = active.ID
+		}
+	}
+	category := r.URL.Query().Get("category")
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+	favorites := map[string]bool{}
+	for _, id := range config.IPTVFavorites(serverID) {
+		favorites[id] = true
+	}
+	recent := map[string]int{}
+	for i, rc := range config.IPTVRecent(serverID) {
+		recent[rc.ChannelID] = i
+	}
+
+	out := []map[string]any{}
+	for _, ch := range c.Channels() {
+		switch category {
+		case "", "all":
+		case "favorites":
+			if !favorites[ch.ID] {
+				continue
+			}
+		case "recent":
+			if _, ok := recent[ch.ID]; !ok {
+				continue
+			}
+		default:
+			if ch.GroupTitle != category {
+				continue
+			}
+		}
+		if search != "" && !strings.Contains(strings.ToLower(ch.Name), search) {
+			continue
+		}
+		out = append(out, iptvChannelRow(c, ch, favorites))
+	}
+	if category == "recent" {
+		sort.Slice(out, func(i, j int) bool {
+			return recent[out[i]["id"].(string)] < recent[out[j]["id"].(string)]
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) iptvChannelDetail(w http.ResponseWriter, r *http.Request) {
+	c, err := iptvClient(r)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	ch := c.ChannelByID(r.PathValue("id"))
+	if ch == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"detail": i18n.Request(r, "channel_not_found")})
+		return
+	}
+	writeJSON(w, http.StatusOK, ch)
+}
+
+func (s *Server) iptvProgramme(w http.ResponseWriter, r *http.Request) {
+	c, err := iptvClient(r)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	channelID := r.URL.Query().Get("channel_id")
+	count := qInt(r, "count", 4)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current":  c.CurrentProgramme(channelID),
+		"upcoming": c.UpcomingProgrammes(channelID, count),
+	})
+}
+
+// iptvBodyServerID resolves a request body's server_id, falling back to the
+// active server so callers (the shared web/ frontend) don't need to track
+// the active source id just to record a favorite/recent-watch.
+func iptvBodyServerID(serverID string) string {
+	if serverID != "" {
+		return serverID
+	}
+	if active := config.ActiveServer(); active != nil {
+		return active.ID
+	}
+	return ""
+}
+
+func (s *Server) iptvFavorite(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ServerID  string `json:"server_id"`
+		ChannelID string `json:"channel_id"`
+		Favorite  *bool  `json:"favorite"`
+	}
+	if !decode(r, &body) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
+		return
+	}
+	serverID := iptvBodyServerID(body.ServerID)
+	if serverID == "" || body.ChannelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
+		return
+	}
+	favorites := config.IPTVFavorites(serverID)
+	isFavorite := false
+	for _, id := range favorites {
+		if id == body.ChannelID {
+			isFavorite = true
+			break
+		}
+	}
+	// Toggle records add/remove; an explicit favorite:false/true short-circuits
+	// when it already matches the current state, keeping the call idempotent.
+	if body.Favorite == nil || *body.Favorite != isFavorite {
+		favorites = config.ToggleIPTVFavorite(serverID, body.ChannelID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"favorites": favorites})
+}
+
+func (s *Server) iptvRecent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ServerID  string `json:"server_id"`
+		ChannelID string `json:"channel_id"`
+	}
+	if !decode(r, &body) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
+		return
+	}
+	serverID := iptvBodyServerID(body.ServerID)
+	if serverID == "" || body.ChannelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
+		return
+	}
+	recent := config.RecordIPTVRecent(serverID, body.ChannelID, 50)
+	writeJSON(w, http.StatusOK, map[string]any{"recently_watched": recent})
 }
 
 // ── System volume ─────────────────────────────────────────────────────────────

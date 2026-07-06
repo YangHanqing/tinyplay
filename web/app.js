@@ -78,6 +78,16 @@ let _hasAnyServer = true;
 let _filesPath = '';            // current folder path in file mode
 let _serverFormType = 'emby';   // type chosen in the add/edit form
 
+/* ── IPTV state ───────────────────────────────────────────────────────────── */
+let _iptvCategory = 'all';
+let _iptvSearch = '';
+let _iptvChannels = [];         // last-loaded channel rows for the active category/search
+let currentItemIsLive = false;  // true while an IPTV channel is the now-playing item
+let currentIPTVChannelId = '';
+let currentIPTVVariantCount = 0;
+let _iptvQualityOpen = false;
+let _iptvProgrammeOpen = false;
+
 const ASPECT_OPTIONS = [
   { value: 'fit',      labelKey: 'aspectFitLabel',      displayKey: 'aspectFitDisplay' },
   { value: 'zoom',     labelKey: 'aspectZoomLabel',     displayKey: 'aspectZoomDisplay' },
@@ -203,6 +213,10 @@ async function loadActiveSource() {
     await loadDir('');
     return;
   }
+  if (_activeSourceType === 'iptv') {
+    await _enterIPTVMode();
+    return;
+  }
   _exitFileMode();
   _setViewMode('home');
   await loadLibraryNav();
@@ -227,11 +241,23 @@ async function restorePlayerContext() {
       currentPosterItemId = state.poster_item_id || state.series_id || state.item_id || '';
       currentItemId    = state.item_id || '';
       currentItemIsSeries = !!currentSeriesId;
+      currentIPTVChannelId = state.is_live ? (state.channel_id || '') : '';
+      currentIPTVVariantCount = 0;
       setNowPlaying(state.title, {
         seriesTitle: currentSeriesTitle,
         episodeLabel: currentEpisodeLabel,
         posterItemId: currentPosterItemId,
+        isLive: !!state.is_live,
       });
+      if (state.is_live && currentIPTVChannelId) {
+        // variant_count isn't in /api/player/state; fetch it once so the
+        // quality tile's visibility (shown only when >1 variant) is correct
+        // right after a browser reconnect, not just after a fresh play().
+        api('GET', `/api/iptv/channel/${encodeURIComponent(currentIPTVChannelId)}`).then(ch => {
+          currentIPTVVariantCount = (ch.variants || []).length;
+          updateLiveControlsVisibility(currentItemIsLive);
+        }).catch(() => {});
+      }
     }
   } catch (_) { /* backend may not be ready yet */ }
 }
@@ -554,6 +580,8 @@ function setNowPlaying(title, meta = {}) {
     document.getElementById('player-info')?.classList.add('hidden');
   }
   updateEpisodeNavVisibility(currentItemIsSeries);
+  currentItemIsLive = !!meta.isLive;
+  updateLiveControlsVisibility(currentItemIsLive);
   if (posterItemId && hasTitle) {
     applyPosterColor(`/api/emby/image/${encodeURIComponent(posterItemId)}?max_height=80`);
   } else if (!hasTitle) {
@@ -570,6 +598,20 @@ function updateEpisodeNavVisibility(isSeries) {
   }
 }
 
+// Live channels have no seek bar/duration (nothing to scrub through) and get
+// two extra tool tiles (quality/variant switcher, programme guide) instead —
+// everything else (play/pause, audio, subtitles, aspect, speed) is already
+// source-agnostic and needs no change.
+function updateLiveControlsVisibility(isLive) {
+  document.querySelector('.playback-progress')?.classList.toggle('hidden', isLive);
+  document.getElementById('btn-seek-backward')?.classList.toggle('hidden', isLive);
+  document.getElementById('btn-seek-forward')?.classList.toggle('hidden', isLive);
+  document.getElementById('tool-tile-iptv-quality')?.classList.toggle('hidden', !isLive || currentIPTVVariantCount <= 1);
+  document.getElementById('tool-tile-iptv-guide')?.classList.toggle('hidden', !isLive);
+  _setText('tool-tile-iptv-quality-label', tr('iptvQualitySwitcher'));
+  _setText('tool-tile-iptv-guide-label', tr('iptvProgrammeGuide'));
+}
+
 function updateLibraryEmptyState(isEmpty) {
   document.getElementById('lib-empty-state')?.classList.toggle('hidden', !isEmpty);
   document.getElementById('lib-home-view')?.classList.toggle('hidden', isEmpty);
@@ -584,6 +626,7 @@ function _setViewMode(mode) {
   document.getElementById('lib-search-area')?.classList.toggle('hidden', mode !== 'search');
   document.getElementById('library-toolbar')?.classList.toggle('hidden', mode !== 'browse');
   document.getElementById('lib-files-view')?.classList.toggle('hidden', mode !== 'files');
+  document.getElementById('lib-iptv-view')?.classList.toggle('hidden', mode !== 'iptv');
 }
 
 /* ── Tab navigation ───────────────────────────────────────────────────────── */
@@ -596,7 +639,7 @@ function switchTab(tab) {
   document.getElementById('nav-library').classList.toggle('active', tab === 'library');
   document.getElementById('nav-remote').classList.toggle('active', tab === 'remote');
   document.getElementById('nav-settings').classList.toggle('active', tab === 'settings');
-  document.getElementById('search-toggle')?.classList.toggle('hidden', tab !== 'library' || _activeSourceType === 'file' || !_hasAnyServer);
+  document.getElementById('search-toggle')?.classList.toggle('hidden', tab !== 'library' || _activeSourceType === 'file' || _activeSourceType === 'iptv' || !_hasAnyServer);
   document.getElementById('btn-exit')?.classList.toggle('hidden', tab !== 'remote');
   if (tab !== 'library' && isSearching) cancelSearch();
   if (tab === 'settings') renderSettingsUi();
@@ -1021,6 +1064,90 @@ function onSpeedBackdropClick(event) {
   if (event.target.id === 'speed-backdrop') closeSpeedSheet();
 }
 
+/* ── IPTV quality/variant switcher sheet ──────────────────────────────────── */
+async function openIPTVQualitySheet() {
+  if (!currentIPTVChannelId) return;
+  _iptvQualityOpen = true;
+  document.getElementById('iptv-quality-backdrop').classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  const list = document.getElementById('iptv-quality-list');
+  if (list) list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvRefreshing'))}</div>`;
+  try {
+    const ch = await api('GET', `/api/iptv/channel/${encodeURIComponent(currentIPTVChannelId)}`);
+    const variants = ch.variants || [];
+    currentIPTVVariantCount = variants.length;
+    if (list) {
+      list.innerHTML = variants.map((v, i) => `
+        <button class="track-pill" onclick="selectIPTVVariant(${i})">${esc(v.label || `#${i + 1}`)}</button>
+      `).join('') || `<div class="iptv-empty">${esc(tr('iptvNoChannels'))}</div>`;
+    }
+  } catch (e) {
+    if (list) list.innerHTML = `<div class="iptv-empty">${esc(e.message)}</div>`;
+  }
+}
+function closeIPTVQualitySheet() {
+  _iptvQualityOpen = false;
+  document.getElementById('iptv-quality-backdrop').classList.add('hidden');
+  document.body.classList.remove('sheet-open');
+}
+function onIPTVQualityBackdropClick(event) {
+  if (event.target.id === 'iptv-quality-backdrop') closeIPTVQualitySheet();
+}
+async function selectIPTVVariant(index) {
+  closeIPTVQualitySheet();
+  if (!currentIPTVChannelId) return;
+  try {
+    await api('POST', '/api/player/play', { channel_id: currentIPTVChannelId, variant_index: index });
+    _fetchAndUpdateProps();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/* ── IPTV programme guide sheet ───────────────────────────────────────────── */
+function _iptvProgrammeTimeLabel(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+async function openIPTVProgrammeSheet() {
+  if (!currentIPTVChannelId) return;
+  _iptvProgrammeOpen = true;
+  document.getElementById('iptv-programme-backdrop').classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  const list = document.getElementById('iptv-programme-list');
+  if (list) list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvRefreshing'))}</div>`;
+  try {
+    const data = await api('GET', `/api/iptv/programme?channel_id=${encodeURIComponent(currentIPTVChannelId)}&count=4`);
+    const rows = [];
+    if (data.current) {
+      rows.push(`<div class="iptv-programme-row current">
+        <div class="iptv-programme-when">${esc(tr('iptvCurrentProgramme'))} · ${esc(_iptvProgrammeTimeLabel(data.current.start))}</div>
+        <div class="iptv-programme-title">${esc(data.current.title || '')}</div>
+      </div>`);
+    }
+    (data.upcoming || []).forEach(p => {
+      rows.push(`<div class="iptv-programme-row">
+        <div class="iptv-programme-when">${esc(_iptvProgrammeTimeLabel(p.start))}</div>
+        <div class="iptv-programme-title">${esc(p.title || '')}</div>
+      </div>`);
+    });
+    if (list) {
+      list.innerHTML = rows.join('') || `<div class="iptv-empty">${esc(tr('iptvNoProgrammeInfo'))}</div>`;
+    }
+  } catch (e) {
+    if (list) list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvNoProgrammeInfo'))}</div>`;
+  }
+}
+function closeIPTVProgrammeSheet() {
+  _iptvProgrammeOpen = false;
+  document.getElementById('iptv-programme-backdrop').classList.add('hidden');
+  document.body.classList.remove('sheet-open');
+}
+function onIPTVProgrammeBackdropClick(event) {
+  if (event.target.id === 'iptv-programme-backdrop') closeIPTVProgrammeSheet();
+}
+
 /* ── More sheet ───────────────────────────────────────────────────────────── */
 function openMoreSheet() {
   _moreSheetOpen = true;
@@ -1439,27 +1566,38 @@ function _setText(id, val) {
 /* ── Source-type helpers ──────────────────────────────────────────────────── */
 function _normType(type) {
   const t = String(type || 'emby').toLowerCase();
-  return ['emby', 'jellyfin', 'plex', 'file'].includes(t) ? t : 'emby';
+  return ['emby', 'jellyfin', 'plex', 'file', 'iptv'].includes(t) ? t : 'emby';
+}
+
+function _typeLabel(t) {
+  if (t === 'file') return tr('typeFile');
+  if (t === 'iptv') return tr('typeIptv');
+  return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
 function _sourceBadge(type) {
   const t = _normType(type);
-  const label = t === 'file' ? tr('typeFile') : (t.charAt(0).toUpperCase() + t.slice(1));
-  return `<span class="source-badge source-${t}">${esc(label)}</span>`;
+  return `<span class="source-badge source-${t}">${esc(_typeLabel(t))}</span>`;
 }
 
 // Avatar chip shown in the server dropdown/manager list: a colored square with
-// the source type's first letter (Emby/Jellyfin/Plex/file-share icon letter).
+// the source type's first letter (Emby/Jellyfin/Plex/file-share/IPTV icon letter).
 function _sourceAvatarHtml(type) {
   const t = _normType(type);
-  const label = t === 'file' ? tr('typeFile') : (t.charAt(0).toUpperCase() + t.slice(1));
-  return `<span class="smi-avatar st-${t}">${esc(label[0] || '?')}</span>`;
+  return `<span class="smi-avatar st-${t}">${esc(_typeLabel(t)[0] || '?')}</span>`;
 }
 
 function _sourceMeta(s) {
   if (_normType(s.type) === 'file') {
     const proto = s.file_protocol || 'local';
     return s.root ? `${proto} · ${_truncate(s.root, 30)}` : proto;
+  }
+  if (_normType(s.type) === 'iptv') {
+    try {
+      return s.playlist_url ? new URL(s.playlist_url).host : '';
+    } catch (_) {
+      return _truncate(s.playlist_url || '', 30);
+    }
   }
   const hosts = s.hosts || [];
   const host = hosts[s.active_host || 0] || '?';
@@ -1475,7 +1613,7 @@ async function refreshServerSwitcher() {
     updateLibraryEmptyState(!_hasAnyServer);
     document.getElementById('search-toggle')?.classList.toggle(
       'hidden',
-      _activeTab !== 'library' || _activeSourceType === 'file' || !_hasAnyServer
+      _activeTab !== 'library' || _activeSourceType === 'file' || _activeSourceType === 'iptv' || !_hasAnyServer
     );
 
     // Update header button
@@ -1601,6 +1739,10 @@ async function reloadLibraryForActiveServer(message = tr('loadingLibrary')) {
   if (_activeSourceType === 'file') {
     _enterFileMode();
     await loadDir('');
+    return;
+  }
+  if (_activeSourceType === 'iptv') {
+    await _enterIPTVMode();
     return;
   }
   _exitFileMode();
@@ -2764,18 +2906,24 @@ function renderServerList(servers) {
   }
   el.innerHTML = servers.map(s => {
     const isFile   = _normType(s.type) === 'file';
+    const isIPTV   = _normType(s.type) === 'iptv';
     const hosts    = s.hosts || [];
     const activeH  = s.active_host || 0;
-    const hostsHtml = isFile ? '' : hosts.map((h, i) => `
+    const hostsHtml = (isFile || isIPTV) ? '' : hosts.map((h, i) => `
       <div class="host-row ${i === activeH ? 'active-host' : ''}"
            onclick="switchServerHost(event, '${s.id}', ${i}, ${s.active})">
         <div class="host-dot ${i === activeH ? 'active' : ''}"></div>
         <div class="host-addr">${esc(h)}:${s.port}</div>
         ${i === activeH ? `<div class="host-tag">${tr('current')}</div>` : (i === 0 ? `<div class="host-tag" style="color:var(--text-muted)">${tr('primary')}</div>` : `<div class="host-tag" style="color:var(--text-muted)">${tr('secondary')}</div>`)}
       </div>`).join('');
-    const statusHtml = isFile
-      ? `<span class="server-status file-meta">${esc(_sourceMeta(s))}</span>`
-      : `<span class="server-status ${s.logged_in ? 'logged-in' : 'not-logged'}">${s.logged_in ? tr('loggedIn') : tr('notLoggedIn')}</span>`;
+    // The iptv summary (channel/EPG counts) needs a network round-trip, so the
+    // span starts with the synchronous playlist-host meta and is patched in
+    // place by refreshIPTVServerCardStatus() once the summary call resolves.
+    const statusHtml = isIPTV
+      ? `<span class="server-status file-meta" id="iptv-summary-${s.id}">${esc(_sourceMeta(s))}</span>`
+      : isFile
+        ? `<span class="server-status file-meta">${esc(_sourceMeta(s))}</span>`
+        : `<span class="server-status ${s.logged_in ? 'logged-in' : 'not-logged'}">${s.logged_in ? tr('loggedIn') : tr('notLoggedIn')}</span>`;
     return `
       <div class="server-card ${s.active ? 'active-server' : ''}">
         <div class="server-card-header">
@@ -2792,6 +2940,23 @@ function renderServerList(servers) {
         </div>
       </div>`;
   }).join('');
+  servers.filter(s => _normType(s.type) === 'iptv').forEach(refreshIPTVServerCardStatus);
+}
+
+async function refreshIPTVServerCardStatus(s) {
+  try {
+    const summary = await api('GET', `/api/iptv/summary?server_id=${encodeURIComponent(s.id)}`);
+    const el = document.getElementById(`iptv-summary-${s.id}`);
+    if (!el) return;
+    const statusKey = summary.refresh_status === 'ok' ? 'iptvSourceStatusOk'
+      : (summary.refresh_status === 'error' ? 'iptvSourceStatusError' : 'iptvSourceStatusPending');
+    el.textContent = [
+      tr('iptvChannelsCount', { count: summary.channel_count || 0 }),
+      tr('iptvEpgMatched', { count: summary.epg_matched_count || 0 }),
+      tr(statusKey),
+    ].join(' · ');
+    el.classList.toggle('iptv-status-error', summary.refresh_status === 'error');
+  } catch (_) {}
 }
 
 function openServerForm(serverId) {
@@ -2815,6 +2980,8 @@ function openServerForm(serverId) {
     document.getElementById('form-password').value = '';
     document.getElementById('form-token').value    = '';
     document.getElementById('form-root').value     = '';
+    document.getElementById('form-iptv-playlist').value = '';
+    document.getElementById('form-iptv-epg').value = '';
     const advanced = document.getElementById('form-advanced-options');
     if (advanced) advanced.open = false;
     resetPasswordReveal();
@@ -2839,6 +3006,8 @@ function openServerForm(serverId) {
       document.getElementById('form-password').value = '';
       _renderFileProtocolOptions(s.file_protocol || 'local');
       document.getElementById('form-root').value     = s.root || '';
+      document.getElementById('form-iptv-playlist').value = s.playlist_url || '';
+      document.getElementById('form-iptv-epg').value = s.epg_url || '';
       setServerFormType(_normType(s.type));
     });
   } else {
@@ -2931,6 +3100,29 @@ async function saveAndLogin() {
     return;
   }
 
+  // ── IPTV (M3U/M3U8 + optional XMLTV EPG) ───────────────────────────────────
+  if (type === 'iptv') {
+    const playlistUrl = document.getElementById('form-iptv-playlist').value.trim();
+    const epgUrl = document.getElementById('form-iptv-epg').value.trim();
+    if (!playlistUrl) { setStatus(tr('needPlaylistUrl'), 'err'); return; }
+    setStatus(tr('iptvRefreshing'));
+    try {
+      let id = serverId;
+      if (serverId) {
+        await api('PUT', `/api/servers/${serverId}`, { name, type, playlist_url: playlistUrl, epg_url: epgUrl });
+        // PUT only patches config; unlike add, it doesn't refresh the parsed
+        // channel/EPG cache, so a changed URL needs an explicit refresh here.
+        await api('POST', `/api/iptv/refresh?server_id=${encodeURIComponent(serverId)}`);
+      } else {
+        const srv = await api('POST', '/api/servers', { name, type, playlist_url: playlistUrl, epg_url: epgUrl });
+        id = srv.id;
+      }
+      setStatus(tr('saved'), 'ok');
+      await _onSaveSuccess(id);
+    } catch (e) { setStatus(e.message, 'err'); }
+    return;
+  }
+
   // ── Media server (emby / jellyfin / plex) ─────────────────────────────────
   const protocol = document.querySelector('input[name="proto"]:checked')?.value || 'http';
   const hosts    = ['form-host0','form-host1','form-host2','form-host3','form-host4']
@@ -2982,13 +3174,18 @@ function setServerFormType(type) {
   document.querySelectorAll('#form-type-seg .type-seg-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.type === _serverFormType));
   const isFile = _serverFormType === 'file';
-  document.getElementById('form-group-server')?.classList.toggle('hidden', isFile);
+  const isIPTV = _serverFormType === 'iptv';
+  document.getElementById('form-group-server')?.classList.toggle('hidden', isFile || isIPTV);
   document.getElementById('form-group-file')?.classList.toggle('hidden', !isFile);
+  document.getElementById('form-group-iptv')?.classList.toggle('hidden', !isIPTV);
   document.getElementById('form-row-token')?.classList.toggle('hidden', _serverFormType !== 'plex');
+  // IPTV has no per-channel authentication in 1.0 — the account/password
+  // fields would just sit there doing nothing, so hide the whole block.
+  document.getElementById('form-group-credentials')?.classList.toggle('hidden', isIPTV);
 
   // Default port per media-server type (preserve a custom port).
   const portInput = document.getElementById('form-port');
-  if (portInput && !isFile) {
+  if (portInput && !isFile && !isIPTV) {
     const cur = portInput.value;
     if (!cur || cur === '8096' || cur === '32400') portInput.value = (_serverFormType === 'plex') ? '32400' : '8096';
   }
@@ -2998,7 +3195,7 @@ function setServerFormType(type) {
   _updateRootHint();
 
   const btn = document.getElementById('form-submit-btn');
-  if (btn) btn.textContent = isFile ? tr('save') : tr('saveAndLogin');
+  if (btn) btn.textContent = (isFile || isIPTV) ? tr('save') : tr('saveAndLogin');
 }
 
 function _renderFileProtocolOptions(selected = 'local') {
@@ -3041,6 +3238,194 @@ function _enterFileMode() {
 
 function _exitFileMode() {
   document.getElementById('search-toggle')?.classList.toggle('hidden', _activeTab !== 'library');
+}
+
+/* ── IPTV channel browser ─────────────────────────────────────────────────── */
+function _enterIPTVMode() {
+  switchTab('library');
+  document.getElementById('search-toggle')?.classList.add('hidden');
+  _setViewMode('iptv');
+  _iptvCategory = 'all';
+  _iptvSearch = '';
+  return Promise.all([loadIPTVSourceStatus(), loadIPTVCategories(), loadIPTVChannels()]);
+}
+
+function _exitIPTVMode() {
+  document.getElementById('search-toggle')?.classList.toggle('hidden', _activeTab !== 'library');
+}
+
+async function loadIPTVSourceStatus() {
+  const el = document.getElementById('iptv-source-status');
+  if (!el) return;
+  el.innerHTML = `<span>${esc(tr('iptvRefreshing'))}</span>`;
+  try {
+    const s = await api('GET', '/api/iptv/summary');
+    renderIPTVSourceStatus(s);
+  } catch (e) {
+    el.innerHTML = `<span class="iptv-status-error">${esc(e.message)}</span>`;
+  }
+}
+
+function renderIPTVSourceStatus(s) {
+  const el = document.getElementById('iptv-source-status');
+  if (!el) return;
+  const statusKey = s.refresh_status === 'ok' ? 'iptvSourceStatusOk'
+    : (s.refresh_status === 'error' ? 'iptvSourceStatusError' : 'iptvSourceStatusPending');
+  const parts = [
+    tr('iptvChannelsCount', { count: s.channel_count || 0 }),
+    tr('iptvEpgMatched', { count: s.epg_matched_count || 0 }),
+  ];
+  if (s.last_refreshed) {
+    const time = new Date(s.last_refreshed);
+    if (!isNaN(time)) parts.push(tr('iptvLastUpdated', { time: time.toLocaleString() }));
+  }
+  const statusCls = s.refresh_status === 'error' ? ' iptv-status-error' : '';
+  el.innerHTML = `
+    <span>${parts.map(esc).join(' · ')}</span>
+    <span class="${statusCls}">${esc(tr(statusKey))}</span>
+    <button class="section-more-btn" onclick="refreshIPTVSource()">${esc(tr('iptvRefreshNow'))}</button>
+  `;
+}
+
+async function refreshIPTVSource() {
+  try {
+    const s = await api('POST', '/api/iptv/refresh');
+    renderIPTVSourceStatus(s);
+    await Promise.all([loadIPTVCategories(), loadIPTVChannels()]);
+    toast(tr('iptvRefreshed'));
+  } catch (e) {
+    toast(e.message || tr('iptvRefreshFailed'), true);
+  }
+}
+
+async function loadIPTVCategories() {
+  try {
+    const categories = await api('GET', '/api/iptv/categories');
+    renderIPTVCategoryPills(categories);
+  } catch (_) {
+    renderIPTVCategoryPills(['all', 'favorites', 'recent']);
+  }
+}
+
+function _iptvCategoryLabel(cat) {
+  if (cat === 'all') return tr('categoryAll');
+  if (cat === 'favorites') return tr('categoryFavorites');
+  if (cat === 'recent') return tr('categoryRecent');
+  return cat;
+}
+
+function renderIPTVCategoryPills(categories) {
+  const row = document.getElementById('iptv-category-row');
+  if (!row) return;
+  row.innerHTML = categories.map(cat => `
+    <button class="iptv-category-pill${cat === _iptvCategory ? ' active' : ''}"
+            onclick="selectIPTVCategory('${jsStr(cat)}')">${esc(_iptvCategoryLabel(cat))}</button>
+  `).join('');
+}
+
+function selectIPTVCategory(cat) {
+  if (cat === _iptvCategory) return;
+  _iptvCategory = cat;
+  document.querySelectorAll('#iptv-category-row .iptv-category-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent === _iptvCategoryLabel(cat));
+  });
+  loadIPTVChannels();
+}
+
+async function loadIPTVChannels() {
+  const list = document.getElementById('iptv-channel-list');
+  if (list) list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvRefreshing'))}</div>`;
+  try {
+    const params = new URLSearchParams();
+    if (_iptvCategory && _iptvCategory !== 'all') params.set('category', _iptvCategory);
+    if (_iptvSearch) params.set('search', _iptvSearch);
+    const channels = await api('GET', `/api/iptv/channels?${params.toString()}`);
+    _iptvChannels = channels;
+    renderIPTVChannelList(channels);
+  } catch (e) {
+    if (list) list.innerHTML = `<div class="iptv-empty">${esc(e.message || tr('iptvLoadChannelsFailed'))}</div>`;
+  }
+}
+
+function _iptvChannelLogoHtml(channel) {
+  const letter = esc((channel.name || '?').trim()[0] || '?');
+  const fallback = `<div class="iptv-channel-logo-fallback">${letter}</div>`;
+  if (!channel.logo_url) return `<div class="iptv-channel-logo-wrap">${fallback}</div>`;
+  return `<div class="iptv-channel-logo-wrap">
+    ${fallback}
+    <img class="iptv-channel-logo" src="${esc(channel.logo_url)}" alt="" loading="lazy" onerror="this.remove()">
+  </div>`;
+}
+
+function renderIPTVChannelList(channels) {
+  const list = document.getElementById('iptv-channel-list');
+  if (!list) return;
+  if (!channels.length) {
+    list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvNoChannels'))}</div>`;
+    return;
+  }
+  list.innerHTML = channels.map(ch => {
+    const metaParts = [ch.group_title].filter(Boolean);
+    // Graceful no-EPG fallback: current_programme is simply absent, no
+    // separate "no guide" row layout — just one less piece of meta text.
+    if (ch.current_programme && ch.current_programme.title) metaParts.push(ch.current_programme.title);
+    return `
+    <div class="iptv-channel-row" role="button" tabindex="0"
+         onclick="playIPTVChannel('${jsStr(ch.id)}', ${ch.variant_count || 1})"
+         onkeydown="if(event.key==='Enter')playIPTVChannel('${jsStr(ch.id)}', ${ch.variant_count || 1})">
+      ${_iptvChannelLogoHtml(ch)}
+      <div class="iptv-channel-body">
+        <div class="iptv-channel-name-row">
+          <span class="iptv-channel-name">${esc(ch.name)}</span>
+          ${ch.quality ? `<span class="iptv-channel-quality">${esc(ch.quality)}</span>` : ''}
+        </div>
+        <div class="iptv-channel-meta">${esc(metaParts.join(' · '))}</div>
+      </div>
+      <button class="iptv-channel-favorite${ch.is_favorite ? ' active' : ''}"
+              aria-label="${ch.is_favorite ? esc(tr('iptvRemoveFromFavorites')) : esc(tr('iptvAddToFavorites'))}"
+              onclick="toggleIPTVChannelFavorite(event, '${jsStr(ch.id)}')">${ch.is_favorite ? '★' : '☆'}</button>
+    </div>`;
+  }).join('');
+}
+
+async function toggleIPTVChannelFavorite(event, channelId) {
+  event.stopPropagation();
+  try {
+    await api('POST', '/api/iptv/favorite', { channel_id: channelId });
+    await loadIPTVChannels();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function playIPTVChannel(channelId, variantCount = 1) {
+  _hadProps = false;
+  _currentAspect = 'fit';
+  _loopFile = false;
+  currentItemId = '';
+  currentSeriesId = '';
+  currentSeasonId = '';
+  currentSeriesTitle = '';
+  currentEpisodeLabel = '';
+  currentPosterItemId = '';
+  currentItemIsSeries = false;
+  currentIPTVChannelId = channelId;
+  currentIPTVVariantCount = variantCount;
+  const channel = _iptvChannels.find(c => c.id === channelId);
+  setNowPlaying(channel ? channel.name : '', { isLive: true });
+  switchTab('remote');
+  document.getElementById('play-loading-tag')?.classList.remove('hidden');
+  document.getElementById('player-info-placeholder')?.classList.remove('hidden');
+  document.getElementById('player-info')?.classList.add('hidden');
+  try {
+    await api('POST', '/api/player/play', { channel_id: channelId, variant_index: 0 });
+    _fetchAndUpdateProps();
+  } catch (e) {
+    toast(e.message, true);
+    setNowPlaying('');
+  } finally {
+    document.getElementById('play-loading-tag')?.classList.add('hidden');
+  }
 }
 
 async function loadDir(path = '') {

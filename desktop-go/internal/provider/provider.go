@@ -5,10 +5,12 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"tvremote/internal/config"
 	"tvremote/internal/emby"
 	"tvremote/internal/filesource"
+	"tvremote/internal/iptv"
 	"tvremote/internal/plex"
 )
 
@@ -101,6 +103,8 @@ func Active() (Media, error) {
 		return &plexMedia{plex.New(s)}, nil
 	case "file":
 		return nil, &APIError{400, "The active source is a file source"}
+	case "iptv":
+		return nil, &APIError{400, "The active source is an IPTV source"}
 	default:
 		return &embyMedia{emby.New(s), config.NormalizeServerType(s.Type)}, nil
 	}
@@ -123,12 +127,21 @@ func Authenticate(s *config.Server, username, password, token string) (string, s
 			return "", "", err
 		}
 		return "", "", nil
+	case "iptv":
+		// The real playlist/EPG fetch happens after AddServer assigns a
+		// server id (see handlers.createServer) since the iptv package
+		// caches per-id — this only validates the required field up front.
+		if strings.TrimSpace(s.PlaylistURL) == "" {
+			return "", "", &APIError{400, "A playlist URL is required"}
+		}
+		return "", "", nil
 	default:
 		return emby.Authenticate(s, username, password)
 	}
 }
 func VerifyFile(s *config.Server) error       { return filesource.New(s).Verify() }
 func ActiveFile() (*filesource.Client, error) { return filesource.FromActive() }
+func ActiveIPTV() (*iptv.Client, error)       { return iptv.FromActive() }
 
 func EmptyItems() []byte {
 	b, _ := json.Marshal(map[string]any{"Items": []any{}, "TotalRecordCount": 0})

@@ -32,6 +32,7 @@ const (
 var messages = map[string]map[string]string{
 	ZH: {
 		"default_server_name":      "Emby 服务器",
+		"default_iptv_name":        "IPTV 源",
 		"invalid_body":             "请求体无效",
 		"server_not_found":         "找不到该服务器",
 		"host_index_out_of_range":  "host_index 超出范围",
@@ -93,9 +94,14 @@ var messages = map[string]map[string]string{
 		"log_server_delete":        "删除服务器",
 		"log_server_get":           "查询服务器",
 		"log_settings":             "设置",
+		"channel_not_found":        "找不到该频道",
+		"playlist_url_required":    "请输入播放列表地址",
+		"no_iptv_source":           "没有可用的 IPTV 源",
+		"no_such_iptv_source":      "找不到该 IPTV 源",
 	},
 	EN: {
 		"default_server_name":      "Emby Server",
+		"default_iptv_name":        "IPTV Source",
 		"invalid_body":             "Invalid request body",
 		"server_not_found":         "Server not found",
 		"host_index_out_of_range":  "host_index is out of range",
@@ -157,6 +163,10 @@ var messages = map[string]map[string]string{
 		"log_server_delete":        "Delete server",
 		"log_server_get":           "Get server",
 		"log_settings":             "Settings",
+		"channel_not_found":        "Channel not found",
+		"playlist_url_required":    "A playlist URL is required",
+		"no_iptv_source":           "No IPTV source is available",
+		"no_such_iptv_source":      "No such IPTV source",
 	},
 }
 
@@ -237,8 +247,12 @@ func LocalizeError(lang, msg string) string {
 		"Incorrect username or password":                      "bad_credentials",
 		"No Emby login endpoint found":                        "login_endpoint_not_found",
 		"Login succeeded but AccessToken/User.Id was missing": "missing_login_token",
-		"Login failed":     "login_failed_short",
-		"Server not found": "server_not_found",
+		"Login failed":                "login_failed_short",
+		"Server not found":            "server_not_found",
+		"Channel not found":           "channel_not_found",
+		"A playlist URL is required":  "playlist_url_required",
+		"No IPTV source is available": "no_iptv_source",
+		"No such IPTV source":         "no_such_iptv_source",
 		"没有可用的 Emby 服务器，请先添加并登录":        "no_emby_server",
 		"还没有配置服务器地址":                    "no_server_address",
 		"还没有配置 Emby 服务器":                "no_emby_config",
@@ -249,6 +263,10 @@ func LocalizeError(lang, msg string) string {
 		"登录成功但没有返回 AccessToken/User.Id": "missing_login_token",
 		"登录失败":                          "login_failed_short",
 		"找不到该服务器":                       "server_not_found",
+		"找不到该频道":                        "channel_not_found",
+		"请输入播放列表地址":                     "playlist_url_required",
+		"没有可用的 IPTV 源":                  "no_iptv_source",
+		"找不到该 IPTV 源":                   "no_such_iptv_source",
 	}
 	if key, ok := pairs[msg]; ok {
 		return T(lang, key)

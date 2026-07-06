@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="cctv1.cn">
+    <display-name>CCTV-1</display-name>
+  </channel>
+  <programme start="20260706190000 +0800" stop="20260706193000 +0800" channel="cctv1.cn">
+    <title lang="zh">新闻联播</title>
+    <sub-title lang="zh"></sub-title>
+    <desc lang="zh">今日要闻</desc>
+  </programme>
+  <programme start="20260706193000 +0800" stop="20260706203000 +0800" channel="cctv1.cn">
+    <title lang="zh">焦点访谈</title>
+  </programme>
+  <programme start="not-a-valid-time" stop="20260706210000 +0800" channel="cctv1.cn">
+    <title lang="zh">Malformed entry, should be skipped</title>
+  </programme>
+  <programme start="20260706120000 +0800" stop="20260706123000 +0800" channel="cctv5.cn">
+    <title lang="zh">体育新闻</title>
+  </programme>
+</tv>

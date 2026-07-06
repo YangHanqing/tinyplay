@@ -51,6 +51,17 @@ type PlayContext struct {
 	SeriesTitle  string `json:"series_title"`
 	EpisodeLabel string `json:"episode_label"`
 	PosterItemID string `json:"poster_item_id"`
+	// IsLive marks an IPTV channel play: the frontend hides the seek bar and
+	// duration for these instead of inferring it from the active source type
+	// (a source switch could happen mid-session).
+	IsLive bool `json:"is_live"`
+	// ChannelID is deliberately separate from ItemID: ItemID doubles as the
+	// gate for this package's own background Emby progress/stop reporting
+	// (see fireStopReport/progressRun below), which must stay suppressed for
+	// IPTV (a channel is not an Emby item). ChannelID exists purely so
+	// state() can still tell the frontend which channel survived a browser
+	// reconnect, without re-enabling that reporting.
+	ChannelID string `json:"channel_id"`
 }
 
 // PlayOptions are the arguments to Play (mirrors player.play kwargs).
@@ -62,8 +73,10 @@ type PlayOptions struct {
 	SeriesTitle   string
 	EpisodeLabel  string
 	PosterItemID  string
+	ChannelID     string
 	StartSeconds  float64
 	MediaSourceID string
+	IsLive        bool
 }
 
 // Player owns the mpv process and its IPC connection.
@@ -433,6 +446,8 @@ func (p *Player) State() map[string]any {
 		"series_title":   ctx.SeriesTitle,
 		"episode_label":  ctx.EpisodeLabel,
 		"poster_item_id": ctx.PosterItemID,
+		"is_live":        ctx.IsLive,
+		"channel_id":     ctx.ChannelID,
 	}
 }
 
@@ -558,6 +573,8 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		SeriesTitle:  opt.SeriesTitle,
 		EpisodeLabel: opt.EpisodeLabel,
 		PosterItemID: opt.PosterItemID,
+		IsLive:       opt.IsLive,
+		ChannelID:    opt.ChannelID,
 	}
 	p.mu.Unlock()
 	return result
