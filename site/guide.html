@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="TinyPlay 使用指南：根据你是否已有媒体服务器、是否需要海报墙体验，选择最适合你的接入方式。" data-i18n="guide_meta_description" data-i18n-attr="content">
+  <meta name="theme-color" content="#07110f">
+  <title data-i18n="guide_page_title">使用指南 — TinyPlay</title>
+  <link rel="icon" href="assets/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="index.html" aria-label="TinyPlay 首页">
+      <img class="brand-mark" src="assets/favicon.png" alt="" aria-hidden="true">
+      <span>TinyPlay</span>
+    </a>
+    <nav aria-label="页面导航">
+      <a href="#server" data-i18n="guide_nav1_title">已有 NAS 或服务器</a>
+      <a href="#local" data-i18n="guide_nav2_title">不在意海报墙</a>
+      <a href="#selfhost" data-i18n="guide_nav3_title">想要海报墙</a>
+      <button type="button" class="lang-toggle" id="lang-toggle" onclick="toggleSiteLang()" aria-label="切换语言 / Switch language">
+        <span class="lang-opt" data-lang="zh-CN">中文</span><span class="lang-sep">/</span><span class="lang-opt" data-lang="en">EN</span>
+      </button>
+      <a class="nav-cta" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n="nav_download">下载</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="guide-hero section-shell">
+      <a class="back-link" href="index.html" data-i18n="guide_back_home">← 返回首页</a>
+      <p class="eyebrow"><span class="eyebrow-dash"></span> <span class="eyebrow-text" data-i18n="guide_eyebrow">GETTING STARTED</span></p>
+      <h1 data-i18n="guide_title">三条路径，找到最适合你的起步方式</h1>
+      <p class="hero-lead" data-i18n="guide_lead">无论你是已经在跑 NAS 的老玩家，还是第一次接触家庭媒体服务器，都能在几分钟内看到 TinyPlay 真正跑起来的样子。下面按你目前的情况分成几条路径，挑一条对应你的即可，彼此互不冲突，也可以都试试。</p>
+    </section>
+
+    <section class="section-shell">
+      <div class="path-nav">
+        <a href="#server">
+          <span data-i18n="guide_nav1_tag">路径一</span>
+          <h3 data-i18n="guide_nav1_title">已有 NAS 或服务器</h3>
+          <p data-i18n="guide_nav1_desc">已经在用 Emby、Jellyfin 或 Plex，直接连接。</p>
+        </a>
+        <a href="#local">
+          <span data-i18n="guide_nav2_tag">路径二</span>
+          <h3 data-i18n="guide_nav2_title">不在意海报墙</h3>
+          <p data-i18n="guide_nav2_desc">跳过服务器，直接播放本地或局域网文件。</p>
+        </a>
+        <a href="#selfhost">
+          <span data-i18n="guide_nav3_tag">路径三</span>
+          <h3 data-i18n="guide_nav3_title">想要海报墙</h3>
+          <p data-i18n="guide_nav3_desc">还没有服务器？搭一个最简单的。</p>
+        </a>
+        <a href="#iptv">
+          <span data-i18n="guide_nav4_tag">路径四 · 可选</span>
+          <h3 data-i18n="guide_nav4_title">只想先看效果</h3>
+          <p data-i18n="guide_nav4_desc">不装任何服务器，用一条直播源试试。</p>
+        </a>
+      </div>
+    </section>
+
+    <section class="guide-section section-shell" id="server">
+      <div class="section-heading">
+        <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="guide_s1_eyebrow">PATH ONE</span></p>
+        <h2 data-i18n="guide_s1_title">已经熟悉 NAS 或媒体服务器</h2>
+      </div>
+      <p class="section-body" data-i18n="guide_s1_body">如果你的 NAS 或电脑上已经在运行 Emby、Jellyfin 或 Plex，不需要额外准备：打开 TinyPlay，在"添加服务器"中选择对应类型，填入地址、端口与账号即可。媒体库会照常以海报墙形式呈现，选集、搜索、最近观看与续播都会正常工作。</p>
+      <div class="callout" data-lang-only="zh-CN">
+        <span class="callout-mark">◆</span>
+        <div>
+          <h4 data-i18n="guide_s1_callout_title">国产 NAS 用户请注意</h4>
+          <p data-i18n-html="guide_s1_callout_body">如果你使用的是<b>极空间</b>，其自带的媒体服务功能兼容 Emby 接口协议，添加服务器时选择「Emby」类型即可；如果是<b>飞牛影视（fnOS）</b>，则兼容 Jellyfin 接口协议，选择「Jellyfin」类型即可。这是两款国内常见的第三方 NAS 系统，如果你还不了解，可自行搜索了解详情。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="guide-section section-shell" id="local">
+      <div class="section-heading">
+        <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="guide_s2_eyebrow">PATH TWO</span></p>
+        <h2 data-i18n="guide_s2_title">不需要海报墙，直接播放本地文件</h2>
+      </div>
+      <p class="section-body" data-i18n="guide_s2_body">如果你暂时不打算搭建媒体服务器，也不在意海报墙式的浏览体验，可以直接把 TinyPlay 指向一个文件夹或网络共享——添加服务器时选择「文件」类型，用手机以面包屑目录的方式浏览并点选播放。暂停、进度、字幕、音轨、倍速等播放控制与连接服务器时完全一致，只是没有海报、剧集信息与续播记录。</p>
+      <div class="os-grid">
+        <div class="os-card">
+          <b data-i18n="guide_os_mac">macOS</b>
+          <div class="os-step">
+            <h4 data-i18n="guide_os_mac_local_title">播放本机目录</h4>
+            <p data-i18n="guide_os_mac_local_body">协议选择「本机 / 已挂载路径」，路径直接填 Finder 里的文件夹（如 /Users/xxx/Movies）；也可以先用「访达 → 前往 → 连接服务器」把 NAS 共享挂载好，再按本机路径浏览。</p>
+          </div>
+          <div class="os-step">
+            <h4 data-i18n="guide_os_mac_smb_title">直接播放 NAS 共享</h4>
+            <p data-i18n="guide_os_mac_smb_body">协议选择「SMB 共享」，无需提前挂载，直接填共享地址、账号与密码即可。</p>
+          </div>
+        </div>
+        <div class="os-card">
+          <b data-i18n="guide_os_win">Windows</b>
+          <div class="os-step">
+            <h4 data-i18n="guide_os_win_local_title">播放本机目录</h4>
+            <p data-i18n="guide_os_win_local_body">协议选择「本机 / 已挂载路径」，路径可以是任意本地盘符（如 D:\Movies）；也可以先在"此电脑"里"映射网络驱动器"，把 NAS 共享映射成一个盘符后再按本机路径浏览。</p>
+          </div>
+          <div class="os-step">
+            <h4 data-i18n="guide_os_win_smb_title">直接播放 NAS 共享</h4>
+            <p data-i18n="guide_os_win_smb_body">协议同样选择「SMB 共享」，直接填共享地址、账号与密码，无需先映射驱动器。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="guide-section section-shell" id="selfhost">
+      <div class="section-heading">
+        <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="guide_s3_eyebrow">PATH THREE</span></p>
+        <h2 data-i18n="guide_s3_title">想要海报墙体验，但还没有服务器</h2>
+      </div>
+      <p class="section-body" data-i18n="guide_s3_body">如果你想要完整的媒体库海报墙、剧集选集与续播体验，最简单的办法是先搭建一个媒体服务器，再用 TinyPlay 连接它。</p>
+      <div class="reco-card">
+        <div class="reco-badge">
+          <span data-i18n="guide_reco_tag">中文用户推荐</span>
+          <strong data-i18n="guide_reco_title">Jellyfin</strong>
+        </div>
+        <p data-i18n="guide_reco_body">完全免费开源，官方提供一条命令即可运行的 Docker 镜像，中文资料与社区齐全，且无需注册海外账号，在国内网络环境下也能正常使用。群晖、威联通、极空间、飞牛等主流 NAS 系统大多也已提供一键安装的 Jellyfin 套件。搭建完成后，在 TinyPlay 中选择「Jellyfin」类型添加服务器即可。</p>
+      </div>
+    </section>
+
+    <section class="guide-section section-shell" id="iptv">
+      <div class="section-heading">
+        <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="guide_s4_eyebrow">PATH FOUR · OPTIONAL</span></p>
+        <h2 data-i18n="guide_s4_title">只想先看效果，试试电视直播</h2>
+      </div>
+      <p class="section-body" data-i18n="guide_s4_body">如果你手头有一个 M3U / M3U8 播放列表地址（例如自有的电视直播源），添加服务器时选择「IPTV」类型，粘贴播放列表地址即可看到频道列表；如果同时有节目单（XMLTV）地址，还能看到每个频道正在播出的节目。这是最快看到 TinyPlay 播放效果的方式，不需要任何服务器。</p>
+    </section>
+
+    <section class="guide-cta section-shell">
+      <div>
+        <h2 data-i18n="guide_cta_title">准备好了吗？</h2>
+        <p data-i18n="guide_cta_body">下载 TinyPlay，几分钟内就能把那台小主机接管电视。</p>
+      </div>
+      <a class="button light-button" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n="guide_cta_button">下载 macOS / Windows</a>
+    </section>
+  </main>
+
+  <footer>
+    <a class="brand" href="index.html"><img class="brand-mark" src="assets/favicon.png" alt=""><span>TinyPlay</span></a>
+    <p data-i18n="footer_tagline">Turn the little box into the big screen.</p>
+    <div><a href="https://github.com/YangHanqing/tinyplay">GitHub</a><a href="https://github.com/YangHanqing/tinyplay/releases/latest">Releases</a><a href="https://github.com/YangHanqing/tinyplay/blob/main/LICENSE" data-i18n="footer_license">MIT License</a></div>
+  </footer>
+
+  <script src="assets/site.js"></script>
+</body>
+</html>

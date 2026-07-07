@@ -9,6 +9,7 @@
     nav_why: '为什么',
     nav_features: '功能',
     nav_choose: '选购指南',
+    nav_guide: '使用指南',
     nav_appletv: '查看 Apple TV',
     nav_download: '下载',
     hero_eyebrow: '手机控制，电脑播放',
@@ -27,7 +28,7 @@
     why2_title: '但"能播放"不等于"好控制"',
     why2_body: '电脑接上电视很简单，真正麻烦的是窝在沙发里选片、拖进度、切字幕：键盘鼠标不属于客厅，远程桌面又太重。',
     why3_title: '于是有了 TinyPlay',
-    why3_body: '选片、拖进度条、切换倍速——这些你会反复动手的操作，全部挪到手机上完成。桌面端连接 Emby、Jellyfin、Plex 或 SMB/WebDAV 共享并驱动内置的万能播放器，手机扫码即可浏览媒体库。播放留在电脑，控制回到你手里。',
+    why3_body: '选片、拖进度条、切换倍速——这些你会反复动手的操作，全部挪到手机上完成。桌面端连接 Emby、Jellyfin、Plex、IPTV 直播源或 SMB/WebDAV 共享并驱动内置的万能播放器，手机扫码即可浏览媒体库或频道列表。播放留在电脑，控制回到你手里。',
     features_title: '电脑负责兼容性，<br>手机负责顺手。',
     features_lead: '内置的万能播放器负责真正的播放，TinyPlay 负责把媒体库、遥控器和桌面播放器连在一起。没有云端中转，操作都发生在你的家庭局域网里。',
     feature1_title: '手机浏览媒体库',
@@ -38,6 +39,8 @@
     feature3_body: '切换轨道、调整字幕延迟，不再起身碰电脑。',
     feature4_title: '扫码即用',
     feature4_body: '手机不装 App、不注册账号，打开浏览器就是遥控器。',
+    feature5_title: 'IPTV 直播频道',
+    feature5_body: '导入 M3U/M3U8 播放列表即可看频道列表，配合 XMLTV 节目单显示正在播出的节目，支持收藏与最近观看。',
     flow_title: '三步，把 HDMI 用起来。',
     flow1_title: '安装',
     flow1_body: '在 Windows 小主机或 Apple Silicon Mac 上运行 TinyPlay。',
@@ -111,6 +114,61 @@
     appletv_modal_title: 'Apple TV 版本',
     appletv_modal_body: '正在开发中，敬请期待。',
     appletv_modal_close: '好的',
+
+    guide_page_title: '使用指南 — TinyPlay',
+    guide_meta_description: 'TinyPlay 使用指南：根据你是否已有媒体服务器、是否需要海报墙体验，选择最适合你的接入方式。',
+    guide_back_home: '← 返回首页',
+    guide_eyebrow: 'GETTING STARTED',
+    guide_title: '三条路径，找到最适合你的起步方式',
+    guide_lead: '无论你是已经在跑 NAS 的老玩家，还是第一次接触家庭媒体服务器，都能在几分钟内看到 TinyPlay 真正跑起来的样子。下面按你目前的情况分成几条路径，挑一条对应你的即可，彼此互不冲突，也可以都试试。',
+
+    guide_nav1_tag: '路径一',
+    guide_nav1_title: '已有 NAS 或服务器',
+    guide_nav1_desc: '已经在用 Emby、Jellyfin 或 Plex，直接连接。',
+    guide_nav2_tag: '路径二',
+    guide_nav2_title: '不在意海报墙',
+    guide_nav2_desc: '跳过服务器，直接播放本地或局域网文件。',
+    guide_nav3_tag: '路径三',
+    guide_nav3_title: '想要海报墙',
+    guide_nav3_desc: '还没有服务器？搭一个最简单的。',
+    guide_nav4_tag: '路径四 · 可选',
+    guide_nav4_title: '只想先看效果',
+    guide_nav4_desc: '不装任何服务器，用一条直播源试试。',
+
+    guide_s1_eyebrow: 'PATH ONE',
+    guide_s1_title: '已经熟悉 NAS 或媒体服务器',
+    guide_s1_body: '如果你的 NAS 或电脑上已经在运行 Emby、Jellyfin 或 Plex，不需要额外准备：打开 TinyPlay，在"添加服务器"中选择对应类型，填入地址、端口与账号即可。媒体库会照常以海报墙形式呈现，选集、搜索、最近观看与续播都会正常工作。',
+    guide_s1_callout_title: '国产 NAS 用户请注意',
+    guide_s1_callout_body: '如果你使用的是<b>极空间</b>，其自带的媒体服务功能兼容 Emby 接口协议，添加服务器时选择「Emby」类型即可；如果是<b>飞牛影视（fnOS）</b>，则兼容 Jellyfin 接口协议，选择「Jellyfin」类型即可。这是两款国内常见的第三方 NAS 系统，如果你还不了解，可自行搜索了解详情。',
+
+    guide_s2_eyebrow: 'PATH TWO',
+    guide_s2_title: '不需要海报墙，直接播放本地文件',
+    guide_s2_body: '如果你暂时不打算搭建媒体服务器，也不在意海报墙式的浏览体验，可以直接把 TinyPlay 指向一个文件夹或网络共享——添加服务器时选择「文件」类型，用手机以面包屑目录的方式浏览并点选播放。暂停、进度、字幕、音轨、倍速等播放控制与连接服务器时完全一致，只是没有海报、剧集信息与续播记录。',
+    guide_os_mac: 'macOS',
+    guide_os_mac_local_title: '播放本机目录',
+    guide_os_mac_local_body: '协议选择「本机 / 已挂载路径」，路径直接填 Finder 里的文件夹（如 /Users/xxx/Movies）；也可以先用「访达 → 前往 → 连接服务器」把 NAS 共享挂载好，再按本机路径浏览。',
+    guide_os_mac_smb_title: '直接播放 NAS 共享',
+    guide_os_mac_smb_body: '协议选择「SMB 共享」，无需提前挂载，直接填共享地址、账号与密码即可。',
+    guide_os_win: 'Windows',
+    guide_os_win_local_title: '播放本机目录',
+    guide_os_win_local_body: '协议选择「本机 / 已挂载路径」，路径可以是任意本地盘符（如 D:\\Movies）；也可以先在"此电脑"里"映射网络驱动器"，把 NAS 共享映射成一个盘符后再按本机路径浏览。',
+    guide_os_win_smb_title: '直接播放 NAS 共享',
+    guide_os_win_smb_body: '协议同样选择「SMB 共享」，直接填共享地址、账号与密码，无需先映射驱动器。',
+
+    guide_s3_eyebrow: 'PATH THREE',
+    guide_s3_title: '想要海报墙体验，但还没有服务器',
+    guide_s3_body: '如果你想要完整的媒体库海报墙、剧集选集与续播体验，最简单的办法是先搭建一个媒体服务器，再用 TinyPlay 连接它。',
+    guide_reco_tag: '中文用户推荐',
+    guide_reco_title: 'Jellyfin',
+    guide_reco_body: '完全免费开源，官方提供一条命令即可运行的 Docker 镜像，中文资料与社区齐全，且无需注册海外账号，在国内网络环境下也能正常使用。群晖、威联通、极空间、飞牛等主流 NAS 系统大多也已提供一键安装的 Jellyfin 套件。搭建完成后，在 TinyPlay 中选择「Jellyfin」类型添加服务器即可。',
+
+    guide_s4_eyebrow: 'PATH FOUR · OPTIONAL',
+    guide_s4_title: '只想先看效果，试试电视直播',
+    guide_s4_body: '如果你手头有一个 M3U / M3U8 播放列表地址（例如自有的电视直播源），添加服务器时选择「IPTV」类型，粘贴播放列表地址即可看到频道列表；如果同时有节目单（XMLTV）地址，还能看到每个频道正在播出的节目。这是最快看到 TinyPlay 播放效果的方式，不需要任何服务器。',
+
+    guide_cta_title: '准备好了吗？',
+    guide_cta_body: '下载 TinyPlay，几分钟内就能把那台小主机接管电视。',
+    guide_cta_button: '下载 macOS / Windows',
   };
   messages[EN] = {
     page_title: 'TinyPlay — squeeze out your mini PC, turn it into a living-room player',
@@ -118,6 +176,7 @@
     nav_why: 'Why',
     nav_features: 'Features',
     nav_choose: 'Buying guide',
+    nav_guide: 'Getting started',
     nav_appletv: 'View Apple TV',
     nav_download: 'Download',
     hero_eyebrow: 'Phone control, computer playback',
@@ -136,7 +195,7 @@
     why2_title: '"Can play" isn’t "easy to control"',
     why2_body: 'Plugging a computer into the TV is the easy part. The annoying part is picking a title, scrubbing, switching subtitles from the couch: a keyboard and mouse don’t belong in the living room, and remote desktop is overkill.',
     why3_title: 'So we built TinyPlay',
-    why3_body: 'Picking a title, scrubbing, switching playback speed — the parts you touch again and again — all move to your phone. The desktop app connects to Emby, Jellyfin, Plex, or an SMB/WebDAV share and drives a built-in do-it-all player; scan a QR code to browse the library. Playback stays on the computer, control comes back to your hand.',
+    why3_body: 'Picking a title, scrubbing, switching playback speed — the parts you touch again and again — all move to your phone. The desktop app connects to Emby, Jellyfin, Plex, an IPTV live-TV source, or an SMB/WebDAV share and drives a built-in do-it-all player; scan a QR code to browse the library or channel list. Playback stays on the computer, control comes back to your hand.',
     features_title: 'The computer handles compatibility,<br>the phone handles convenience.',
     features_lead: 'A built-in do-it-all player handles the actual playback; TinyPlay connects your media library, remote, and desktop player together. No cloud relay — everything happens on your home LAN.',
     feature1_title: 'Browse your library from your phone',
@@ -147,6 +206,8 @@
     feature3_body: 'Switch tracks and adjust subtitle delay without getting up.',
     feature4_title: 'Scan and go',
     feature4_body: 'No app to install, no account to create — open a browser and it’s a remote.',
+    feature5_title: 'IPTV live channels',
+    feature5_body: 'Import an M3U/M3U8 playlist to get a channel list; add an XMLTV guide to see what’s currently airing. Favorites and recently-watched are supported too.',
     flow_title: 'Three steps to put that HDMI port to work.',
     flow1_title: 'Install',
     flow1_body: 'Run TinyPlay on your Windows mini PC or Apple Silicon Mac.',
@@ -220,6 +281,59 @@
     appletv_modal_title: 'Apple TV version',
     appletv_modal_body: 'In development — stay tuned.',
     appletv_modal_close: 'Got it',
+
+    guide_page_title: 'Getting Started — TinyPlay',
+    guide_meta_description: 'A TinyPlay getting-started guide: pick the setup path that matches whether you already run a media server and whether you want the poster-wall experience.',
+    guide_back_home: '← Back to home',
+    guide_eyebrow: 'GETTING STARTED',
+    guide_title: 'Four paths — find the one that fits where you’re starting from',
+    guide_lead: 'Whether you’re a seasoned home-server enthusiast or setting one up for the first time, you can see TinyPlay running end-to-end within minutes. Pick the path below that matches your situation — they’re independent, so use whichever fits, or try more than one.',
+
+    guide_nav1_tag: 'Path one',
+    guide_nav1_title: 'Already have a NAS or server',
+    guide_nav1_desc: 'Running Emby, Jellyfin, or Plex already — just connect.',
+    guide_nav2_tag: 'Path two',
+    guide_nav2_title: 'Don’t need a poster wall',
+    guide_nav2_desc: 'Skip the server, play local or LAN files directly.',
+    guide_nav3_tag: 'Path three',
+    guide_nav3_title: 'Want the poster wall',
+    guide_nav3_desc: 'No server yet? Stand up the simplest one.',
+    guide_nav4_tag: 'Path four · optional',
+    guide_nav4_title: 'Just want to see it work',
+    guide_nav4_desc: 'No server at all — try a live-TV source.',
+
+    guide_s1_eyebrow: 'PATH ONE',
+    guide_s1_title: 'Already comfortable with a NAS or media server',
+    guide_s1_body: 'If Emby, Jellyfin, or Plex is already running on your NAS or computer, there’s nothing extra to prepare: open TinyPlay, choose the matching type under “Add Server,” and enter the address, port, and credentials. Your library appears as the familiar poster wall, with episodes, search, resume, and recently-watched all working as expected.',
+
+    guide_s2_eyebrow: 'PATH TWO',
+    guide_s2_title: 'No poster wall needed — just play local files',
+    guide_s2_body: 'If you’re not ready to run a media server and don’t need the poster-wall browsing experience, point TinyPlay straight at a folder or network share instead — choose the “Files” type under “Add Server” and browse a breadcrumb-style folder list from your phone. Playback controls (pause, seek, subtitles, audio tracks, speed) work exactly the same; you just won’t get posters, episode metadata, or resume history.',
+    guide_os_mac: 'macOS',
+    guide_os_mac_local_title: 'Playing a folder on this Mac',
+    guide_os_mac_local_body: 'Choose “Local / mounted path” and point it at any folder (e.g. /Users/you/Movies) — or mount a NAS share first via Finder → Go → Connect to Server, then browse it the same way.',
+    guide_os_mac_smb_title: 'Playing a NAS share directly',
+    guide_os_mac_smb_body: 'Choose “SMB share” and enter the share address plus credentials — no need to mount it first.',
+    guide_os_win: 'Windows',
+    guide_os_win_local_title: 'Playing a folder on this PC',
+    guide_os_win_local_body: 'Choose “Local / mounted path” and point it at any drive letter (e.g. D:\\Movies) — or map the NAS share to a drive letter first via This PC → Map network drive, then browse it the same way.',
+    guide_os_win_smb_title: 'Playing a NAS share directly',
+    guide_os_win_smb_body: 'Choose “SMB share” and enter the share address plus credentials — no drive mapping required.',
+
+    guide_s3_eyebrow: 'PATH THREE',
+    guide_s3_title: 'Want the poster wall, but don’t have a server yet',
+    guide_s3_body: 'For the full poster-wall library, episode browsing, and resume experience, the simplest route is to stand up a media server first, then point TinyPlay at it.',
+    guide_reco_tag: 'Recommended',
+    guide_reco_title: 'Plex',
+    guide_reco_body: 'The most widely supported option in North America, with a mature phone and TV app ecosystem and a one-line Docker image to get started. TinyPlay’s own player handles the actual playback, so a Plex Pass isn’t required for anything TinyPlay uses. Once it’s running, add it in TinyPlay as a “Plex” type server.',
+
+    guide_s4_eyebrow: 'PATH FOUR · OPTIONAL',
+    guide_s4_title: 'Just want to see it work — try live TV',
+    guide_s4_body: 'If you already have an M3U/M3U8 playlist URL (say, an existing live-TV source), choose the “IPTV” type under “Add Server” and paste the playlist URL to see a channel list right away. Add an XMLTV guide URL too, and you’ll see what’s currently airing on each channel. It’s the fastest way to see TinyPlay play something, with no server required at all.',
+
+    guide_cta_title: 'Ready when you are.',
+    guide_cta_body: 'Download TinyPlay and let that mini PC take over the TV in minutes.',
+    guide_cta_button: 'Download macOS / Windows',
   };
 
   var STORAGE_KEY = 'tinyplay_site_lang';
@@ -250,6 +364,9 @@
     });
     document.querySelectorAll('#lang-toggle .lang-opt').forEach(function (el) {
       el.classList.toggle('active', el.getAttribute('data-lang') === lang);
+    });
+    document.querySelectorAll('[data-lang-only]').forEach(function (el) {
+      el.classList.toggle('hidden', el.getAttribute('data-lang-only') !== lang);
     });
   }
 

@@ -356,6 +356,23 @@ func (c *Client) Episodes(series, season string, start, limit int, order string)
 	return marshalItems(out[start:end], int64(total))
 }
 
+func (c *Client) Seasons(seriesID string) ([]byte, error) {
+	d, e := c.get("/library/metadata/"+url.PathEscape(seriesID)+"/children", nil)
+	if e != nil {
+		return nil, e
+	}
+	out := []map[string]any{}
+	for _, m := range metadata(d) {
+		if strings.EqualFold(stringValue(m["type"]), "season") {
+			out = append(out, mapItem(m, false))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return integer(out[i]["IndexNumber"]) < integer(out[j]["IndexNumber"])
+	})
+	return marshalItems(out, int64(len(out)))
+}
+
 func (c *Client) ImageBytes(id string, maxHeight int, imageType string) ([]byte, string) {
 	d, e := c.get("/library/metadata/"+url.PathEscape(id), nil)
 	if e != nil {

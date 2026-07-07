@@ -42,6 +42,8 @@ let sheetEpisodesTotal = 0;
 let sheetEpisodesLoading = false;
 let _sheetEpisodePage = 0;
 let _sheetEpisodeSort = 'asc';
+let sheetSeasons = [];      // [] when the source has one season or the seasons API isn't available
+let sheetSeasonId = '';
 
 let _propPollTimer = null;
 let _propPolling = false;
@@ -2246,13 +2248,13 @@ async function openVideoSheet(itemId) {
     if (item.Type === 'Episode' && item.SeriesId) {
       // Open the parent series sheet and scroll to this episode.
       const series = await api('GET', `/api/emby/items/${encodeURIComponent(item.SeriesId)}`);
-      _locateEpisode = { id: item.Id, num: Number(item.IndexNumber) || null };
+      _locateEpisode = { id: item.Id, num: Number(item.IndexNumber) || null, seasonId: item.SeasonId || '' };
       renderSeriesSheet(series);
-      await loadSheetEpisodes(series.Id);
+      await initSheetSeasons(series.Id);
       _locateEpisode = null;
     } else if (item.Type === 'Series') {
       renderSeriesSheet(item);
-      await loadSheetEpisodes(item.Id);
+      await initSheetSeasons(item.Id);
     } else if (item.Type === 'BoxSet') {
       renderBoxSetSheet(item);
       await loadBoxSetItems(item.Id);
@@ -2299,16 +2301,13 @@ function renderSeriesSheet(item) {
   sheetSeriesId = item.Id;
   sheetEpisodesTotal = 0;
   sheetEpisodesLoading = false;
-  // Jump to the page containing the episode we want to locate — either an
-  // explicit target (for example a recent card) or the current episode.
-  _sheetEpisodePage = (_locateEpisode && _locateEpisode.num)
-    ? _pageForEpisodeNum(_locateEpisode.num)
-    : ((currentSeriesId === item.Id && currentItemId) ? _estimateEpisodePage() : 0);
+  _sheetEpisodePage = 0;
   currentSeriesId = item.Id;
   currentSeriesTitle = item.Name || '';
   const sortLabel = _sheetEpisodeSort === 'asc' ? tr('sortAsc') : tr('sortDesc');
   document.getElementById('video-sheet-content').innerHTML = `
     ${sheetHeroHtml(item, tr('series'))}
+    <div class="season-chip-row hidden" id="season-chip-row"></div>
     <div class="episode-tools">
       <button class="episode-sort-btn" id="episode-sort-btn" onclick="toggleEpisodeSort()">${sortLabel}</button>
       <div class="episode-count-wrap">
@@ -2321,6 +2320,65 @@ function renderSeriesSheet(item) {
       </div>
     </div>
     <div class="sheet-episodes" id="sheet-episodes"></div>`;
+}
+
+// Fetches the season list for a series and, if it has more than one season,
+// shows a season picker defaulting to whichever season contains the episode
+// being located (or the one currently playing). Older backends without a
+// seasons endpoint (or a single-season show) fall back transparently to the
+// flat, all-episodes list this sheet used before.
+async function initSheetSeasons(seriesId) {
+  sheetSeasons = [];
+  sheetSeasonId = '';
+  _sheetEpisodePage = 0;
+  try {
+    const data = await api('GET', `/api/emby/seasons?series_id=${encodeURIComponent(seriesId)}`);
+    const seasons = (data.Items || []).filter(s => s && s.Id);
+    if (seasons.length > 1) {
+      sheetSeasons = seasons;
+      sheetSeasonId = _pickDefaultSeason(seasons, seriesId);
+    }
+  } catch (_) {
+    // Seasons API unavailable — keep the flat list behavior.
+  }
+  const row = document.getElementById('season-chip-row');
+  if (row) {
+    row.innerHTML = sheetSeasons.map(seasonChipHtml).join('');
+    row.classList.toggle('hidden', !sheetSeasons.length);
+  }
+  if (_locateEpisode && _locateEpisode.num) {
+    _sheetEpisodePage = _pageForEpisodeNum(_locateEpisode.num);
+  } else if (currentSeriesId === seriesId && currentItemId &&
+             (!sheetSeasons.length || sheetSeasonId === currentSeasonId)) {
+    _sheetEpisodePage = _estimateEpisodePage();
+  }
+  await loadSheetEpisodes(seriesId);
+}
+
+function _pickDefaultSeason(seasons, seriesId) {
+  const locateSeasonId = _locateEpisode && _locateEpisode.seasonId;
+  if (locateSeasonId && seasons.some(s => s.Id === locateSeasonId)) return locateSeasonId;
+  if (currentSeriesId === seriesId && currentSeasonId && seasons.some(s => s.Id === currentSeasonId)) {
+    return currentSeasonId;
+  }
+  const nonSpecial = seasons.find(s => (s.IndexNumber || 0) > 0);
+  return (nonSpecial || seasons[0]).Id;
+}
+
+function seasonChipHtml(season) {
+  const active = season.Id === sheetSeasonId;
+  const label = season.Name || ((season.IndexNumber || 0) > 0 ? tr('seasonNum', { num: season.IndexNumber }) : tr('specials'));
+  return `<button class="season-chip${active ? ' active' : ''}" data-season-id="${season.Id}" onclick="selectSheetSeason('${season.Id}')">${esc(label)}</button>`;
+}
+
+function selectSheetSeason(seasonId) {
+  if (seasonId === sheetSeasonId || sheetEpisodesLoading) return;
+  sheetSeasonId = seasonId;
+  _sheetEpisodePage = 0;
+  document.querySelectorAll('#season-chip-row .season-chip').forEach(el => {
+    el.classList.toggle('active', el.dataset.seasonId === seasonId);
+  });
+  loadSheetEpisodes(sheetSeriesId);
 }
 
 function sheetHeroHtml(item, subtitle = '') {
@@ -2414,6 +2472,7 @@ async function loadSheetEpisodes(seriesId) {
   try {
     const qs = new URLSearchParams({
       series_id: seriesId,
+      season_id: sheetSeasonId || '',
       start: pageStart,
       limit: EPISODE_PAGE_SIZE,
       sort: _sheetEpisodeSort,

@@ -23,6 +23,7 @@ type Media interface {
 	Resume(limit int) ([]byte, error)
 	ItemDetailRaw(id string) ([]byte, error)
 	Episodes(series, season string, start, limit int, sort string) ([]byte, error)
+	Seasons(seriesID string) ([]byte, error)
 	ImageBytes(id string, maxHeight int, imageType string) ([]byte, string)
 	BackdropBytes(id string, maxHeight, index int) ([]byte, string)
 	ChoosePlayURL(id string) (PlayChoice, error)
@@ -47,6 +48,7 @@ func (m *embyMedia) ItemDetailRaw(a string) ([]byte, error) { return m.c.ItemDet
 func (m *embyMedia) Episodes(a, b string, c, d int, e string) ([]byte, error) {
 	return m.c.Episodes(a, b, c, d, e)
 }
+func (m *embyMedia) Seasons(a string) ([]byte, error) { return m.c.Seasons(a) }
 func (m *embyMedia) ImageBytes(a string, b int, c string) ([]byte, string) {
 	return m.c.ImageBytes(a, b, c)
 }
@@ -76,6 +78,7 @@ func (m *plexMedia) ItemDetailRaw(a string) ([]byte, error) { return m.c.ItemDet
 func (m *plexMedia) Episodes(a, b string, c, d int, e string) ([]byte, error) {
 	return m.c.Episodes(a, b, c, d, e)
 }
+func (m *plexMedia) Seasons(a string) ([]byte, error) { return m.c.Seasons(a) }
 func (m *plexMedia) ImageBytes(a string, b int, c string) ([]byte, string) {
 	return m.c.ImageBytes(a, b, c)
 }

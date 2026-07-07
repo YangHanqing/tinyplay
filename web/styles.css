@@ -470,6 +470,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .sheet-play:active { opacity: .85; }
 .sheet-state { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-muted); text-align: center; padding: 22px; }
 .sheet-state.compact { min-height: 96px; }
+.season-chip-row { display: flex; gap: 6px; overflow-x: auto; margin: 16px 0 -4px; padding-bottom: 2px; scrollbar-width: none; }
+.season-chip-row::-webkit-scrollbar { display: none; }
+.season-chip { flex-shrink: 0; padding: 7px 14px; border-radius: 20px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.07); color: rgba(255,255,255,.72); font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit; white-space: nowrap; transition: background .12s, border-color .12s, color .12s; }
+.season-chip:active { background: rgba(255,255,255,.12); }
+.season-chip.active { border-color: rgba(167,139,250,.55); background: rgba(124,92,252,.22); color: #fff; }
 .episode-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 18px 0 10px; }
 .episode-sort-btn { flex-shrink: 0; padding: 6px 11px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface2); color: var(--text-muted); font-size: 12px; font-weight: 650; cursor: pointer; font-family: inherit; transition: color .12s, border-color .12s; }
 .episode-sort-btn:active { color: var(--text); }

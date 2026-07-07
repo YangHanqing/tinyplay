@@ -57,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/emby/items", s.embyItems)
 	mux.HandleFunc("GET /api/emby/items/{item_id}", s.embyItemDetail)
 	mux.HandleFunc("GET /api/emby/episodes", s.embyEpisodes)
+	mux.HandleFunc("GET /api/emby/seasons", s.embySeasons)
 	mux.HandleFunc("GET /api/emby/image/{item_id}", s.embyImage)
 
 	// ── File sources (local / SMB / WebDAV) ──

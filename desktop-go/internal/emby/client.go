@@ -349,6 +349,11 @@ func (c *Client) Episodes(seriesID, seasonID string, start, limit int, sort stri
 	return c.request("GET", "/Shows/"+seriesID+"/Episodes", q, nil)
 }
 
+func (c *Client) Seasons(seriesID string) ([]byte, error) {
+	q := url.Values{"UserId": {c.userID()}}
+	return c.request("GET", "/Shows/"+seriesID+"/Seasons", q, nil)
+}
+
 // ── Images ───────────────────────────────────────────────────────────────────
 
 // ImageBytes returns the image content and its content-type, or nil if missing.

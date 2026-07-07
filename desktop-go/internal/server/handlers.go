@@ -416,7 +416,40 @@ func (s *Server) embyItems(w http.ResponseWriter, r *http.Request) {
 		qInt(r, "limit", 60),
 		search != "",
 	)
+	if err == nil && search != "" {
+		body = dropUnmatchedEpisodes(body, search)
+	}
 	writeRaw(w, r, body, err)
+}
+
+// dropUnmatchedEpisodes removes Episode results that only matched because the
+// server indexes an episode under its parent series name — otherwise a
+// series-title search floods the results with every episode of that show.
+// An episode stays only if its own title contains the search term.
+func dropUnmatchedEpisodes(body []byte, search string) []byte {
+	var payload struct {
+		Items            []map[string]any `json:"Items"`
+		TotalRecordCount int              `json:"TotalRecordCount"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	q := strings.ToLower(search)
+	filtered := payload.Items[:0]
+	for _, item := range payload.Items {
+		if typ, _ := item["Type"].(string); typ == "Episode" {
+			name, _ := item["Name"].(string)
+			if !strings.Contains(strings.ToLower(name), q) {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	payload.Items = filtered
+	if out, err := json.Marshal(payload); err == nil {
+		return out
+	}
+	return body
 }
 
 func (s *Server) embyItemDetail(w http.ResponseWriter, r *http.Request) {
@@ -446,6 +479,16 @@ func (s *Server) embyEpisodes(w http.ResponseWriter, r *http.Request) {
 		qInt(r, "limit", 100),
 		sort,
 	)
+	writeRaw(w, r, body, err)
+}
+
+func (s *Server) embySeasons(w http.ResponseWriter, r *http.Request) {
+	c, err := provider.Active()
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	body, err := c.Seasons(r.URL.Query().Get("series_id"))
 	writeRaw(w, r, body, err)
 }
 
