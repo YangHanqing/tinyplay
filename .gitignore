@@ -8,12 +8,11 @@ config.json
 .env.*
 
 # Build outputs
-desktop-go/build/
-desktop-go/dist/
-desktop-go/mpvstage/
-desktop-go/mpv_extract/
-desktop-go/internal/webui/dist/*
-!desktop-go/internal/webui/dist/.gitkeep
+build/
+dist/
+mpvstage/
+mpv_extract/
+mpv.7z
 *.app
 *.dmg
 *.exe

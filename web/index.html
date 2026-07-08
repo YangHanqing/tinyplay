@@ -86,7 +86,7 @@
         </svg>
         <div class="remote-empty-title" data-i18n="noMediaSourceYet">No media source yet</div>
         <div class="remote-empty-hint" data-i18n="noMediaSourceHint">Add an Emby, Jellyfin, Plex, network folder, or IPTV playlist to start browsing your library</div>
-        <button class="remote-empty-btn" onclick="openServerForm()" data-i18n="addMediaSource">Add media source</button>
+        <button class="remote-empty-btn" onclick="openSourceTypePicker()" data-i18n="addMediaSource">Add media source</button>
       </div>
 
       <!-- Home view -->
@@ -128,7 +128,7 @@
 
       <!-- File browser view (file sources) -->
       <div id="lib-files-view" class="hidden">
-        <div class="files-breadcrumb" id="files-breadcrumb"></div>
+        <div class="files-browser-head"><div class="files-breadcrumb" id="files-breadcrumb"></div><button class="files-refresh-btn" onclick="loadDir(_filesPath)" aria-label="Refresh">↻</button></div>
         <div class="files-list" id="files-list"></div>
       </div>
 
@@ -273,7 +273,7 @@
               <span>Aspect</span>
             </button>
 
-            <button class="tool-tile" onclick="openSubTracksSheet()" aria-label="Subtitles">
+            <button class="tool-tile" id="tool-tile-subtitle" onclick="openSubTracksSheet()" aria-label="Subtitles">
               <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 11h3M13 11h3M8 15h8"/></svg>
               <span>Subtitles</span>
             </button>
@@ -283,7 +283,7 @@
               <span>Audio</span>
             </button>
 
-            <button class="tool-tile" onclick="openSpeedSheet()" aria-label="Speed">
+            <button class="tool-tile" id="tool-tile-speed" onclick="openSpeedSheet()" aria-label="Speed">
               <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 5.6a9 9 0 1 0 12.8 0"/><path d="M12 2v4"/><path d="M12 12l3-3"/></svg>
               <span>Speed</span>
             </button>
@@ -299,9 +299,12 @@
             </button>
           </div>
 
-          <!-- Support: copy a redacted debug report to send to the developer.
-               Deliberately understated — this is a rare, diagnostic action. -->
-          <button class="playback-issue-link" id="playback-issue-btn" onclick="openPlaybackDebugSheet()" data-i18n="playbackIssue">Playback issue?</button>
+          <!-- Player engine hint: mpv is the only playback engine on desktop,
+               so this is purely informational — tapping it explains that and
+               surfaces the diagnostic debug-report action. -->
+          <div class="engine-hint" id="engine-hint">
+            <button class="playback-issue-link" onclick="openEngineSheet()" data-i18n="playerLabelMpv">Player: MPV</button>
+          </div>
 
         </div>
 
@@ -331,6 +334,29 @@
             <span class="playback-debug-status" id="playback-debug-status" role="status" aria-live="polite"></span>
             <button class="playback-debug-copy" id="playback-debug-copy" type="button" onclick="copyPlaybackDebugReport()" data-i18n="playbackDebugCopy">Copy debug report</button>
           </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Player engine sheet: mpv is the only playback engine on desktop, so
+         this is informational only. The debug-report entry point lives here
+         instead of directly on the remote controls. -->
+    <div class="sheet-backdrop hidden" id="engine-backdrop" onclick="onEngineBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="engine-sheet-title">
+        <div class="sheet-handle"></div>
+        <button class="sheet-close" onclick="closeEngineSheet()" aria-label="Close">×</button>
+        <div class="media-select-head">
+          <h3 id="engine-sheet-title" data-i18n="engineSheetTitleMpv">MPV</h3>
+          <p class="engine-sheet-sub" data-i18n="engineSheetSubMpv">MPV is the playback engine used on desktop. There's only this one engine, so there's nothing to switch to.</p>
+        </div>
+        <div class="engine-support-section">
+          <button class="engine-support-toggle" onclick="openPlaybackDebugSheet()">
+            <span>
+              <strong data-i18n="playbackIssue">Playback issue?</strong>
+              <small data-i18n="playbackIssueSubtitle">Copy playback logs and media details</small>
+            </span>
+            <span class="engine-why-arrow" aria-hidden="true">›</span>
+          </button>
         </div>
       </section>
     </div>
@@ -559,12 +585,66 @@
     <div class="sheet-backdrop hidden" id="server-manager-backdrop" onclick="onServerManagerBackdropClick(event)">
       <section class="video-sheet server-manager-sheet" role="dialog" aria-modal="true" aria-labelledby="server-manager-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeServerManager()" aria-label="Close">×</button>
         <div class="settings-section-header">
           <h3 id="server-manager-title">Sources</h3>
-          <button class="btn-add" onclick="openServerForm()">+ Add</button>
+          <button class="btn-add" onclick="openSourceTypePicker()">+ Add</button>
         </div>
         <div id="server-list"></div>
+        <details class="server-danger-zone">
+          <summary>Advanced actions</summary>
+          <div class="server-danger-content">
+            <div>
+              <strong>Reset all configuration</strong>
+              <p>Clear all services, accounts, preferences, and usage memory.</p>
+            </div>
+            <button class="server-reset-btn" type="button" onclick="openResetConfigurationConfirm()">Reset</button>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <!-- Source type picker sheet -->
+    <div class="sheet-backdrop hidden" id="source-type-backdrop" onclick="onSourceTypeBackdropClick(event)">
+      <section class="video-sheet source-type-sheet" role="dialog" aria-modal="true" aria-labelledby="source-type-title">
+        <div class="sheet-handle"></div>
+        <div class="media-select-head">
+          <h3 id="source-type-title">What are you adding?</h3>
+          <p class="engine-sheet-sub">Choose the media source type</p>
+        </div>
+        <div class="source-type-options">
+          <button class="source-type-option" type="button" onclick="chooseSourceType('emby')">
+            <span class="source-type-option-title">Emby</span>
+            <span class="source-type-option-desc">Connect an Emby media server</span>
+          </button>
+          <button class="source-type-option" type="button" onclick="chooseSourceType('jellyfin')">
+            <span class="source-type-option-title">Jellyfin</span>
+            <span class="source-type-option-desc">Connect a Jellyfin media server</span>
+          </button>
+          <button class="source-type-option" type="button" onclick="chooseSourceType('plex')">
+            <span class="source-type-option-title">Plex</span>
+            <span class="source-type-option-desc">Connect a Plex Media Server</span>
+          </button>
+          <button class="source-type-option" type="button" onclick="chooseSourceType('webdav')">
+            <span class="source-type-option-title">WebDAV</span>
+            <span class="source-type-option-desc">Import a WebDAV folder</span>
+          </button>
+          <button class="source-type-option" type="button" onclick="chooseSourceType('smb')">
+            <span class="source-type-option-title">SMB</span>
+            <span class="source-type-option-desc">Import an SMB shared folder</span>
+          </button>
+          <button class="source-type-option" type="button" onclick="chooseSourceType('local')">
+            <span class="source-type-option-title">Local folder</span>
+            <span class="source-type-option-desc">Browse a folder on this computer</span>
+          </button>
+          <button class="source-type-option" type="button" onclick="chooseSourceType('nfs')">
+            <span class="source-type-option-title">NFS mount</span>
+            <span class="source-type-option-desc">Browse a folder already mounted by the OS</span>
+          </button>
+          <button class="source-type-option" type="button" onclick="chooseSourceType('iptv')">
+            <span class="source-type-option-title">IPTV</span>
+            <span class="source-type-option-desc">Add a live-TV M3U/M3U8 playlist</span>
+          </button>
+        </div>
       </section>
     </div>
 
@@ -572,103 +652,77 @@
     <div class="sheet-backdrop hidden" id="server-form-backdrop" onclick="onServerFormBackdropClick(event)">
       <section class="video-sheet server-form-sheet" role="dialog" aria-modal="true" aria-labelledby="server-form-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeServerForm()" aria-label="Close">×</button>
-        <div class="server-form" id="server-form">
-          <h4 id="server-form-title">Emby Server</h4>
+        <div class="server-form-content" id="server-form">
+          <h4 id="server-form-title">Add server</h4>
           <input type="hidden" id="form-server-id">
-
-          <!-- Source type -->
+          <input type="hidden" id="form-type" value="emby">
           <div class="form-row">
             <label>Type</label>
-            <div class="type-seg" id="form-type-seg">
-              <button type="button" class="type-seg-btn active" data-type="emby" onclick="setServerFormType('emby')">Emby</button>
-              <button type="button" class="type-seg-btn" data-type="jellyfin" onclick="setServerFormType('jellyfin')">Jellyfin</button>
-              <button type="button" class="type-seg-btn" data-type="plex" onclick="setServerFormType('plex')">Plex</button>
-              <button type="button" class="type-seg-btn" data-type="file" onclick="setServerFormType('file')">Files</button>
-              <button type="button" class="type-seg-btn" data-type="iptv" onclick="setServerFormType('iptv')">IPTV</button>
-            </div>
+            <div class="source-type-readonly" id="form-type-label">Emby</div>
           </div>
-
           <div class="form-row">
             <label>Name <span class="optional">Auto-generated if blank</span></label>
             <input type="text" id="form-name" placeholder="Home NAS">
           </div>
-
-          <!-- Media-server fields (emby / jellyfin / plex) -->
-          <div id="form-group-server">
-            <div class="form-row">
-              <label>Protocol</label>
-              <div class="radio-group">
-                <label><input type="radio" name="proto" value="http" checked> http</label>
-                <label><input type="radio" name="proto" value="https"> https</label>
+          <div class="form-row" id="form-protocol-row">
+            <label>Protocol</label>
+            <div class="radio-group">
+              <label><input type="radio" name="proto" value="http" checked onchange="onSourceProtocolChange()"> http</label>
+              <label><input type="radio" name="proto" value="https" onchange="onSourceProtocolChange()"> https</label>
+            </div>
+          </div>
+          <div class="form-row" id="form-host0-row">
+            <label>Address 1 <span class="required">*</span></label>
+            <input type="text" id="form-host0" placeholder="192.168.1.100 or emby.example.com">
+          </div>
+          <div class="form-row" id="form-port-row">
+            <label>Port</label>
+            <input type="number" id="form-port" value="8096" min="1" max="65535">
+          </div>
+          <details class="advanced-options" id="form-advanced-options">
+            <summary>Advanced options</summary>
+            <div class="advanced-body">
+              <div class="advanced-hint">Add up to two backup addresses</div>
+              <div class="form-row">
+                <label>Address 2 <span class="optional">Backup</span></label>
+                <input type="text" id="form-host1" placeholder="10.0.0.1 (optional)">
+              </div>
+              <div class="form-row">
+                <label>Address 3 <span class="optional">Backup</span></label>
+                <input type="text" id="form-host2" placeholder="emby.lan (optional)">
               </div>
             </div>
-            <div class="form-row">
-              <label>Address 1 <span class="required">*</span></label>
-              <input type="text" id="form-host0" placeholder="192.168.1.100 or emby.example.com">
-            </div>
-            <div class="form-row">
-              <label>Port</label>
-              <input type="number" id="form-port" value="8096" min="1" max="65535">
-            </div>
-            <details class="advanced-options" id="form-advanced-options">
-              <summary data-i18n="advancedOptions">Advanced options</summary>
-              <div class="advanced-body">
-                <div class="advanced-hint" data-i18n="backupAddressesHint">Add up to four backup addresses</div>
-                <div class="form-row">
-                  <label>Address 2 <span class="optional">Backup</span></label>
-                  <input type="text" id="form-host1" placeholder="10.0.0.1 (optional)">
-                </div>
-                <div class="form-row">
-                  <label>Address 3 <span class="optional">Backup</span></label>
-                  <input type="text" id="form-host2" placeholder="emby.lan (optional)">
-                </div>
-                <div class="form-row">
-                  <label>Address 4 <span class="optional">Backup</span></label>
-                  <input type="text" id="form-host3" placeholder="(optional)">
-                </div>
-                <div class="form-row">
-                  <label>Address 5 <span class="optional">Backup</span></label>
-                  <input type="text" id="form-host4" placeholder="(optional)">
-                </div>
-              </div>
-            </details>
+          </details>
+          <div class="form-row hidden" id="form-share-row">
+            <label>Share <span class="required">*</span></label>
+            <input type="text" id="form-share" placeholder="Media">
           </div>
-
-          <!-- File-source fields (type == file) -->
-          <div id="form-group-file" class="hidden">
-            <div class="form-row">
-              <label>Access</label>
-              <select id="form-file-protocol" class="form-select" onchange="onFileProtocolChange()"></select>
-            </div>
-            <div class="form-row">
-              <label>Folder / share address <span class="required">*</span></label>
-              <input type="text" id="form-root" placeholder="">
-              <div class="form-hint" id="form-root-hint"></div>
-            </div>
+          <input type="hidden" id="form-root-path">
+          <div class="form-row hidden" id="form-domain-row">
+            <label>Domain <span class="optional">Optional</span></label>
+            <input type="text" id="form-domain" placeholder="WORKGROUP">
           </div>
-
-          <!-- IPTV fields (type == iptv) -->
-          <div id="form-group-iptv" class="hidden">
-            <div class="form-row">
-              <label id="form-iptv-playlist-label">Playlist URL <span class="required">*</span></label>
-              <input type="text" id="form-iptv-playlist" placeholder="https://example.com/playlist.m3u8">
-            </div>
-            <div class="form-row">
-              <label id="form-iptv-epg-label">EPG guide URL <span class="optional">Optional</span></label>
-              <input type="text" id="form-iptv-epg" placeholder="https://example.com/guide.xml.gz">
-            </div>
+          <div class="form-row hidden" id="form-local-hint-row">
+            <p class="form-hint" id="form-local-hint"></p>
           </div>
-
-          <!-- Plex token (plex only) -->
+          <!-- Plex token: not part of Apple TV's form (typing a token via Siri
+               Remote isn't worth it there), but pasting one to skip Plex
+               account sign-in is a real, working shortcut on the phone
+               keyboard — kept rather than silently dropped. -->
           <div class="form-row hidden" id="form-row-token">
             <label>Plex Token <span class="optional">Optional</span></label>
             <input type="text" id="form-token" placeholder="xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
             <div class="form-hint" id="form-token-hint"></div>
           </div>
-
-          <!-- Shared credentials (account for servers, optional creds for shares) -->
-          <div id="form-group-credentials">
+          <div class="form-row hidden" id="form-iptv-playlist-row">
+            <label>Playlist URL <span class="required">*</span></label>
+            <input type="text" id="form-iptv-playlist" placeholder="https://example.com/playlist.m3u8">
+          </div>
+          <div class="form-row hidden" id="form-iptv-epg-row">
+            <label>EPG guide URL <span class="optional">Optional</span></label>
+            <input type="text" id="form-iptv-epg" placeholder="https://example.com/guide.xml.gz">
+          </div>
+          <div id="form-credentials-group">
             <div class="form-row">
               <label>Username</label>
               <input type="text" id="form-username" autocomplete="username">
@@ -681,15 +735,28 @@
                         aria-label="Show password" aria-pressed="false"
                         onclick="togglePasswordReveal()">&#128065;</button>
               </div>
-              <div class="form-hint" id="form-cred-hint"></div>
             </div>
           </div>
-
           <div class="form-status" id="form-status"></div>
           <div class="form-actions">
             <button class="btn-secondary" onclick="closeServerForm()">Cancel</button>
-            <button class="btn-primary" id="form-submit-btn" onclick="saveAndLogin()">Save and sign in</button>
+            <button class="btn-primary" id="form-save-btn" onclick="saveAndLogin()">Save and sign in</button>
           </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Folder picker (network/local/NFS root path selection after connection) -->
+    <div class="sheet-backdrop hidden" id="folder-picker-backdrop" onclick="onFolderPickerBackdropClick(event)">
+      <section class="video-sheet folder-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
+        <div class="sheet-handle"></div>
+        <h4 id="folder-picker-title">Choose import folder</h4>
+        <p class="folder-picker-hint" id="folder-picker-hint"></p>
+        <nav class="folder-picker-breadcrumb" id="folder-picker-breadcrumb"></nav>
+        <div class="folder-picker-list" id="folder-picker-list"></div>
+        <div class="folder-picker-actions">
+          <button class="btn-secondary" onclick="closeFolderPickerSkip()" id="folder-picker-skip-btn"></button>
+          <button class="btn-primary" onclick="confirmFolderPicker()" id="folder-picker-confirm-btn"></button>
         </div>
       </section>
     </div>
@@ -733,6 +800,17 @@
         <div class="confirm-actions">
           <button class="confirm-cancel-btn" onclick="closeExitConfirm()">Cancel</button>
           <button class="confirm-ok-btn" onclick="confirmExit()">Stop playback</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="confirm-overlay hidden" id="reset-config-confirm-overlay" onclick="if(event.target===this)closeResetConfigurationConfirm()">
+      <div class="confirm-dialog">
+        <div class="confirm-title">Clear all configuration?</div>
+        <div class="confirm-body">All media services, credentials, playback preferences, and usage memory will be deleted. This cannot be undone.</div>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn" onclick="closeResetConfigurationConfirm()">Cancel</button>
+          <button class="confirm-ok-btn" id="reset-config-confirm-btn" onclick="resetAllConfiguration()">Clear everything</button>
         </div>
       </div>
     </div>

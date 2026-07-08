@@ -18,6 +18,7 @@ let browseParentId = '';   // current library filter
 let browseMode = 'library'; // 'library' | 'resume' — what loadBrowse() fetches into #poster-grid
 let browseStart = 0;
 const PAGE_SIZE = 60;
+const RESUME_PAGE_SIZE = 30;
 let browseHasMore = false;
 let libraryItems = [{ Id: '', Name: tr('all'), CollectionType: '' }];
 let currentLibraryName = tr('all');
@@ -37,6 +38,8 @@ let _lastSearchQuery = '';
 
 const EPISODE_PAGE_SIZE = 50;
 let sheetSeriesId = '';
+let _sheetPlayableItem = null;
+let _sheetMediaSourceId = '';
 let _locateEpisode = null;  // { id, num } to scroll to when opening a series sheet
 let sheetEpisodesTotal = 0;
 let sheetEpisodesLoading = false;
@@ -72,13 +75,19 @@ let _serviceOnline = true;
 let _serviceProbeInFlight = false;
 
 // Active source type drives whether the library tab shows the poster wall
-// (emby/jellyfin/plex) or the file browser (file). Set by refreshServerSwitcher.
+// (emby/jellyfin/plex) or the file browser (webdav/smb/local/nfs). Set by
+// refreshServerSwitcher.
 let _activeSourceType = 'emby';
+let _activeServerId = '';
+let _playbackServerId = '';
+let _serverSwitchSeq = 0;
+const _serverSwitchSession = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+let _libraryGeneration = 0;
+let _libraryAbortController = new AbortController();
 // Whether any server/source is configured at all. Set by refreshServerSwitcher;
 // starts true so the search icon isn't hidden for a flash before the first load.
 let _hasAnyServer = true;
 let _filesPath = '';            // current folder path in file mode
-let _serverFormType = 'emby';   // type chosen in the add/edit form
 
 /* ── IPTV state ───────────────────────────────────────────────────────────── */
 let _iptvCategory = 'all';
@@ -210,7 +219,7 @@ function offlineServiceError() {
 /* Load the active source into the library tab: poster wall for media servers,
  * file browser for file sources. */
 async function loadActiveSource() {
-  if (_activeSourceType === 'file') {
+  if (isFileSourceType(_activeSourceType)) {
     _enterFileMode();
     await loadDir('');
     return;
@@ -236,6 +245,7 @@ async function restorePlayerContext() {
   try {
     const state = await api('GET', '/api/player/state');
     if (state.item_id || state.title) {
+      _playbackServerId = state.server_id || _activeServerId;
       currentSeriesId  = state.series_id || '';
       currentSeasonId  = state.season_id || '';
       currentSeriesTitle = state.series_title || '';
@@ -265,13 +275,19 @@ async function restorePlayerContext() {
 }
 
 /* ── API helper ───────────────────────────────────────────────────────────── */
-async function api(method, path, body) {
+async function api(method, path, body, extra = {}) {
+  if (method === 'GET' && path.startsWith('/api/library/') && _activeServerId && !/[?&]server_id=/.test(path)) {
+    path += `${path.includes('?') ? '&' : '?'}server_id=${encodeURIComponent(_activeServerId)}`;
+    if (!extra.signal) extra.signal = _libraryAbortController.signal;
+  }
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (extra.signal) opts.signal = extra.signal;
   if (body !== undefined) opts.body = JSON.stringify(body);
   let r;
   try {
     r = await fetch(path, opts);
-  } catch (_) {
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
     setServiceOnline(false);
     throw offlineServiceError();
   }
@@ -285,6 +301,33 @@ async function api(method, path, body) {
     throw new Error(err.detail || r.statusText);
   }
   return r.json().catch(() => ({}));
+}
+
+function beginLibraryLoad(serverId = _activeServerId) {
+  _libraryAbortController.abort();
+  _libraryAbortController = new AbortController();
+  return { generation: ++_libraryGeneration, serverId, signal: _libraryAbortController.signal };
+}
+
+function currentLibraryLoad() {
+  return { generation: _libraryGeneration, serverId: _activeServerId, signal: _libraryAbortController.signal };
+}
+
+function isCurrentLibraryLoad(load) {
+  return load && load.generation === _libraryGeneration && load.serverId === _activeServerId;
+}
+
+function libraryApi(method, path, body, load = currentLibraryLoad()) {
+  let bound = path;
+  if (load.serverId) bound += `${bound.includes('?') ? '&' : '?'}server_id=${encodeURIComponent(load.serverId)}`;
+  return api(method, bound, body, { signal: load.signal });
+}
+
+function libraryImageUrl(itemId, maxHeight, type = '', serverId = _activeServerId) {
+  const params = new URLSearchParams({ max_height: String(maxHeight) });
+  if (type) params.set('type', type);
+  if (serverId) params.set('server_id', serverId);
+  return `/api/library/image/${encodeURIComponent(itemId)}?${params}`;
 }
 
 /* ── Player ───────────────────────────────────────────────────────────────── */
@@ -453,7 +496,7 @@ function resetPosterColor() {
   if (tab) tab.style.background = '';
 }
 
-async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', episodeLabel = '', posterItemId = '') {
+async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', episodeLabel = '', posterItemId = '', mediaSourceId = '') {
   const resolvedPoster = posterItemId || seriesId || itemId || '';
   _hadProps = false;
   _currentAspect = 'fit';
@@ -465,6 +508,7 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
   currentEpisodeLabel = episodeLabel || '';
   currentPosterItemId = resolvedPoster;
   currentItemIsSeries = !!currentSeriesId;
+  _playbackServerId = _activeServerId;
   setNowPlaying(title, {
     seriesTitle: currentSeriesTitle,
     episodeLabel: currentEpisodeLabel,
@@ -487,6 +531,7 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
       series_title: currentSeriesTitle,
       episode_label: currentEpisodeLabel,
       poster_item_id: resolvedPoster,
+      media_source_id: mediaSourceId || '',
       preferred_language: window.I18N?.lang || navigator.language || 'zh-CN',
     });
     _fetchAndUpdateProps();
@@ -514,7 +559,7 @@ async function _ensureEpisodeNav(itemId, seriesId, seasonId) {
       limit: 200,
       sort: 'asc',
     });
-    const data = await api('GET', `/api/emby/episodes?${qs}`);
+    const data = await api('GET', `/api/library/episodes?${qs}`);
     _navEpisodes = data.Items || [];
     _navContext = ctx;
   } catch (_) {
@@ -560,10 +605,10 @@ function setNowPlaying(title, meta = {}) {
   if (nowPlaying) {
     if (posterItemId) {
       // Use Backdrop for blurred bg (server falls back to Primary if unavailable)
-      nowPlaying.style.setProperty('--now-poster', `url("/api/emby/image/${encodeURIComponent(posterItemId)}?max_height=700&type=Backdrop")`);
+      nowPlaying.style.setProperty('--now-poster', `url("${libraryImageUrl(posterItemId, 700, 'Backdrop', _playbackServerId)}")`);
       nowPlaying.classList.add('has-poster');
       if (posterImg) {
-        posterImg.src = `/api/emby/image/${encodeURIComponent(posterItemId)}?max_height=520`;
+        posterImg.src = libraryImageUrl(posterItemId, 520, '', _playbackServerId);
         posterImg.alt = title || '';
       }
       posterCard?.classList.remove('missing');
@@ -585,7 +630,7 @@ function setNowPlaying(title, meta = {}) {
   currentItemIsLive = !!meta.isLive;
   updateLiveControlsVisibility(currentItemIsLive);
   if (posterItemId && hasTitle) {
-    applyPosterColor(`/api/emby/image/${encodeURIComponent(posterItemId)}?max_height=80`);
+    applyPosterColor(libraryImageUrl(posterItemId, 80, '', _playbackServerId));
   } else if (!hasTitle) {
     resetPosterColor();
   }
@@ -601,15 +646,19 @@ function updateEpisodeNavVisibility(isSeries) {
 }
 
 // Live channels have no seek bar/duration (nothing to scrub through) and get
-// two extra tool tiles (quality/variant switcher, programme guide) instead —
-// everything else (play/pause, audio, subtitles, aspect, speed) is already
-// source-agnostic and needs no change.
+// two extra tool tiles (quality/variant switcher, programme guide) instead.
+// Subtitle and speed are also hidden for live: IPTV (M3U + optional XMLTV EPG)
+// has no subtitle source, and "speed" is meaningless for a live broadcast.
+// Audio track switching stays — multi-language channels commonly multiplex
+// alternate audio.
 function updateLiveControlsVisibility(isLive) {
   document.querySelector('.playback-progress')?.classList.toggle('hidden', isLive);
   document.getElementById('btn-seek-backward')?.classList.toggle('hidden', isLive);
   document.getElementById('btn-seek-forward')?.classList.toggle('hidden', isLive);
   document.getElementById('tool-tile-iptv-quality')?.classList.toggle('hidden', !isLive || currentIPTVVariantCount <= 1);
   document.getElementById('tool-tile-iptv-guide')?.classList.toggle('hidden', !isLive);
+  document.getElementById('tool-tile-subtitle')?.classList.toggle('hidden', isLive);
+  document.getElementById('tool-tile-speed')?.classList.toggle('hidden', isLive);
   _setText('tool-tile-iptv-quality-label', tr('iptvQualitySwitcher'));
   _setText('tool-tile-iptv-guide-label', tr('iptvProgrammeGuide'));
 }
@@ -641,7 +690,7 @@ function switchTab(tab) {
   document.getElementById('nav-library').classList.toggle('active', tab === 'library');
   document.getElementById('nav-remote').classList.toggle('active', tab === 'remote');
   document.getElementById('nav-settings').classList.toggle('active', tab === 'settings');
-  document.getElementById('search-toggle')?.classList.toggle('hidden', tab !== 'library' || _activeSourceType === 'file' || _activeSourceType === 'iptv' || !_hasAnyServer);
+  document.getElementById('search-toggle')?.classList.toggle('hidden', tab !== 'library' || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv' || !_hasAnyServer);
   document.getElementById('btn-exit')?.classList.toggle('hidden', tab !== 'remote');
   if (tab !== 'library' && isSearching) cancelSearch();
   if (tab === 'settings') renderSettingsUi();
@@ -1566,35 +1615,63 @@ function _setText(id, val) {
 
 /* ── Server switcher ──────────────────────────────────────────────────────── */
 /* ── Source-type helpers ──────────────────────────────────────────────────── */
+const ALL_SOURCE_TYPES = ['emby', 'jellyfin', 'plex', 'webdav', 'smb', 'local', 'nfs', 'iptv'];
+
 function _normType(type) {
   const t = String(type || 'emby').toLowerCase();
-  return ['emby', 'jellyfin', 'plex', 'file', 'iptv'].includes(t) ? t : 'emby';
+  return ALL_SOURCE_TYPES.includes(t) ? t : 'emby';
 }
 
-function _typeLabel(t) {
-  if (t === 'file') return tr('typeFile');
-  if (t === 'iptv') return tr('typeIptv');
-  return t.charAt(0).toUpperCase() + t.slice(1);
+// webdav/smb/local/nfs all browse a folder tree instead of a poster wall —
+// tvOS only ever had webdav/smb (no local filesystem access in the
+// sandbox); local/nfs are desktop-only additions that get the exact same
+// treatment everywhere this is checked.
+function isFileSourceType(type) {
+  return ['webdav', 'smb', 'local', 'nfs'].includes(_normType(type));
+}
+
+function isIPTVSourceType(type) {
+  return _normType(type) === 'iptv';
+}
+
+function sourceTypeLabel(type) {
+  return {
+    emby: 'Emby', jellyfin: 'Jellyfin', plex: 'Plex', webdav: 'WebDAV', smb: 'SMB',
+    local: tr('sourceTypeLocalTitle'), nfs: tr('sourceTypeNFSTitle'), iptv: 'IPTV',
+  }[_normType(type)];
+}
+
+function sourceTypeClass(type) { return 'st-' + _normType(type); }
+
+function defaultSourceName(type) {
+  const key = {
+    emby: 'defaultEmbyName', jellyfin: 'defaultJellyfinName', plex: 'defaultPlexName',
+    webdav: 'defaultWebDAVName', smb: 'defaultSMBName', local: 'defaultLocalName',
+    nfs: 'defaultNFSName', iptv: 'defaultIPTVName',
+  }[_normType(type)];
+  return tr(key);
 }
 
 function _sourceBadge(type) {
   const t = _normType(type);
-  return `<span class="source-badge source-${t}">${esc(_typeLabel(t))}</span>`;
+  return `<span class="source-badge source-${t}">${esc(sourceTypeLabel(t))}</span>`;
 }
 
 // Avatar chip shown in the server dropdown/manager list: a colored square with
-// the source type's first letter (Emby/Jellyfin/Plex/file-share/IPTV icon letter).
+// the source type's first letter (Emby/Jellyfin/Plex/WebDAV/SMB/Local/NFS/IPTV).
 function _sourceAvatarHtml(type) {
   const t = _normType(type);
-  return `<span class="smi-avatar st-${t}">${esc(_typeLabel(t)[0] || '?')}</span>`;
+  return `<span class="smi-avatar ${sourceTypeClass(t)}">${esc(sourceTypeLabel(t)[0] || '?')}</span>`;
 }
 
 function _sourceMeta(s) {
-  if (_normType(s.type) === 'file') {
-    const proto = s.file_protocol || 'local';
-    return s.root ? `${proto} · ${_truncate(s.root, 30)}` : proto;
+  if (isFileSourceType(s.type)) {
+    const parts = [sourceTypeLabel(s.type)];
+    if (s.type === 'smb' && s.share) parts.push(s.share);
+    if (s.root_path) parts.push(_truncate(s.root_path, 24));
+    return parts.join(' · ');
   }
-  if (_normType(s.type) === 'iptv') {
+  if (isIPTVSourceType(s.type)) {
     try {
       return s.playlist_url ? new URL(s.playlist_url).host : '';
     } catch (_) {
@@ -1610,12 +1687,13 @@ async function refreshServerSwitcher() {
   try {
     const servers = await api('GET', '/api/servers');
     const active  = servers.find(s => s.active);
+    _activeServerId = active?.id || '';
     _activeSourceType = _normType(active && active.type);
     _hasAnyServer = servers.length > 0;
     updateLibraryEmptyState(!_hasAnyServer);
     document.getElementById('search-toggle')?.classList.toggle(
       'hidden',
-      _activeTab !== 'library' || _activeSourceType === 'file' || _activeSourceType === 'iptv' || !_hasAnyServer
+      _activeTab !== 'library' || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv' || !_hasAnyServer
     );
 
     // Update header button
@@ -1623,7 +1701,7 @@ async function refreshServerSwitcher() {
     const dot   = document.getElementById('server-dot');
     if (active) {
       label.textContent = active.name || tr('server');
-      dot.classList.toggle('online', active.logged_in);
+      dot.classList.toggle('online', active.logged_in || isFileSourceType(active.type) || isIPTVSourceType(active.type));
     } else {
       label.textContent = tr('notConfigured');
       dot.classList.remove('online');
@@ -1632,7 +1710,7 @@ async function refreshServerSwitcher() {
     // Render menu
     const menu = document.getElementById('server-menu');
     let html = servers.map(s => {
-      const isFile = _normType(s.type) === 'file';
+      const isFile = isFileSourceType(s.type);
       const hosts = s.hosts || [];
       const activeHostIndex = s.active_host || 0;
       const hostButtons = (!isFile && hosts.length > 1)
@@ -1680,13 +1758,19 @@ function closeServerMenu() {
 function onDocClick() { closeServerMenu(); _closeEpisodePagePicker(); }
 
 async function switchServer(serverId, serverName = '') {
+  const switchSeq = ++_serverSwitchSeq;
+  beginLibraryLoad(serverId);
   closeServerMenu();
   closeLibraryPicker();
   // Optimistic label update so header reflects the change immediately
   if (serverName) _setText('active-server-label', serverName);
   _showLibrarySkeletons();
   try {
-    await api('POST', `/api/servers/${serverId}/activate`);
+    const result = await api('POST', `/api/servers/${serverId}/activate`, {
+      switch_session: _serverSwitchSession, switch_sequence: switchSeq,
+    });
+    if (switchSeq !== _serverSwitchSeq || result.active_server_id !== serverId) return;
+    _activeServerId = serverId;
     await refreshServerSwitcher();
     await reloadLibraryForActiveServer();
   } catch (e) {
@@ -1706,6 +1790,8 @@ async function switchHost(serverId, hostIndex) {
 }
 
 async function switchServerHost(event, serverId, hostIndex, isActive = false) {
+  const switchSeq = ++_serverSwitchSeq;
+  beginLibraryLoad(serverId);
   event.stopPropagation();
   closeServerMenu();
 
@@ -1723,8 +1809,13 @@ async function switchServerHost(event, serverId, hostIndex, isActive = false) {
   try {
     await api('PUT', `/api/servers/${serverId}/host`, { host_index: hostIndex });
     if (!isActive) {
-      await api('POST', `/api/servers/${serverId}/activate`);
+      const result = await api('POST', `/api/servers/${serverId}/activate`, {
+        switch_session: _serverSwitchSession, switch_sequence: switchSeq,
+      });
+      if (result.active_server_id !== serverId) return;
     }
+    if (switchSeq !== _serverSwitchSeq) return;
+    _activeServerId = serverId;
     await refreshServerSwitcher();
     if (!stayOnRemote) {
       await reloadLibraryForActiveServer();
@@ -1738,7 +1829,7 @@ async function switchServerHost(event, serverId, hostIndex, isActive = false) {
 
 async function reloadLibraryForActiveServer(message = tr('loadingLibrary')) {
   resetSearchUi();
-  if (_activeSourceType === 'file') {
+  if (isFileSourceType(_activeSourceType)) {
     _enterFileMode();
     await loadDir('');
     return;
@@ -1762,7 +1853,7 @@ async function loadLibraryNav() {
   libraryLoadError = '';
   setLibraryPickerBusy(true);
   try {
-    const data = await api('GET', '/api/emby/libraries');
+    const data = await api('GET', '/api/library/libraries');
     if (seq !== libraryLoadSeq) return;
     const items = data.Items || [];
     libraryItems = [{ Id: '', Name: tr('all'), CollectionType: '' }, ...items.map(lib => ({
@@ -1894,7 +1985,7 @@ async function loadAllCategoryChipCounts() {
     if (!lib.Id) return;
     try {
       const qs = new URLSearchParams({ start: 0, limit: 1, parent_id: lib.Id });
-      const data = await api('GET', `/api/emby/items?${qs}`);
+      const data = await api('GET', `/api/library/items?${qs}`);
       _updateCategoryChipCount(lib.Id, data.TotalRecordCount || 0);
     } catch (_) {}
   }));
@@ -1947,7 +2038,7 @@ async function loadHomeTypeSections() {
       const firstLib = g.libs[0];
       const qs = new URLSearchParams({ start: 0, limit: 8 });
       if (firstLib?.Id) qs.set('parent_id', firstLib.Id);
-      const data = await api('GET', `/api/emby/items?${qs}`);
+      const data = await api('GET', `/api/library/items?${qs}`);
       const items = (data.Items || []).slice(0, 8);
       if (!items.length) {
         document.getElementById(`home-sec-${g.type}`)?.classList.add('hidden');
@@ -2058,18 +2149,18 @@ async function loadBrowse(append = false, opts = {}) {
   try {
     let items, totalCount;
     if (browseMode === 'resume') {
-      const data = await api('GET', '/api/emby/resume');
+      const data = await api('GET', `/api/library/resume?start=${browseStart}&limit=${RESUME_PAGE_SIZE}`);
       items = data.Items || [];
-      totalCount = items.length;
+      totalCount = data.TotalRecordCount || items.length;
     } else {
       const qs = new URLSearchParams({ start: browseStart, limit: PAGE_SIZE });
       if (browseParentId) qs.set('parent_id', browseParentId);
-      const data = await api('GET', `/api/emby/items?${qs}`);
+      const data = await api('GET', `/api/library/items?${qs}`);
       items = data.Items || [];
       totalCount = data.TotalRecordCount || 0;
     }
     if (requestId !== browseLoadSeq) return;
-    browseHasMore = browseMode !== 'resume' && (browseStart + items.length < totalCount);
+    browseHasMore = browseStart + items.length < totalCount;
     browseStart  += items.length;
 
     const grid = document.getElementById('poster-grid');
@@ -2151,7 +2242,7 @@ function posterFrameHtml(itemId, title, className = 'poster-frame', maxHeight = 
         <span class="poster-placeholder-mark"></span>
         <span>${tr('noPoster')}</span>
       </div>
-      <img src="/api/emby/image/${encodeURIComponent(itemId)}?max_height=${maxHeight}"
+      <img src="${libraryImageUrl(itemId, maxHeight)}"
            alt="${esc(title)}" loading="lazy" onerror="markPosterMissing(this)">
       ${topOverlay}${bottomOverlay}
     </div>`;
@@ -2165,7 +2256,7 @@ async function loadResume() {
   sec?.classList.remove('hidden');
   row.innerHTML = Array(3).fill(skeletonResumeCardHtml()).join('');
   try {
-    const data  = await api('GET', '/api/emby/resume');
+    const data  = await api('GET', '/api/library/resume');
     const items = data.Items || [];
     if (!items.length) { sec?.classList.add('hidden'); row.innerHTML = ''; return; }
     row.innerHTML = items.map(resumeCardHtml).join('');
@@ -2190,7 +2281,7 @@ function resumeCardHtml(item) {
   const showProgress = pct > 0 || (derivedPosSecs && derivedPosSecs > 0 && durSecs);
   // Use series poster for episodes; try Backdrop image (falls back to Primary server-side)
   const posterItemId = item.SeriesId || item.Id;
-  const imgSrc = `/api/emby/image/${encodeURIComponent(posterItemId)}?max_height=400&type=Backdrop`;
+  const imgSrc = libraryImageUrl(posterItemId, 400, 'Backdrop');
   return `
     <div class="resume-card" onclick="openVideoSheet('${item.Id}')">
       <div class="resume-poster-frame" id="rf-${item.Id}">
@@ -2244,10 +2335,10 @@ async function openVideoSheet(itemId) {
   content.innerHTML = sheetLoadingHtml();
   _locateEpisode = null;
   try {
-    const item = await api('GET', `/api/emby/items/${encodeURIComponent(itemId)}`);
+    const item = await api('GET', `/api/library/items/${encodeURIComponent(itemId)}`);
     if (item.Type === 'Episode' && item.SeriesId) {
       // Open the parent series sheet and scroll to this episode.
-      const series = await api('GET', `/api/emby/items/${encodeURIComponent(item.SeriesId)}`);
+      const series = await api('GET', `/api/library/items/${encodeURIComponent(item.SeriesId)}`);
       _locateEpisode = { id: item.Id, num: Number(item.IndexNumber) || null, seasonId: item.SeasonId || '' };
       renderSeriesSheet(series);
       await initSheetSeasons(series.Id);
@@ -2274,11 +2365,25 @@ function renderPlayableSheet(item) {
   const seriesId = item.SeriesId || '';
   const seasonId = item.SeasonId || '';
   const posterItemId = seriesId || item.Id;
+  const variants = Array.isArray(item.PlaybackVariants) ? item.PlaybackVariants : [];
+  _sheetMediaSourceId = variants[0]?.id || '';
+  _sheetPlayableItem = { itemId: item.Id, seriesId, seasonId, title, seriesTitle, episodeLabel, posterItemId };
+  const picker = variants.length > 1 ? `<div class="sheet-variants"><div class="sheet-variants-title">${tr('mediaVersion')}</div>${variants.map((v,i) => `<button class="sheet-variant${i===0?' active':''}" data-source-id="${esc(v.id)}" onclick="selectSheetVariant('${jsStr(v.id)}')"><b>${esc(v.height ? v.height+'p' : (v.name || tr('mediaVersion')))}</b><small>${esc([v.video_codec, v.container].filter(Boolean).join(' · ').toUpperCase())}</small></button>`).join('')}</div>` : '';
   document.getElementById('video-sheet-content').innerHTML = `
     ${sheetHeroHtml(item, subtitle)}
+    ${picker}
     <div class="sheet-actions">
-      <button class="sheet-play" onclick="playItem('${item.Id}', '${seriesId}', '${seasonId}', '${jsStr(title)}', '${jsStr(seriesTitle)}', '${jsStr(episodeLabel)}', '${jsStr(posterItemId)}')">${tr('play')}</button>
+      <button class="sheet-play" onclick="playSelectedSheetItem()">${tr('play')}</button>
     </div>`;
+}
+
+function selectSheetVariant(id) {
+  _sheetMediaSourceId = id;
+  document.querySelectorAll('.sheet-variant').forEach(el => el.classList.toggle('active', el.dataset.sourceId === id));
+}
+function playSelectedSheetItem() {
+  const i = _sheetPlayableItem; if (!i) return;
+  playItem(i.itemId, i.seriesId, i.seasonId, i.title, i.seriesTitle, i.episodeLabel, i.posterItemId, _sheetMediaSourceId);
 }
 
 function _pageForEpisodeNum(num) {
@@ -2332,7 +2437,7 @@ async function initSheetSeasons(seriesId) {
   sheetSeasonId = '';
   _sheetEpisodePage = 0;
   try {
-    const data = await api('GET', `/api/emby/seasons?series_id=${encodeURIComponent(seriesId)}`);
+    const data = await api('GET', `/api/library/seasons?series_id=${encodeURIComponent(seriesId)}`);
     const seasons = (data.Items || []).filter(s => s && s.Id);
     if (seasons.length > 1) {
       sheetSeasons = seasons;
@@ -2446,7 +2551,7 @@ async function loadBoxSetItems(boxSetId) {
   grid.innerHTML = Array(4).fill(skeletonPosterCardHtml()).join('');
   try {
     const qs = new URLSearchParams({ parent_id: boxSetId, start: 0, limit: 60 });
-    const data = await api('GET', `/api/emby/items?${qs}`);
+    const data = await api('GET', `/api/library/items?${qs}`);
     const items = (data.Items || []);
     if (title) title.textContent = tr('includeCount', { count: items.length });
     if (!items.length) {
@@ -2477,7 +2582,7 @@ async function loadSheetEpisodes(seriesId) {
       limit: EPISODE_PAGE_SIZE,
       sort: _sheetEpisodeSort,
     });
-    const data = await api('GET', `/api/emby/episodes?${qs}`);
+    const data = await api('GET', `/api/library/episodes?${qs}`);
     const items = data.Items || [];
     sheetEpisodesTotal = data.TotalRecordCount || items.length;
     list.innerHTML = '';
@@ -2670,7 +2775,7 @@ async function submitSearch() {
   renderSearchLoading(value);
 
   try {
-    const data = await api('GET', `/api/emby/items?search=${encodeURIComponent(value)}&limit=60`);
+    const data = await api('GET', `/api/library/items?search=${encodeURIComponent(value)}&limit=60`);
     if (requestId !== searchRequestSeq || !isSearching) return;
     _lastSearchItems = data.Items || [];
     _lastSearchQuery = value;
@@ -2890,7 +2995,7 @@ async function saveSettings() {
     const saved = await api('PUT', '/api/settings', {
       mpv_cache_secs: Math.max(60, Math.min(7200, Math.round(Number(_settings.mpv_cache_secs) || 300))),
     });
-    _settings = { mpv_cache_secs: Number(saved.mpv_cache_secs) || _settings.mpv_cache_secs };
+    _settings = { ..._settings, mpv_cache_secs: Number(saved.mpv_cache_secs) || _settings.mpv_cache_secs };
     renderSettingsUi();
     _setSettingsStatus(tr('settingsSaved'), false);
   } catch (e) {
@@ -2964,40 +3069,26 @@ function renderServerList(servers) {
     return;
   }
   el.innerHTML = servers.map(s => {
-    const isFile   = _normType(s.type) === 'file';
-    const isIPTV   = _normType(s.type) === 'iptv';
-    const hosts    = s.hosts || [];
-    const activeH  = s.active_host || 0;
-    const hostsHtml = (isFile || isIPTV) ? '' : hosts.map((h, i) => `
-      <div class="host-row ${i === activeH ? 'active-host' : ''}"
-           onclick="switchServerHost(event, '${s.id}', ${i}, ${s.active})">
-        <div class="host-dot ${i === activeH ? 'active' : ''}"></div>
-        <div class="host-addr">${esc(h)}:${s.port}</div>
-        ${i === activeH ? `<div class="host-tag">${tr('current')}</div>` : (i === 0 ? `<div class="host-tag" style="color:var(--text-muted)">${tr('primary')}</div>` : `<div class="host-tag" style="color:var(--text-muted)">${tr('secondary')}</div>`)}
-      </div>`).join('');
-    // The iptv summary (channel/EPG counts) needs a network round-trip, so the
-    // span starts with the synchronous playlist-host meta and is patched in
-    // place by refreshIPTVServerCardStatus() once the summary call resolves.
-    const statusHtml = isIPTV
-      ? `<span class="server-status file-meta" id="iptv-summary-${s.id}">${esc(_sourceMeta(s))}</span>`
-      : isFile
-        ? `<span class="server-status file-meta">${esc(_sourceMeta(s))}</span>`
-        : `<span class="server-status ${s.logged_in ? 'logged-in' : 'not-logged'}">${s.logged_in ? tr('loggedIn') : tr('notLoggedIn')}</span>`;
-    return `
-      <div class="server-card ${s.active ? 'active-server' : ''}">
-        <div class="server-card-header">
-        ${_sourceAvatarHtml(s.type)}
-        <div class="server-card-name">${esc(s.name || tr('server'))} ${_sourceBadge(s.type)}</div>
-          ${statusHtml}
-          ${s.active ? `<span class="server-status active-badge">${tr('current')}</span>` : ''}
-        </div>
-        ${hostsHtml ? `<div class="server-card-hosts">${hostsHtml}</div>` : ''}
-        <div class="server-card-actions">
-          ${!s.active ? `<button class="btn-sm primary" onclick="switchServer('${s.id}', '${jsStr(s.name || tr('server'))}')">${tr('switchHere')}</button>` : ''}
-          <button class="btn-sm" onclick="openServerForm('${s.id}')">${tr('edit')}</button>
-          <button class="btn-sm danger" onclick="confirmDeleteServer('${s.id}', '${jsStr(s.name || tr('server'))}')">${tr('delete')}</button>
-        </div>
-      </div>`;
+    const type = _normType(s.type);
+    const fileSource = isFileSourceType(type);
+    const iptvSource = isIPTVSourceType(type);
+    const hosts = s.hosts || [];
+    const activeH = s.active_host || 0;
+    const host = hosts[activeH] || hosts[0] || '';
+    const hostLine = host ? `${host}:${s.port}${type === 'smb' && s.share ? '/' + s.share : ''}` : '';
+    const extra = hosts.length > 1 ? ` · +${hosts.length - 1}` : '';
+    const needsLogin = !fileSource && !iptvSource && !s.logged_in;
+    return `<div class="server-card ${s.active ? 'active-server' : ''}" onclick="openServerForm('${s.id}')">
+      <span class="server-card-avatar ${sourceTypeClass(type)}">${esc(sourceTypeLabel(type)[0])}</span>
+      <div class="server-card-body">
+        <div class="server-card-name">${esc(s.name || tr('server'))}<span class="source-type-badge ${sourceTypeClass(type)}">${esc(sourceTypeLabel(type))}</span></div>
+        ${hostLine ? `<div class="server-card-meta">${esc(hostLine + extra)}</div>` : ''}
+        ${fileSource && s.root_path ? `<div class="server-card-meta">${esc(s.root_path)}</div>` : ''}
+        ${iptvSource ? `<div class="server-card-meta" id="iptv-summary-${s.id}">${esc(_sourceMeta(s))}</div>` : ''}
+        ${needsLogin ? `<div class="server-card-warn">${tr('notLoggedIn')}</div>` : ''}
+      </div>
+      <button class="server-card-delete" type="button" aria-label="${tr('delete')}" onclick="event.stopPropagation();confirmDeleteServer('${s.id}', '${jsStr(s.name || tr('server'))}')">×</button>
+    </div>`;
   }).join('');
   servers.filter(s => _normType(s.type) === 'iptv').forEach(refreshIPTVServerCardStatus);
 }
@@ -3018,8 +3109,59 @@ async function refreshIPTVServerCardStatus(s) {
   } catch (_) {}
 }
 
-function openServerForm(serverId) {
-  closeServerManager();
+/* ── Source type picker ───────────────────────────────────────────────────── */
+function hideServerManagerSheet() {
+  document.getElementById('server-manager-backdrop')?.classList.add('hidden');
+}
+
+function openSourceTypePicker() {
+  hideServerManagerSheet();
+  // Hide any file-source card this backend build can't actually serve,
+  // rather than letting the user pick a type that always fails to connect.
+  document.querySelectorAll('#source-type-backdrop .source-type-option').forEach(btn => {
+    const type = (btn.getAttribute('onclick') || '').match(/chooseSourceType\('(\w+)'\)/)?.[1];
+    const supported = !isFileSourceType(type) || !_supportedFileProtocols || _supportedFileProtocols.includes(type);
+    btn.classList.toggle('hidden', !supported);
+  });
+  document.getElementById('source-type-backdrop').classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+}
+
+function closeSourceTypePicker() {
+  document.getElementById('source-type-backdrop').classList.add('hidden');
+  document.body.classList.remove('sheet-open');
+  openServerManager();
+}
+
+function closeSourceTypePickerOnly() {
+  document.getElementById('source-type-backdrop')?.classList.add('hidden');
+}
+
+function onSourceTypeBackdropClick(event) {
+  if (event.target.id === 'source-type-backdrop') closeSourceTypePicker();
+}
+
+function chooseSourceType(type) {
+  openServerForm('', type || 'emby');
+}
+
+function updateSourceTypeReadout(type) {
+  const value = type || 'emby';
+  const input = document.getElementById('form-type');
+  const label = document.getElementById('form-type-label');
+  if (input) input.value = value;
+  if (label) label.textContent = sourceTypeLabel(value);
+  const name = document.getElementById('form-name');
+  if (name) name.placeholder = defaultSourceName(value);
+}
+
+/* ── Add / edit server form ───────────────────────────────────────────────── */
+let _serverFormGeneration = 0;
+
+function openServerForm(serverId, sourceType = 'emby') {
+  const formGeneration = ++_serverFormGeneration;
+  hideServerManagerSheet();
+  closeSourceTypePickerOnly();
   document.getElementById('server-form-backdrop').classList.remove('hidden');
   document.body.classList.add('sheet-open');
   const form = document.getElementById('server-form');
@@ -3028,17 +3170,20 @@ function openServerForm(serverId) {
 
   document.getElementById('form-server-id').value = serverId || '';
   document.getElementById('form-status').textContent = '';
-  _renderFileProtocolOptions('local');
+  const hostIds = ['form-host0', 'form-host1', 'form-host2'];
+  updateSourceTypeReadout(sourceType || 'emby');
 
   const clearForm = () => {
-    document.getElementById('form-name').value     = '';
+    document.getElementById('form-name').value = '';
     document.querySelectorAll('input[name="proto"]').forEach(r => { r.checked = r.value === 'http'; });
-    ['form-host0','form-host1','form-host2','form-host3','form-host4'].forEach(id => { document.getElementById(id).value = ''; });
-    document.getElementById('form-port').value     = 8096;
+    hostIds.forEach(id => { document.getElementById(id).value = ''; });
+    document.getElementById('form-port').value = sourceDefaultPort(sourceType || 'emby', 'http');
+    document.getElementById('form-share').value = '';
+    document.getElementById('form-root-path').value = '';
+    document.getElementById('form-domain').value = '';
+    document.getElementById('form-token').value = '';
     document.getElementById('form-username').value = '';
     document.getElementById('form-password').value = '';
-    document.getElementById('form-token').value    = '';
-    document.getElementById('form-root').value     = '';
     document.getElementById('form-iptv-playlist').value = '';
     document.getElementById('form-iptv-epg').value = '';
     const advanced = document.getElementById('form-advanced-options');
@@ -3050,29 +3195,34 @@ function openServerForm(serverId) {
   if (serverId) {
     // Populate from existing server
     api('GET', '/api/servers').then(servers => {
+      if (formGeneration !== _serverFormGeneration
+          || document.getElementById('server-form-backdrop')?.classList.contains('hidden')) return;
       const s = servers.find(x => x.id === serverId);
-      if (!s) { setServerFormType('emby'); return; }
+      if (!s) return;
+      updateSourceTypeReadout(s.type || 'emby');
       document.getElementById('form-name').value     = s.name || '';
       document.querySelectorAll('input[name="proto"]').forEach(r => { r.checked = r.value === (s.protocol || 'http'); });
       const hosts = s.hosts || [];
-      ['form-host0','form-host1','form-host2','form-host3','form-host4'].forEach((id, i) => {
-        document.getElementById(id).value = hosts[i] || '';
-      });
+      hostIds.forEach((id, i) => { document.getElementById(id).value = hosts[i] || ''; });
       const advanced = document.getElementById('form-advanced-options');
       if (advanced) advanced.open = hosts.length > 1;
       document.getElementById('form-port').value     = s.port || 8096;
+      document.getElementById('form-share').value    = s.share || '';
+      document.getElementById('form-root-path').value = s.root_path || '';
+      document.getElementById('form-domain').value   = s.domain || '';
       document.getElementById('form-username').value = s.username || '';
       document.getElementById('form-password').value = '';
-      _renderFileProtocolOptions(s.file_protocol || 'local');
-      document.getElementById('form-root').value     = s.root || '';
       document.getElementById('form-iptv-playlist').value = s.playlist_url || '';
       document.getElementById('form-iptv-epg').value = s.epg_url || '';
-      setServerFormType(_normType(s.type));
+      resetPasswordReveal();
+      onSourceTypeChange(false);
     });
   } else {
-    setServerFormType('emby');
+    onSourceTypeChange(false);
   }
 
+  const sheet = document.querySelector('#server-form-backdrop .server-form-sheet');
+  if (sheet) sheet.scrollTop = 0;
   form.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -3099,12 +3249,14 @@ function resetPasswordReveal() {
 }
 
 function closeServerForm() {
+  _serverFormGeneration++;
   document.getElementById('server-form-backdrop').classList.add('hidden');
   document.body.classList.remove('sheet-open');
   openServerManager();
 }
 
 function closeServerFormOnly() {
+  _serverFormGeneration++;
   document.getElementById('server-form-backdrop').classList.add('hidden');
   document.body.classList.remove('sheet-open');
 }
@@ -3127,44 +3279,38 @@ function onServerFormBackdropClick(event) {
   if (event.target.id === 'server-form-backdrop') closeServerForm();
 }
 
+function normalizeSourceInput(type, protocol, hosts, port, rootPath = '', share = '') {
+  if (!hosts.length || !/^[a-z][a-z0-9+.-]*:\/\//i.test(hosts[0])) return { protocol, hosts, port, rootPath, share };
+  try {
+    const url = new URL(hosts[0]);
+    protocol = type === 'smb' ? protocol : url.protocol.replace(':', '');
+    port = url.port ? Number(url.port) : (protocol === 'https' ? 443 : sourceDefaultPort(type, protocol));
+    hosts = [url.hostname, ...hosts.slice(1)].filter(Boolean);
+    const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    if (type === 'webdav' && parts.length && !rootPath) rootPath = parts.join('/');
+    if (type === 'smb' && parts.length) {
+      if (!share) share = parts.shift() || '';
+      if (!rootPath) rootPath = parts.join('/');
+    }
+  } catch (_) {}
+  return { protocol, hosts, port, rootPath, share };
+}
+
 async function saveAndLogin() {
-  const statusEl = document.getElementById('form-status');
-  const serverId = document.getElementById('form-server-id').value;
-  const type     = _serverFormType;
-  const name     = document.getElementById('form-name').value.trim();
-  const username = document.getElementById('form-username').value.trim();
-  const password = document.getElementById('form-password').value;
+  const statusEl  = document.getElementById('form-status');
+  const serverId  = document.getElementById('form-server-id').value;
+  const type      = document.getElementById('form-type').value || 'emby';
+  const name      = document.getElementById('form-name').value.trim() || defaultSourceName(type);
+  const saveButton = document.getElementById('form-save-btn');
   const setStatus = (msg, cls = '') => { statusEl.textContent = msg; statusEl.className = 'form-status' + (cls ? ' ' + cls : ''); };
 
-  // ── File source ──────────────────────────────────────────────────────────
-  if (type === 'file') {
-    const fileProtocol = document.getElementById('form-file-protocol').value || 'local';
-    const root = document.getElementById('form-root').value.trim();
-    if (!root) { setStatus(tr('needRoot'), 'err'); return; }
-    setStatus(tr('testingConnection'));
-    try {
-      let id = serverId;
-      if (serverId) {
-        const body = { name, type, file_protocol: fileProtocol, root, username };
-        if (password) body.password = password;   // blank → keep existing
-        await api('PUT', `/api/servers/${serverId}`, body);
-        await api('POST', `/api/servers/${serverId}/login`, {});  // verify reachability
-      } else {
-        const srv = await api('POST', '/api/servers', { name, type, file_protocol: fileProtocol, root, username, password });
-        id = srv.id;
-      }
-      setStatus(tr('saved'), 'ok');
-      await _onSaveSuccess(id);
-    } catch (e) { setStatus(e.message, 'err'); }
-    return;
-  }
-
-  // ── IPTV (M3U/M3U8 + optional XMLTV EPG) ───────────────────────────────────
-  if (type === 'iptv') {
+  // ── IPTV: no hosts/protocol/credentials, just a playlist + optional EPG URL.
+  if (isIPTVSourceType(type)) {
     const playlistUrl = document.getElementById('form-iptv-playlist').value.trim();
     const epgUrl = document.getElementById('form-iptv-epg').value.trim();
     if (!playlistUrl) { setStatus(tr('needPlaylistUrl'), 'err'); return; }
     setStatus(tr('iptvRefreshing'));
+    if (saveButton) saveButton.disabled = true;
     try {
       let id = serverId;
       if (serverId) {
@@ -3179,19 +3325,75 @@ async function saveAndLogin() {
       setStatus(tr('saved'), 'ok');
       await _onSaveSuccess(id);
     } catch (e) { setStatus(e.message, 'err'); }
+    finally { if (saveButton) saveButton.disabled = false; }
+    return;
+  }
+
+  // ── File sources (webdav / smb / local / nfs) ──────────────────────────────
+  // The share/sub-folder path is never typed here — saving just proves the
+  // source is reachable, then hands off to the folder picker so the actual
+  // path is chosen by browsing (see openFolderPicker below).
+  if (isFileSourceType(type)) {
+    const networked = type === 'webdav' || type === 'smb';
+    let protocol  = document.querySelector('input[name="proto"]:checked')?.value || 'http';
+    let hosts     = networked
+      ? ['form-host0', 'form-host1', 'form-host2'].map(id => document.getElementById(id).value.trim()).filter(Boolean)
+      : [];
+    let port      = networked ? (parseInt(document.getElementById('form-port').value, 10) || sourceDefaultPort(type, protocol)) : 0;
+    const username  = document.getElementById('form-username').value.trim();
+    const password  = document.getElementById('form-password').value;
+    // Hidden state carriers: never directly typed, only ever set by the
+    // folder picker (or, for share, by SMB's share-enumeration browse step).
+    let share       = document.getElementById('form-share').value.trim();
+    let rootPath    = document.getElementById('form-root-path').value.trim();
+    const domain      = type === 'smb' ? document.getElementById('form-domain').value.trim() : '';
+
+    ({ protocol, hosts, port, rootPath, share } = normalizeSourceInput(type, protocol, hosts, port, rootPath, share));
+
+    if (networked && !hosts.length) { setStatus(tr('needOneHost'), 'err'); return; }
+
+    setStatus(tr('connecting'));
+    if (saveButton) saveButton.disabled = true;
+    const payload = { name, type, protocol, hosts, port, username, share, domain };
+    try {
+      let id = serverId;
+      if (serverId) {
+        if (password) payload.password = password;   // blank → keep existing
+        await api('PUT', `/api/servers/${serverId}`, payload);
+        await api('POST', `/api/servers/${serverId}/connect`, {});
+      } else {
+        const srv = await api('POST', '/api/servers', { ...payload, password });
+        id = srv.id;
+        const servers = await api('GET', '/api/servers');
+        if (id && !servers.find(s => s.active)) await api('POST', `/api/servers/${id}/activate`);
+        await refreshServerSwitcher();
+      }
+      setStatus(tr('connected'), 'ok');
+      closeServerFormOnly();
+      const baseRootPath = type === 'smb' && share ? [share, rootPath].filter(Boolean).join('/') : rootPath;
+      openFolderPicker(id, type, baseRootPath);
+    } catch (e) {
+      setStatus(e.message, 'err');
+    } finally {
+      if (saveButton) saveButton.disabled = false;
+    }
     return;
   }
 
   // ── Media server (emby / jellyfin / plex) ─────────────────────────────────
-  const protocol = document.querySelector('input[name="proto"]:checked')?.value || 'http';
-  const hosts    = ['form-host0','form-host1','form-host2','form-host3','form-host4']
+  let protocol = document.querySelector('input[name="proto"]:checked')?.value || 'http';
+  let hosts    = ['form-host0', 'form-host1', 'form-host2']
     .map(id => document.getElementById(id).value.trim()).filter(Boolean);
-  const port     = parseInt(document.getElementById('form-port').value, 10) || (type === 'plex' ? 32400 : 8096);
+  let port     = parseInt(document.getElementById('form-port').value, 10) || sourceDefaultPort(type, protocol);
+  const username = document.getElementById('form-username').value.trim();
+  const password = document.getElementById('form-password').value;
   const token    = document.getElementById('form-token').value.trim();
+  ({ protocol, hosts, port } = normalizeSourceInput(type, protocol, hosts, port));
   const hasCreds = (username && password) || (type === 'plex' && token);
 
   if (!hosts.length){ setStatus(tr('needOneHost'), 'err'); return; }
   setStatus(tr('saving'));
+  if (saveButton) saveButton.disabled = true;
 
   try {
     let id = serverId;
@@ -3216,6 +3418,8 @@ async function saveAndLogin() {
     await _onSaveSuccess(id);
   } catch (e) {
     setStatus(e.message, 'err');
+  } finally {
+    if (saveButton) saveButton.disabled = false;
   }
 }
 
@@ -3228,64 +3432,204 @@ async function confirmDeleteServer(serverId, name) {
 }
 
 /* ── Server form: type & file fields ──────────────────────────────────────── */
-function setServerFormType(type) {
-  _serverFormType = _normType(type);
-  document.querySelectorAll('#form-type-seg .type-seg-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.type === _serverFormType));
-  const isFile = _serverFormType === 'file';
-  const isIPTV = _serverFormType === 'iptv';
-  document.getElementById('form-group-server')?.classList.toggle('hidden', isFile || isIPTV);
-  document.getElementById('form-group-file')?.classList.toggle('hidden', !isFile);
-  document.getElementById('form-group-iptv')?.classList.toggle('hidden', !isIPTV);
-  document.getElementById('form-row-token')?.classList.toggle('hidden', _serverFormType !== 'plex');
-  // IPTV has no per-channel authentication in 1.0 — the account/password
-  // fields would just sit there doing nothing, so hide the whole block.
-  document.getElementById('form-group-credentials')?.classList.toggle('hidden', isIPTV);
+/* ── Server form: type-driven field visibility ────────────────────────────── */
+function sourceDefaultPort(type, protocol = 'http') {
+  if (type === 'smb') return 445;
+  if (type === 'webdav') return protocol === 'https' ? 443 : 80;
+  if (type === 'plex') return protocol === 'https' ? 443 : 32400;
+  if (type === 'local' || type === 'nfs') return 0; // no network fields shown at all
+  // Public Emby/Jellyfin deployments normally terminate TLS on the standard
+  // HTTPS port. Self-hosted 8920 remains available by editing the port field.
+  return protocol === 'https' ? 443 : 8096;
+}
 
-  // Default port per media-server type (preserve a custom port).
-  const portInput = document.getElementById('form-port');
-  if (portInput && !isFile && !isIPTV) {
-    const cur = portInput.value;
-    if (!cur || cur === '8096' || cur === '32400') portInput.value = (_serverFormType === 'plex') ? '32400' : '8096';
+function onSourceTypeChange(updatePort = true) {
+  const type = document.getElementById('form-type')?.value || 'emby';
+  const protocol = document.querySelector('input[name="proto"]:checked')?.value || 'http';
+  const fileSource = isFileSourceType(type);
+  const iptvSource = isIPTVSourceType(type);
+  // local/nfs have no host/credentials at all — the folder picker is the
+  // entire "connection" step, so every network-ish field is hidden.
+  const networkless = type === 'local' || type === 'nfs';
+
+  document.getElementById('form-protocol-row')?.classList.toggle('hidden', type === 'smb' || networkless || iptvSource);
+  document.getElementById('form-host0-row')?.classList.toggle('hidden', networkless || iptvSource);
+  document.getElementById('form-port-row')?.classList.toggle('hidden', networkless || iptvSource);
+  document.getElementById('form-domain-row')?.classList.toggle('hidden', type !== 'smb');
+  const advanced = document.getElementById('form-advanced-options');
+  if (advanced) {
+    advanced.classList.toggle('hidden', networkless || iptvSource);
+    if (networkless || iptvSource) advanced.open = false;
   }
+  const localHintRow = document.getElementById('form-local-hint-row');
+  localHintRow?.classList.toggle('hidden', !networkless);
+  if (networkless) _setText('form-local-hint', type === 'nfs' ? tr('nfsHint') : tr('localHint'));
+  document.getElementById('form-row-token')?.classList.toggle('hidden', type !== 'plex');
+  // IPTV has no per-channel authentication, and local/nfs have no concept of
+  // one either — the account/password fields would just sit there doing
+  // nothing, so hide the whole block.
+  document.getElementById('form-credentials-group')?.classList.toggle('hidden', networkless || iptvSource);
+  document.getElementById('form-iptv-playlist-row')?.classList.toggle('hidden', !iptvSource);
+  document.getElementById('form-iptv-epg-row')?.classList.toggle('hidden', !iptvSource);
 
-  _setText('form-cred-hint', isFile ? tr('shareCredHint') : (_serverFormType === 'plex' ? tr('plexAccountHint') : tr('accountHint')));
+  const host = document.getElementById('form-host0');
+  if (host) {
+    host.placeholder = type === 'smb' ? tr('smbHostPlaceholder')
+      : (type === 'webdav' ? 'dav.example.com' : tr('mediaHostPlaceholder'));
+  }
+  const username = document.getElementById('form-username');
+  const password = document.getElementById('form-password');
+  if (username) username.placeholder = type === 'plex' ? tr('plexUsernamePlaceholder') : '';
+  if (password) password.placeholder = type === 'plex' ? tr('plexPasswordPlaceholder') : '';
   _setText('form-token-hint', tr('plexTokenHint'));
-  _updateRootHint();
-
-  const btn = document.getElementById('form-submit-btn');
-  if (btn) btn.textContent = (isFile || isIPTV) ? tr('save') : tr('saveAndLogin');
-}
-
-function _renderFileProtocolOptions(selected = 'local') {
-  const sel = document.getElementById('form-file-protocol');
-  if (!sel) return;
-  let opts = [
-    ['local', tr('protoLocalOpt')],
-    ['smb', tr('protoSmbOpt')],
-    ['webdav', 'WebDAV'],
-    ['ftp', 'FTP'],
-    ['sftp', 'SFTP'],
-    ['nfs', tr('protoNfsOpt')],
-  ];
-  if (_supportedFileProtocols) {
-    // Always keep the currently-selected value visible even if unsupported,
-    // so editing an existing (e.g. previously-configured) source doesn't
-    // silently swap its protocol out from under it.
-    opts = opts.filter(([v]) => _supportedFileProtocols.includes(v) || v === selected);
+  if (updatePort && !iptvSource && !networkless) {
+    document.getElementById('form-port').value = sourceDefaultPort(type, protocol);
   }
-  sel.innerHTML = opts.map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const saveButton = document.getElementById('form-save-btn');
+  if (saveButton) saveButton.textContent = tr((fileSource || iptvSource) ? 'saveAndConnect' : 'saveAndLogin');
 }
 
-function onFileProtocolChange() { _updateRootHint(); }
+function onSourceProtocolChange() {
+  const type = document.getElementById('form-type')?.value || 'emby';
+  if (type !== 'smb') onSourceTypeChange(true);
+}
 
-function _updateRootHint() {
-  const proto = document.getElementById('form-file-protocol')?.value || 'local';
-  const isLocal = proto === 'local';
-  const hintText = isLocal ? tr('rootHintLocal') : tr('rootHintNet');
-  _setText('form-root-hint', hintText);
-  const rootInput = document.getElementById('form-root');
-  if (rootInput) rootInput.placeholder = hintText;
+/* ── Folder picker (WebDAV / SMB / local / NFS root-path selection) ──────── */
+let _fpServerId = '';
+let _fpType = '';
+let _fpPath = '';
+let _fpBaseRootPath = ''; // root_path (± share, for smb) already on the server, if any
+
+function openFolderPicker(serverId, type, baseRootPath = '') {
+  _fpServerId = serverId;
+  _fpType = type || '';
+  _fpPath = '';
+  _fpBaseRootPath = baseRootPath || '';
+  const hint = document.getElementById('folder-picker-hint');
+  if (hint) hint.textContent = tr('folderPickerHint');
+  document.getElementById('folder-picker-backdrop').classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  _fpNavigate('');
+}
+
+// Cancel or backdrop: close without committing anything.
+function closeFolderPickerCancel() {
+  document.getElementById('folder-picker-backdrop').classList.add('hidden');
+  document.body.classList.remove('sheet-open');
+  openServerManager();
+}
+
+function onFolderPickerBackdropClick(event) {
+  if (event.target.id === 'folder-picker-backdrop') closeFolderPickerCancel();
+}
+
+// Left action button: use the root while in a subfolder, or cancel at the root.
+async function closeFolderPickerSkip() {
+  if (_fpPath) {
+    // For SMB, "root" means the selected share's root, not the host's share list.
+    _fpPath = _fpType === 'smb' ? (_fpPath.split('/').filter(Boolean)[0] || '') : '';
+    await confirmFolderPicker();
+  } else {
+    closeFolderPickerCancel();
+  }
+}
+
+async function confirmFolderPicker() {
+  const path = _fpPath;
+  document.getElementById('folder-picker-backdrop').classList.add('hidden');
+  document.body.classList.remove('sheet-open');
+
+  // Effective root_path = base (already on the server, for a re-browse) + the
+  // newly-picked sub-path.
+  const effectivePath = [_fpBaseRootPath, path].filter(Boolean).join('/');
+  if (!_fpServerId) return;
+
+  const payload = {};
+  if (_fpType === 'smb') {
+    const parts = effectivePath.split('/').filter(Boolean);
+    payload.share = parts.shift() || '';
+    payload.root_path = parts.join('/');
+  } else {
+    payload.root_path = effectivePath;
+  }
+  try {
+    await api('PUT', `/api/servers/${_fpServerId}`, payload);
+    await _onSaveSuccess(_fpServerId);
+  } catch (e) {
+    toast(e.message, true);
+    await refreshServerSwitcher();
+  }
+}
+
+async function _fpNavigate(path) {
+  _fpPath = path;
+  _fpRenderBreadcrumb(path);
+  const listEl = document.getElementById('folder-picker-list');
+  const confirmBtn = document.getElementById('folder-picker-confirm-btn');
+  const skipBtn = document.getElementById('folder-picker-skip-btn');
+  if (confirmBtn) {
+    confirmBtn.textContent = _fpType === 'smb' && !path ? tr('folderPickerChooseShare') : ((path || _fpBaseRootPath) ? tr('folderPickerUseThis') : tr('folderPickerUseRoot'));
+    confirmBtn.disabled = _fpType === 'smb' && !path;
+  }
+  if (skipBtn) skipBtn.textContent = path ? tr('folderPickerUseRoot') : tr('cancel');
+  if (listEl) listEl.innerHTML = `<div class="fp-loading">${tr('folderPickerLoadingFolders')}</div>`;
+  try {
+    const qs = new URLSearchParams({ server_id: _fpServerId });
+    if (path) qs.set('path', path);
+    const data = await api('GET', `/api/files/list?${qs}`);
+    const dirs = (data.entries || []).filter(item => item.is_dir);
+    if (!listEl) return;
+    if (!dirs.length) {
+      listEl.innerHTML = `<div class="fp-empty">${tr('folderPickerNoFolders')}</div>`;
+      return;
+    }
+    listEl.innerHTML = dirs.map(item => `
+      <div class="fp-folder-row" onclick="_fpNavigate('${jsStr(item.path)}')">
+        <svg class="fp-folder-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/>
+        </svg>
+        <span>${esc(item.name)}</span>
+        <svg class="fp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+      </div>`).join('');
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<div class="fp-error">${esc(e.message)}</div>`;
+  }
+}
+
+function _fpRenderBreadcrumb(path) {
+  const el = document.getElementById('folder-picker-breadcrumb');
+  if (!el) return;
+  const parts = path ? path.split('/').filter(Boolean) : [];
+  let html = `<button class="fp-crumb" onclick="_fpNavigate('')">${tr('rootDirectory')}</button>`;
+  parts.forEach((p, i) => {
+    const pathTo = parts.slice(0, i + 1).join('/');
+    html += `<span class="fp-crumb-sep">›</span><button class="fp-crumb" onclick="_fpNavigate('${jsStr(pathTo)}')">${esc(p)}</button>`;
+  });
+  el.innerHTML = html;
+}
+
+/* ── Settings danger zone: reset all configuration ────────────────────────── */
+function openResetConfigurationConfirm() {
+  document.getElementById('reset-config-confirm-overlay')?.classList.remove('hidden');
+}
+
+function closeResetConfigurationConfirm() {
+  document.getElementById('reset-config-confirm-overlay')?.classList.add('hidden');
+}
+
+async function resetAllConfiguration() {
+  const button = document.getElementById('reset-config-confirm-btn');
+  if (button) button.disabled = true;
+  try {
+    await api('POST', '/api/settings/reset', {});
+    localStorage.clear();
+    sessionStorage.clear();
+    window.location.reload();
+  } catch (error) {
+    if (button) button.disabled = false;
+    closeResetConfigurationConfirm();
+    toast(error.message || tr('settingsSaveFailed'), true);
+  }
 }
 
 /* ── File browser (file sources) ──────────────────────────────────────────── */
@@ -3416,19 +3760,12 @@ function _iptvChannelLogoHtml(channel) {
   </div>`;
 }
 
-function renderIPTVChannelList(channels) {
-  const list = document.getElementById('iptv-channel-list');
-  if (!list) return;
-  if (!channels.length) {
-    list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvNoChannels'))}</div>`;
-    return;
-  }
-  list.innerHTML = channels.map(ch => {
-    const metaParts = [ch.group_title].filter(Boolean);
-    // Graceful no-EPG fallback: current_programme is simply absent, no
-    // separate "no guide" row layout — just one less piece of meta text.
-    if (ch.current_programme && ch.current_programme.title) metaParts.push(ch.current_programme.title);
-    return `
+function _iptvChannelRowHtml(ch) {
+  const metaParts = [ch.group_title].filter(Boolean);
+  // Graceful no-EPG fallback: current_programme is simply absent, no
+  // separate "no guide" row layout — just one less piece of meta text.
+  if (ch.current_programme && ch.current_programme.title) metaParts.push(ch.current_programme.title);
+  return `
     <div class="iptv-channel-row" role="button" tabindex="0"
          onclick="playIPTVChannel('${jsStr(ch.id)}', ${ch.variant_count || 1})"
          onkeydown="if(event.key==='Enter')playIPTVChannel('${jsStr(ch.id)}', ${ch.variant_count || 1})">
@@ -3444,7 +3781,48 @@ function renderIPTVChannelList(channels) {
               aria-label="${ch.is_favorite ? esc(tr('iptvRemoveFromFavorites')) : esc(tr('iptvAddToFavorites'))}"
               onclick="toggleIPTVChannelFavorite(event, '${jsStr(ch.id)}')">${ch.is_favorite ? '★' : '☆'}</button>
     </div>`;
-  }).join('');
+}
+
+// Large playlists (e.g. iptv-org's ~12k-channel index.m3u) blow the DOM up to
+// tens of thousands of nodes if rendered in one innerHTML pass. Render in
+// batches and grow the list as the user scrolls near the bottom instead.
+const IPTV_RENDER_BATCH = 60;
+let _iptvRenderedCount = 0;
+let _iptvRenderObserver = null;
+
+function renderIPTVChannelList(channels) {
+  const list = document.getElementById('iptv-channel-list');
+  if (!list) return;
+  if (_iptvRenderObserver) { _iptvRenderObserver.disconnect(); _iptvRenderObserver = null; }
+  if (!channels.length) {
+    list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvNoChannels'))}</div>`;
+    return;
+  }
+  list.innerHTML = '';
+  _iptvChannels = channels;
+  _iptvRenderedCount = 0;
+  _appendIPTVChannelBatch(list);
+}
+
+function _appendIPTVChannelBatch(list) {
+  const next = _iptvChannels.slice(_iptvRenderedCount, _iptvRenderedCount + IPTV_RENDER_BATCH);
+  if (!next.length) return;
+  list.insertAdjacentHTML('beforeend', next.map(_iptvChannelRowHtml).join(''));
+  _iptvRenderedCount += next.length;
+
+  document.getElementById('iptv-channel-list-sentinel')?.remove();
+  if (_iptvRenderedCount >= _iptvChannels.length) return;
+
+  const sentinel = document.createElement('div');
+  sentinel.id = 'iptv-channel-list-sentinel';
+  list.appendChild(sentinel);
+  _iptvRenderObserver = new IntersectionObserver((entries) => {
+    if (entries.some(e => e.isIntersecting)) {
+      _iptvRenderObserver.disconnect();
+      _appendIPTVChannelBatch(list);
+    }
+  });
+  _iptvRenderObserver.observe(sentinel);
 }
 
 async function toggleIPTVChannelFavorite(event, channelId) {
@@ -3468,6 +3846,7 @@ async function playIPTVChannel(channelId, variantCount = 1) {
   currentEpisodeLabel = '';
   currentPosterItemId = '';
   currentItemIsSeries = false;
+  _playbackServerId = _activeServerId;
   currentIPTVChannelId = channelId;
   currentIPTVVariantCount = variantCount;
   const channel = _iptvChannels.find(c => c.id === channelId);
@@ -3501,6 +3880,7 @@ async function loadDir(path = '') {
       <div class="files-error">
         <div class="files-error-title">${tr('folderFailed')}</div>
         <div class="files-error-sub">${esc(e.message)}</div>
+        <button class="btn-secondary" onclick="loadDir(_filesPath)">${tr('retry')}</button>
       </div>`;
   }
 }
@@ -3567,6 +3947,7 @@ async function playFile(path, name) {
   currentEpisodeLabel = '';
   currentPosterItemId = '';
   currentItemIsSeries = false;
+  _playbackServerId = _activeServerId;
   setNowPlaying(name, {});
   switchTab('remote');
   document.getElementById('play-loading-tag')?.classList.remove('hidden');
@@ -3606,6 +3987,19 @@ function jsStr(str) {
     .replace(/\r?\n|\r/g, ' ');
 }
 
+/* ── Player engine sheet (mpv is the only desktop engine — informational) ── */
+function openEngineSheet() {
+  document.getElementById('engine-backdrop')?.classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+}
+function closeEngineSheet() {
+  document.getElementById('engine-backdrop')?.classList.add('hidden');
+  document.body.classList.remove('sheet-open');
+}
+function onEngineBackdropClick(event) {
+  if (event.target.id === 'engine-backdrop') closeEngineSheet();
+}
+
 /* ── Playback debug report ("Playback issue?" button) ────────────────────── */
 let _playbackDebugOpen = false;
 let _playbackDebugReportText = '';
@@ -3628,7 +4022,8 @@ function openPlaybackDebugSheet() {
 function closePlaybackDebugSheet() {
   _playbackDebugOpen = false;
   document.getElementById('playback-debug-backdrop')?.classList.add('hidden');
-  document.body.classList.remove('sheet-open');
+  const engineSheetOpen = !document.getElementById('engine-backdrop')?.classList.contains('hidden');
+  if (!engineSheetOpen) document.body.classList.remove('sheet-open');
 }
 
 function onPlaybackDebugBackdropClick(event) {

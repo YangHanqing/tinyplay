@@ -25,10 +25,6 @@ on:
 permissions:
   contents: write
 
-defaults:
-  run:
-    working-directory: desktop-go
-
 jobs:
   windows:
     runs-on: windows-latest
@@ -37,10 +33,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-
-      - name: Sync frontend
-        shell: bash
-        run: make sync
 
       - name: Download & bundle mpv
         shell: bash
@@ -74,7 +66,7 @@ jobs:
 
       - name: Bundle third-party notices
         shell: bash
-        run: cp ../THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
+        run: cp THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
 
       - name: Package zip
         shell: bash
@@ -85,13 +77,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: TinyPlay-windows
-          path: desktop-go/TinyPlay-windows.zip
+          path: TinyPlay-windows.zip
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: desktop-go/TinyPlay-windows.zip
+          files: TinyPlay-windows.zip
 
   macos:
     runs-on: macos-14 # Apple Silicon
@@ -104,9 +96,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-
-      - name: Sync frontend
-        run: make sync
 
       - name: Build Go core (arm64)
         run: GOOS=darwin GOARCH=arm64 go build -o build/tvremote-core-darwin-arm64 ./cmd/tvremote
@@ -167,8 +156,8 @@ jobs:
         with:
           name: TinyPlay-macos
           path: |
-            desktop-go/TinyPlay-macos.dmg
-            desktop-go/TinyPlay-macos.zip
+            TinyPlay-macos.dmg
+            TinyPlay-macos.zip
           if-no-files-found: warn
 
       - name: Attach to release
@@ -176,5 +165,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            desktop-go/TinyPlay-macos.dmg
-            desktop-go/TinyPlay-macos.zip
+            TinyPlay-macos.dmg
+            TinyPlay-macos.zip
