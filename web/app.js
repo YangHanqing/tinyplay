@@ -698,6 +698,7 @@ function _setViewMode(mode) {
   document.getElementById('library-toolbar')?.classList.toggle('hidden', mode !== 'browse');
   document.getElementById('lib-files-view')?.classList.toggle('hidden', mode !== 'files');
   document.getElementById('lib-iptv-view')?.classList.toggle('hidden', mode !== 'iptv');
+  document.getElementById('btn-iptv-refresh')?.classList.toggle('hidden', mode !== 'iptv');
   document.getElementById('browse-back-btn')?.classList.toggle('hidden', mode !== 'resume');
 }
 
@@ -712,6 +713,7 @@ function switchTab(tab) {
   document.getElementById('nav-remote').classList.toggle('active', tab === 'remote');
   document.getElementById('nav-settings').classList.toggle('active', tab === 'settings');
   document.getElementById('search-toggle')?.classList.toggle('hidden', tab !== 'library' || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv' || !_hasAnyServer);
+  document.getElementById('btn-iptv-refresh')?.classList.toggle('hidden', tab !== 'library' || _viewMode !== 'iptv');
   document.getElementById('btn-exit')?.classList.toggle('hidden', tab !== 'remote');
   if (tab !== 'library' && isSearching) cancelSearch();
   if (tab === 'settings') renderSettingsUi();
@@ -1631,13 +1633,12 @@ function _fmtAudioCodec(c) {
 }
 
 function _fmtHwdec(h) {
+  // This drives the prominent decode-method badge, which should read as plainly
+  // as "hardware/software decode" — the specific decoder API name (VideoToolbox,
+  // D3D11VA, nvdec, ...) is a detail most users don't recognize; it still shows
+  // in the secondary "decoder" row via _fmtHwdecName.
   if (!h || h === 'no') return tr('softwareDecode');
-  const copy = tr('copy');
-  return { nvdec:'NVIDIA (nvdec)', 'nvdec-copy':`NVIDIA ${copy}`,
-           cuda:'CUDA (NVIDIA)',
-           d3d11va:'D3D11VA', 'd3d11va-copy':`D3D11VA ${copy}`,
-           dxva2:'DXVA2',    'dxva2-copy':`DXVA2 ${copy}`,
-           videotoolbox:'VideoToolbox (Apple)' }[h] || h;
+  return tr('hardwareDecode');
 }
 
 function _fmtSampleRate(hz) {
@@ -3795,11 +3796,12 @@ function renderIPTVSourceStatus(s) {
   el.innerHTML = `
     <span>${parts.map(esc).join(' · ')}</span>
     <span class="${statusCls}">${esc(tr(statusKey))}</span>
-    <button class="section-more-btn" onclick="refreshIPTVSource()">${esc(tr('iptvRefreshNow'))}</button>
   `;
 }
 
 async function refreshIPTVSource() {
+  const button = document.getElementById('btn-iptv-refresh');
+  if (button) { button.disabled = true; button.classList.add('spinning'); }
   try {
     const s = await api('POST', '/api/iptv/refresh');
     renderIPTVSourceStatus(s);
@@ -3807,6 +3809,8 @@ async function refreshIPTVSource() {
     toast(tr('iptvRefreshed'));
   } catch (e) {
     toast(e.message || tr('iptvRefreshFailed'), true);
+  } finally {
+    if (button) { button.disabled = false; button.classList.remove('spinning'); }
   }
 }
 
@@ -4254,15 +4258,20 @@ function _copyTextWithTemporaryTextarea(text) {
 }
 
 function toast(msg, isError = false) {
+  // Backend error text can be arbitrarily long (e.g. a raw network error);
+  // cap it so one bad message can't blow the toast past the viewport.
+  const text = String(msg).length > 200 ? `${String(msg).slice(0, 200)}…` : msg;
   const el = Object.assign(document.createElement('div'), {
-    textContent: msg,
+    textContent: text,
     style: `
       position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
+      max-width:min(85vw,420px);
       background:${isError ? 'var(--danger)' : 'var(--accent)'};
       color:#fff;padding:10px 18px;border-radius:20px;font-size:13px;
-      z-index:999;white-space:nowrap;pointer-events:none;
+      z-index:999;white-space:normal;word-break:break-word;text-align:center;
+      pointer-events:none;
       animation:fadeUp .25s ease`,
   });
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), 2800);
+  setTimeout(() => el.remove(), isError ? 4000 : 2800);
 }

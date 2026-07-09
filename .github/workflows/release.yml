@@ -129,7 +129,11 @@ jobs:
           if [ ! -x /usr/local/bin/brew ]; then
             NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
           fi
-          arch -x86_64 /usr/local/bin/brew install mpv
+          # --overwrite: GitHub's runner image already ships packages under
+          # /usr/local (e.g. a prior Python with bin/idle3 symlinked), which
+          # otherwise makes `brew link` on a build dependency like python@3.x
+          # abort with "already exists" instead of just replacing its own link.
+          arch -x86_64 /usr/local/bin/brew install --overwrite mpv
 
       - name: Download & bundle mpv (self-contained via dylibbundler)
         run: |

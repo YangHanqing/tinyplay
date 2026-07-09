@@ -72,7 +72,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .header-side { }
 .header-right { display: flex; justify-content: flex-end; }
 .header-center { display: flex; justify-content: center; align-items: center; position: relative; }
-/* Topbar action button (right slot — search on library tab, exit on remote tab) */
+/* Topbar action button (right slot — search/IPTV-refresh on library tab, exit on remote tab) */
 .topbar-action-btn {
   width: 36px; height: 36px; border-radius: 8px;
   border: none; background: none;
@@ -82,6 +82,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 .topbar-action-btn svg { width: 20px; height: 20px; }
 .topbar-action-btn:active { color: rgba(255,255,255,.9); background: rgba(255,255,255,.08); }
+.topbar-action-btn:disabled { opacity: .5; cursor: default; }
+.topbar-action-btn.spinning svg { animation: spin .8s linear infinite; }
 
 /* Server switcher (centered in header) */
 .server-btn {
@@ -1226,7 +1228,7 @@ button { font-family: inherit; }
 /* IPTV channel browser */
 .iptv-source-status {
   padding: 10px 14px; font-size: 12px; color: var(--text-muted);
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  display: grid; gap: 4px;
 }
 .iptv-status-error { color: #ff7a7a; }
 .iptv-category-row {
