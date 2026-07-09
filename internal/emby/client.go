@@ -59,9 +59,13 @@ func FromActive() (*Client, error) {
 // New builds a client for an explicit server (used by Login).
 func New(s *config.Server) *Client { return &Client{server: s} }
 
-// reload re-reads the active server so token/host changes are picked up.
+// reload re-reads the same server so token/host changes are picked up without
+// allowing a library switch to redirect an existing playback session.
 func (c *Client) reload() {
-	if srv := config.ActiveServer(); srv != nil {
+	if c.server == nil {
+		return
+	}
+	if srv := config.GetServer(c.server.ID); srv != nil {
 		c.server = srv
 	}
 }

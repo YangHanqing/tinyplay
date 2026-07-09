@@ -230,6 +230,10 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .library-option span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; }
 .library-option.active { border-color: rgba(167,139,250,.55); background: rgba(124,92,252,.16); }
 .library-option-mark { flex-shrink: 0; color: var(--accent2); font-size: 11px; font-weight: 750; }
+.browse-back-btn { display: inline-flex; align-items: center; gap: 4px; margin: 12px 14px 0; padding: 6px 10px 6px 7px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface2); color: var(--text-muted); font-family: inherit; font-size: 12px; font-weight: 700; line-height: 1; cursor: pointer; }
+.browse-back-btn svg { width: 16px; height: 16px; }
+.browse-back-btn:active { color: var(--text); background: rgba(255,255,255,.1); }
+.browse-back-btn.hidden { display: none; }
 
 /* ── Home view ────────────────────────────────────────────────────────────── */
 .home-section { padding-bottom: 6px; }
@@ -356,8 +360,6 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .section { padding: 0 0 8px; }
 .section-title { font-size: 12px; font-weight: 750; color: rgba(255,255,255,.38); text-transform: uppercase; letter-spacing: .7px; padding: 16px 14px 8px; }
 .poster-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 12px; padding: 0 14px 14px; }
-.poster-grid.resume-grid-mode { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
-.poster-grid.resume-grid-mode .resume-card { width: 100%; max-width: none; }
 
 /* ── Poster cards (shared: home row + grid) ───────────────────────────────── */
 .poster-card { cursor: pointer; border-radius: 12px; overflow: hidden; background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.08); transition: transform .15s, border-color .15s; }
@@ -440,6 +442,23 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 /* ── Player engine sheet (mpv is the only desktop engine — informational) ── */
 .engine-sheet-sub { font-size: 12px; color: var(--text-muted); margin: 6px 0 0; line-height: 1.5; }
+.engine-option-list { padding: 0 0 4px; }
+.engine-option-row {
+  display: block; width: 100%; text-align: left; padding: 14px 20px;
+  background: none; border: none; border-bottom: 1px solid rgba(255,255,255,.06);
+  color: var(--text); font-family: inherit; cursor: pointer;
+  transition: background .12s;
+}
+.engine-option-row:last-child { border-bottom: none; }
+.engine-option-row:active, .engine-option-row.active { background: rgba(255,255,255,.04); }
+.engine-option-row:disabled { cursor: default; opacity: .55; }
+.engine-option-row:disabled:active { background: none; }
+.engine-option-row.engine-option-locked:disabled { opacity: 1; cursor: default; }
+.engine-opt-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.engine-opt-name { font-size: 15px; font-weight: 700; }
+.engine-opt-check { color: #37a9ff; font-size: 16px; font-weight: 700; }
+.engine-opt-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin: 0; }
+.engine-opt-status { font-size: 12px; color: var(--text-muted); line-height: 1.45; margin: 6px 0 0; }
 .engine-support-section { border-top: 1px solid rgba(255,255,255,.07); }
 .engine-support-toggle {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

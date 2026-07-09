@@ -1,12 +1,15 @@
-# Builds the double-click TinyPlay desktop apps for Windows and macOS
-# (Apple Silicon), with mpv bundled, and attaches them to a GitHub Release when
-# you push a v* tag.
+# Builds the double-click TinyPlay desktop apps for Windows and macOS (both
+# Apple Silicon and Intel), with mpv bundled, and attaches them to a GitHub
+# Release when you push a v* tag.
 #
-#   Windows → TinyPlay-windows.zip   (TinyPlay.exe + mpv/, unzip & double-click)
-#   macOS   → TinyPlay-macos.dmg           (signed+notarized, drag TinyPlay.app to
-#                                     Applications). Before the signing secrets
-#                                     exist it falls back to an unsigned
-#                                     TinyPlay-macos.zip so the build still runs.
+#   Windows → TinyPlay-windows.zip        (TinyPlay.exe + mpv/, unzip & double-click)
+#   macOS   → TinyPlay-macos-arm64.dmg    (Apple Silicon)
+#             TinyPlay-macos-intel.dmg    (Intel)
+#                                          signed+notarized, drag TinyPlay.app to
+#                                          Applications. Before the signing
+#                                          secrets exist each falls back to an
+#                                          unsigned TinyPlay-macos-<arch>.zip so
+#                                          the build still runs.
 #
 # macOS is Developer ID signed + notarized + stapled when the signing secrets
 # are present, so users are not blocked by Gatekeeper ("unidentified developer").
@@ -14,6 +17,11 @@
 # requests — so the certificate secrets are never exposed to untrusted forks.
 # Windows artifacts are UNSIGNED for now (no Windows code-signing certificate);
 # users may still see a SmartScreen "unknown publisher" prompt.
+#
+# The Intel macOS leg cross-builds from the arm64 runner: the Go core and
+# Swift shell cross-compile natively, but bundling a real x86_64 mpv binary
+# needs an x86_64 Homebrew prefix, which this job installs under Rosetta
+# (adds a few minutes of extra job time versus the native arm64 leg).
 
 name: release
 
@@ -86,7 +94,17 @@ jobs:
           files: TinyPlay-windows.zip
 
   macos:
-    runs-on: macos-14 # Apple Silicon
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            goarch: arm64
+            label: arm64
+          - arch: x86_64
+            goarch: amd64
+            label: intel
+    runs-on: macos-14 # Apple Silicon; the intel leg cross-builds (see notes above)
     env:
       # 'true' only when the signing secrets exist; gates the sign step so the
       # build still succeeds (unsigned) before you've added them.
@@ -97,15 +115,32 @@ jobs:
         with:
           go-version: "1.22"
 
-      - name: Build Go core (arm64)
-        run: GOOS=darwin GOARCH=arm64 go build -o build/tvremote-core-darwin-arm64 ./cmd/tvremote
+      - name: Build Go core (${{ matrix.goarch }})
+        run: GOOS=darwin GOARCH=${{ matrix.goarch }} go build -o build/tvremote-core-darwin-${{ matrix.goarch }} ./cmd/tvremote
+
+      - name: Install packaging tools (dylibbundler, create-dmg)
+        run: brew install dylibbundler create-dmg
+
+      - name: Install x86_64 Homebrew under Rosetta (intel leg only)
+        if: matrix.arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          softwareupdate --install-rosetta --agree-to-license
+          if [ ! -x /usr/local/bin/brew ]; then
+            NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          arch -x86_64 /usr/local/bin/brew install mpv
 
       - name: Download & bundle mpv (self-contained via dylibbundler)
         run: |
           set -euo pipefail
-          brew install mpv dylibbundler create-dmg
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            real_mpv=$(readlink -f /usr/local/bin/mpv)
+          else
+            brew install mpv
+            real_mpv=$(readlink -f "$(brew --prefix)/bin/mpv")
+          fi
           mkdir -p mpvstage/bin/libs
-          real_mpv=$(readlink -f "$(brew --prefix)/bin/mpv")
           cp "$real_mpv" mpvstage/bin/mpv
           chmod u+w mpvstage/bin/mpv
           # Copy every non-system dylib next to the binary and rewrite load paths
@@ -117,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="0.0.0-dev"; fi
-          VERSION="$VER" MPV_DIR="$PWD/mpvstage" ./macos/build-app.sh
+          ARCH="${{ matrix.arch }}" VERSION="$VER" MPV_DIR="$PWD/mpvstage" ./macos/build-app.sh
 
       # Import the Developer ID cert into a keychain that persists for the whole
       # job, so both the app-signing and DMG-signing steps below can use it.
@@ -144,20 +179,20 @@ jobs:
           AC_API_KEY: ${{ secrets.AC_API_KEY }}
           AC_KEY_ID: ${{ secrets.AC_KEY_ID }}
           AC_ISSUER_ID: ${{ secrets.AC_ISSUER_ID }}
-        run: ./macos/make-dmg.sh "$PWD/build/TinyPlay.app" "$PWD/TinyPlay-macos.dmg"
+        run: ./macos/make-dmg.sh "$PWD/build/TinyPlay.app" "$PWD/TinyPlay-macos-${{ matrix.label }}.dmg"
 
       - name: Package unsigned zip (fallback before secrets exist)
         if: ${{ env.HAS_SIGNING != 'true' }}
         run: |
           cd build
-          ditto -c -k --keepParent "TinyPlay.app" ../TinyPlay-macos.zip
+          ditto -c -k --keepParent "TinyPlay.app" "../TinyPlay-macos-${{ matrix.label }}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TinyPlay-macos
+          name: TinyPlay-macos-${{ matrix.label }}
           path: |
-            TinyPlay-macos.dmg
-            TinyPlay-macos.zip
+            TinyPlay-macos-${{ matrix.label }}.dmg
+            TinyPlay-macos-${{ matrix.label }}.zip
           if-no-files-found: warn
 
       - name: Attach to release
@@ -165,5 +200,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            TinyPlay-macos.dmg
-            TinyPlay-macos.zip
+            TinyPlay-macos-${{ matrix.label }}.dmg
+            TinyPlay-macos-${{ matrix.label }}.zip

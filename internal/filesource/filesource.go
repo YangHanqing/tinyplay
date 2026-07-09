@@ -3,6 +3,7 @@
 package filesource
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -385,6 +386,10 @@ func (c *Client) smbAuth() (user, domain, password string) {
 // both for share enumeration (Share == "") and as the first step before
 // mounting a specific share.
 func (c *Client) withSMBSession(fn func(*smb2.Session) error) error {
+	return c.withSMBSessionContext(context.Background(), fn)
+}
+
+func (c *Client) withSMBSessionContext(ctx context.Context, fn func(*smb2.Session) error) error {
 	hostPort, e := c.smbHostPort()
 	if e != nil {
 		return e
@@ -394,6 +399,15 @@ func (c *Client) withSMBSession(fn func(*smb2.Session) error) error {
 		return errf(502, "Could not connect to SMB: %v", e)
 	}
 	defer conn.Close()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
 	user, domain, password := c.smbAuth()
 	initiator := &smb2.NTLMInitiator{User: user, Password: password, Domain: domain}
 	session, e := (&smb2.Dialer{Initiator: initiator}).Dial(conn)
@@ -408,12 +422,16 @@ func (c *Client) withSMBSession(fn func(*smb2.Session) error) error {
 // playback (Serve/ResolvePlayURL), where the source is always already fully
 // configured (Share is never empty by the time anything plays).
 func (c *Client) withSMB(segs []string, fn func(*smb2.Share, string) error) error {
+	return c.withSMBContext(context.Background(), segs, fn)
+}
+
+func (c *Client) withSMBContext(ctx context.Context, segs []string, fn func(*smb2.Share, string) error) error {
 	share := strings.TrimSpace(c.server.Share)
 	if share == "" {
 		return errf(400, "An SMB share is required")
 	}
 	path := filepath.ToSlash(filepath.Join(append(segments0(c.server.RootPath), segs...)...))
-	return c.withSMBSession(func(session *smb2.Session) error {
+	return c.withSMBSessionContext(ctx, func(session *smb2.Session) error {
 		mounted, e := session.Mount(share)
 		if e != nil {
 			return errf(502, "Could not mount SMB share: %v", e)
@@ -554,6 +572,15 @@ func (c *Client) Serve(w http.ResponseWriter, r *http.Request, path string) erro
 			return errf(404, "File not found")
 		}
 		defer f.Close()
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-r.Context().Done():
+				_ = f.Close()
+			case <-done:
+			}
+		}()
+		defer close(done)
 		info, err := f.Stat()
 		if err != nil {
 			return err
@@ -586,7 +613,7 @@ func (c *Client) Serve(w http.ResponseWriter, r *http.Request, path string) erro
 		_, err = io.Copy(w, resp.Body)
 		return err
 	case "smb":
-		return c.withSMB(segs, func(share *smb2.Share, path string) error {
+		return c.withSMBContext(r.Context(), segs, func(share *smb2.Share, path string) error {
 			f, err := share.Open(path)
 			if err != nil {
 				return errf(404, "File not found")

@@ -7,23 +7,31 @@
 #      notarization is done separately on the developer's Mac (never in CI).
 #
 # Inputs (env, all optional):
-#   CORE_BIN  path to the built Go core   (default: ../build/tvremote-core-darwin-arm64)
+#   ARCH      arm64 or x86_64             (default: arm64)
+#   CORE_BIN  path to the built Go core   (default: ../build/tvremote-core-darwin-<goarch>,
+#                                          where <goarch> is arm64 or amd64 to match ARCH)
 #   MPV_DIR   dir copied to Contents/Resources/mpv; expects bin/mpv inside it
 #   OUT       output .app path            (default: ../build/TinyPlay.app)
 #   VERSION   CFBundleShortVersionString  (default: 0.1.0)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-CORE_BIN="${CORE_BIN:-$HERE/../build/tvremote-core-darwin-arm64}"
+ARCH="${ARCH:-arm64}"
+case "$ARCH" in
+    arm64) GOARCH=arm64 ;;
+    x86_64) GOARCH=amd64 ;;
+    *) echo "unsupported ARCH: $ARCH (expected arm64 or x86_64)"; exit 1 ;;
+esac
+CORE_BIN="${CORE_BIN:-$HERE/../build/tvremote-core-darwin-$GOARCH}"
 OUT="${OUT:-$HERE/../build/TinyPlay.app}"
 VERSION="${VERSION:-0.1.0}"
 
-[ -f "$CORE_BIN" ] || { echo "core binary not found: $CORE_BIN (run make build-core-mac)"; exit 1; }
+[ -f "$CORE_BIN" ] || { echo "core binary not found: $CORE_BIN (run make build-core-mac ARCH=$ARCH)"; exit 1; }
 
-echo "==> compiling Swift shell"
+echo "==> compiling Swift shell (target $ARCH)"
 mkdir -p "$HERE/../build"
 SHELL_BIN="$HERE/../build/TVRemoteShell"
-swiftc -O -o "$SHELL_BIN" "$HERE/Sources/main.swift" \
+swiftc -O -target "$ARCH-apple-macosx13.0" -o "$SHELL_BIN" "$HERE/Sources/main.swift" \
     -framework AppKit -framework WebKit
 
 echo "==> assembling bundle: $OUT"

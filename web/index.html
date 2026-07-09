@@ -113,6 +113,10 @@
       <!-- Browse view: specific library grid -->
       <div id="lib-grid-view" class="hidden">
         <section class="section" id="section-browse">
+          <button class="browse-back-btn hidden" id="browse-back-btn" onclick="returnFromResume()" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+            <span id="browse-back-label">Back</span>
+          </button>
           <h2 class="section-title-h browse-title-h" id="browse-title">Browse</h2>
           <div class="poster-grid" id="poster-grid"></div>
           <div class="load-more-wrap">
@@ -241,7 +245,7 @@
               <svg class="tpt-ring-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.3 7.2A7 7 0 1 1 5.1 13"/><path d="M5 5v5h5"/></svg>
               <span class="tpt-label" id="seek-backward-label">5</span>
             </button>
-            <button class="tpt-btn tpt-primary" id="btn-pause-play" onclick="cmd(['cycle', 'pause'])" aria-label="Pause or resume">
+            <button class="tpt-btn tpt-primary" id="btn-pause-play" onclick="togglePlayPause()" aria-label="Pause or resume">
               <svg class="tpt-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M8 5v14M16 5v14"/></svg>
             </button>
             <button class="tpt-btn" id="btn-seek-forward" onclick="seekForward()" aria-label="Fast-forward">
@@ -297,6 +301,11 @@
               <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M8 4v3"/><path d="M16 4v3"/></svg>
               <span id="tool-tile-iptv-guide-label">Guide</span>
             </button>
+
+            <button class="tool-tile hidden" id="tool-tile-iptv-live" onclick="iptvBackToLive()" aria-label="Back to live">
+              <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 5V3M12 21v-2M5 12H3M21 12h-2"/></svg>
+              <span id="tool-tile-iptv-live-label">Live</span>
+            </button>
           </div>
 
           <!-- Player engine hint: mpv is the only playback engine on desktop,
@@ -346,8 +355,18 @@
         <div class="sheet-handle"></div>
         <button class="sheet-close" onclick="closeEngineSheet()" aria-label="Close">×</button>
         <div class="media-select-head">
-          <h3 id="engine-sheet-title" data-i18n="engineSheetTitleMpv">MPV</h3>
-          <p class="engine-sheet-sub" data-i18n="engineSheetSubMpv">MPV is the playback engine used on desktop. There's only this one engine, so there's nothing to switch to.</p>
+          <h3 id="engine-sheet-title" data-i18n="engineSheetTitleMpv">Player</h3>
+          <p class="engine-sheet-sub" data-i18n="engineSheetSubMpv">TinyPlay desktop uses MPV as its playback engine.</p>
+        </div>
+        <div class="engine-option-list" id="engine-option-list">
+          <button class="engine-option-row engine-option-locked" disabled>
+            <div class="engine-opt-top">
+              <span class="engine-opt-name">MPV</span>
+              <span class="engine-opt-check">✓</span>
+            </div>
+            <p class="engine-opt-desc" data-i18n="mpvEngineDesc">MPV is a mature general-purpose playback engine with broad support for containers, codecs, subtitles, and network streams.</p>
+            <p class="engine-opt-status" data-i18n="mpvEngineStatus">Desktop playback uses MPV exclusively.</p>
+          </button>
         </div>
         <div class="engine-support-section">
           <button class="engine-support-toggle" onclick="openPlaybackDebugSheet()">

@@ -462,6 +462,7 @@ func (p *Player) State() map[string]any {
 	p.mu.Unlock()
 	return map[string]any{
 		"running":        running,
+		"server_id":      ctx.ServerID,
 		"item_id":        ctx.ItemID,
 		"series_id":      ctx.SeriesID,
 		"season_id":      ctx.SeasonID,
@@ -581,7 +582,10 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 				log.Printf("mpv exited unexpectedly: %v; see %s", err, mpvLog)
 			}
 			p.mu.Lock()
-			p.running = false
+			if p.proc == cmd {
+				p.running = false
+				p.proc = nil
+			}
 			p.mu.Unlock()
 		}()
 		result = map[string]any{"ok": true}
@@ -607,7 +611,21 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 func (p *Player) Stop() map[string]any {
 	p.hideScreensaver()
 	p.fireStopReport()
+	p.mu.Lock()
+	proc := p.proc
+	p.mu.Unlock()
 	result := p.send([]any{"quit"})
+	if proc != nil && proc.Process != nil {
+		go func(target *exec.Cmd) {
+			time.Sleep(2 * time.Second)
+			p.mu.Lock()
+			stillRunning := p.running && p.proc == target
+			p.mu.Unlock()
+			if stillRunning {
+				_ = target.Process.Kill()
+			}
+		}(proc)
+	}
 	p.mu.Lock()
 	p.ctx = PlayContext{}
 	p.mu.Unlock()

@@ -95,9 +95,12 @@ let _iptvSearch = '';
 let _iptvChannels = [];         // last-loaded channel rows for the active category/search
 let currentItemIsLive = false;  // true while an IPTV channel is the now-playing item
 let currentIPTVChannelId = '';
+let currentIPTVVariantIndex = 0;
 let currentIPTVVariantCount = 0;
+let currentIPTVHasProgramme = false;
 let _iptvQualityOpen = false;
 let _iptvProgrammeOpen = false;
+let _iptvResumeWatchdog = null;
 
 const ASPECT_OPTIONS = [
   { value: 'fit',      labelKey: 'aspectFitLabel',      displayKey: 'aspectFitDisplay' },
@@ -250,10 +253,11 @@ async function restorePlayerContext() {
       currentSeasonId  = state.season_id || '';
       currentSeriesTitle = state.series_title || '';
       currentEpisodeLabel = state.episode_label || '';
-      currentPosterItemId = state.poster_item_id || state.series_id || state.item_id || '';
+      currentPosterItemId = state.is_live ? '' : (state.poster_item_id || state.series_id || state.item_id || '');
       currentItemId    = state.item_id || '';
       currentItemIsSeries = !!currentSeriesId;
       currentIPTVChannelId = state.is_live ? (state.channel_id || '') : '';
+      currentIPTVVariantIndex = 0;
       currentIPTVVariantCount = 0;
       setNowPlaying(state.title, {
         seriesTitle: currentSeriesTitle,
@@ -265,8 +269,9 @@ async function restorePlayerContext() {
         // variant_count isn't in /api/player/state; fetch it once so the
         // quality tile's visibility (shown only when >1 variant) is correct
         // right after a browser reconnect, not just after a fresh play().
-        api('GET', `/api/iptv/channel/${encodeURIComponent(currentIPTVChannelId)}`).then(ch => {
+        api('GET', `/api/iptv/channel/${encodeURIComponent(currentIPTVChannelId)}?server_id=${encodeURIComponent(_playbackServerId)}`).then(ch => {
           currentIPTVVariantCount = (ch.variants || []).length;
+          currentIPTVHasProgramme = iptvChannelHasProgramme(ch);
           updateLiveControlsVisibility(currentItemIsLive);
         }).catch(() => {});
       }
@@ -496,7 +501,7 @@ function resetPosterColor() {
   if (tab) tab.style.background = '';
 }
 
-async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', episodeLabel = '', posterItemId = '', mediaSourceId = '') {
+async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', episodeLabel = '', posterItemId = '', mediaSourceId = '', serverId = _activeServerId) {
   const resolvedPoster = posterItemId || seriesId || itemId || '';
   _hadProps = false;
   _currentAspect = 'fit';
@@ -508,7 +513,11 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
   currentEpisodeLabel = episodeLabel || '';
   currentPosterItemId = resolvedPoster;
   currentItemIsSeries = !!currentSeriesId;
-  _playbackServerId = _activeServerId;
+  currentIPTVChannelId = '';
+  currentIPTVVariantIndex = 0;
+  currentIPTVVariantCount = 0;
+  currentIPTVHasProgramme = false;
+  _playbackServerId = serverId;
   setNowPlaying(title, {
     seriesTitle: currentSeriesTitle,
     episodeLabel: currentEpisodeLabel,
@@ -524,6 +533,7 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
   document.getElementById('player-info')?.classList.add('hidden');
   try {
     await api('POST', '/api/player/play', {
+      server_id: _playbackServerId,
       item_id: itemId,
       series_id: currentSeriesId,
       season_id: currentSeasonId,
@@ -553,6 +563,7 @@ async function _ensureEpisodeNav(itemId, seriesId, seasonId) {
   if (_navContext === ctx && _navEpisodes.some(e => e.Id === itemId)) return;
   try {
     const qs = new URLSearchParams({
+      server_id: _playbackServerId,
       series_id: seriesId,
       season_id: seasonId || '',
       start: 0,
@@ -588,6 +599,8 @@ async function _stepEpisode(delta) {
     target.SeriesName || currentSeriesTitle || '',
     episodeLabelForItem(target),
     target.SeriesId || currentSeriesId || target.Id,
+    '',
+    _playbackServerId,
   );
 }
 
@@ -626,8 +639,8 @@ function setNowPlaying(title, meta = {}) {
   if (!hasTitle) {
     document.getElementById('player-info')?.classList.add('hidden');
   }
-  updateEpisodeNavVisibility(currentItemIsSeries);
   currentItemIsLive = !!meta.isLive;
+  updateEpisodeNavVisibility(currentItemIsSeries);
   updateLiveControlsVisibility(currentItemIsLive);
   if (posterItemId && hasTitle) {
     applyPosterColor(libraryImageUrl(posterItemId, 80, '', _playbackServerId));
@@ -641,8 +654,12 @@ function updateEpisodeNavVisibility(isSeries) {
   const movieInfo = document.getElementById('now-playing-movie-info');
   if (movieInfo) {
     movieInfo.classList.toggle('hidden', isSeries);
-    if (!isSeries && !movieInfo.textContent) movieInfo.textContent = tr('movie');
+    if (!isSeries) movieInfo.textContent = isCurrentIPTVPlayback() ? sourceTypeLabel('iptv') : tr('movie');
   }
+}
+
+function isCurrentIPTVPlayback() {
+  return currentItemIsLive || !!currentIPTVChannelId;
 }
 
 // Live channels have no seek bar/duration (nothing to scrub through) and get
@@ -652,15 +669,18 @@ function updateEpisodeNavVisibility(isSeries) {
 // Audio track switching stays — multi-language channels commonly multiplex
 // alternate audio.
 function updateLiveControlsVisibility(isLive) {
-  document.querySelector('.playback-progress')?.classList.toggle('hidden', isLive);
-  document.getElementById('btn-seek-backward')?.classList.toggle('hidden', isLive);
-  document.getElementById('btn-seek-forward')?.classList.toggle('hidden', isLive);
-  document.getElementById('tool-tile-iptv-quality')?.classList.toggle('hidden', !isLive || currentIPTVVariantCount <= 1);
-  document.getElementById('tool-tile-iptv-guide')?.classList.toggle('hidden', !isLive);
-  document.getElementById('tool-tile-subtitle')?.classList.toggle('hidden', isLive);
-  document.getElementById('tool-tile-speed')?.classList.toggle('hidden', isLive);
+  const live = isLive || isCurrentIPTVPlayback();
+  setLiveProgressHidden(live);
+  document.getElementById('btn-seek-backward')?.classList.toggle('hidden', live);
+  document.getElementById('btn-seek-forward')?.classList.toggle('hidden', live);
+  document.getElementById('tool-tile-iptv-quality')?.classList.toggle('hidden', !live || currentIPTVVariantCount <= 1);
+  document.getElementById('tool-tile-iptv-guide')?.classList.toggle('hidden', !live || !currentIPTVHasProgramme);
+  document.getElementById('tool-tile-iptv-live')?.classList.toggle('hidden', !live);
+  document.getElementById('tool-tile-subtitle')?.classList.toggle('hidden', live);
+  document.getElementById('tool-tile-speed')?.classList.toggle('hidden', live);
   _setText('tool-tile-iptv-quality-label', tr('iptvQualitySwitcher'));
   _setText('tool-tile-iptv-guide-label', tr('iptvProgrammeGuide'));
+  _setText('tool-tile-iptv-live-label', tr('iptvBackToLive'));
 }
 
 function updateLibraryEmptyState(isEmpty) {
@@ -672,12 +692,13 @@ function updateLibraryEmptyState(isEmpty) {
 function _setViewMode(mode) {
   _viewMode = mode;
   document.getElementById('lib-home-view')?.classList.toggle('hidden', mode !== 'home');
-  document.getElementById('lib-grid-view')?.classList.toggle('hidden', mode !== 'browse');
+  document.getElementById('lib-grid-view')?.classList.toggle('hidden', !['browse', 'resume'].includes(mode));
   document.getElementById('lib-search-view')?.classList.toggle('hidden', mode !== 'search');
   document.getElementById('lib-search-area')?.classList.toggle('hidden', mode !== 'search');
   document.getElementById('library-toolbar')?.classList.toggle('hidden', mode !== 'browse');
   document.getElementById('lib-files-view')?.classList.toggle('hidden', mode !== 'files');
   document.getElementById('lib-iptv-view')?.classList.toggle('hidden', mode !== 'iptv');
+  document.getElementById('browse-back-btn')?.classList.toggle('hidden', mode !== 'resume');
 }
 
 /* ── Tab navigation ───────────────────────────────────────────────────────── */
@@ -732,8 +753,25 @@ async function _fetchAndUpdateProps() {
   } catch (_) {}
 }
 
+// core-idle stays true while mpv is loading/buffering and has not yet
+// rendered the first frame; combined with the other cache signals this tells
+// apart "stalled" from a cold start (isStarting, computed separately by the
+// caller) or an intentional pause.
+function isPlaybackStalled(p) {
+  const paused = p['pause'];
+  const cacheState = p['demuxer-cache-state'] || {};
+  const cacheDur = Number(cacheState['fw-duration'] ?? cacheState['cache-duration']);
+  const underrun = Boolean(cacheState.underrun || cacheState['cache-underrun']);
+  const coreIdle = Boolean(p['core-idle']);
+  const pausedForCache = Boolean(p['paused-for-cache']);
+  return underrun || pausedForCache
+    || (!paused && coreIdle)
+    || (!paused && Number.isFinite(cacheDur) && cacheDur < 0.3);
+}
+
 function _applyProps(p) {
   _latestProps = p || {};
+  const livePlayback = isCurrentIPTVPlayback();
   const hasData = p['time-pos'] != null || p['pause'] != null;
 
   // Detect unexpected mpv exit (had data before, now empty, still had current item)
@@ -774,7 +812,10 @@ function _applyProps(p) {
   _currentPosition = pos;
   _currentDuration = dur;
   const progressPct = dur ? (pos / dur) * 100 : pct;
-  if (!_isDraggingProgress) {
+  if (livePlayback) {
+    setLiveProgressHidden(true);
+  } else if (!_isDraggingProgress) {
+    setLiveProgressHidden(false);
     if (_pendingSeekTarget && Date.now() < _pendingSeekTarget.expiry) {
       // Backend hasn't seeked yet; keep showing the target position.
       // Clear once the server position is within 3 s of where we dragged to.
@@ -801,19 +842,14 @@ function _applyProps(p) {
   // Health row
   const cacheState = p['demuxer-cache-state'] || {};
   const cacheDur = Number(cacheState['fw-duration'] ?? cacheState['cache-duration']);
-  const underrun = Boolean(cacheState.underrun || cacheState['cache-underrun']);
   const cacheSpeedBps = Number(p['cache-speed'] ?? 0);
 
   // core-idle stays true while mpv is loading/buffering and has not yet
   // rendered the first frame. Before that first frame it's a cold start
   // (starting); a stall after playback had already begun is a distinct
   // rebuffering state, matching the Apple TV OSD pill.
-  const coreIdle = Boolean(p['core-idle']);
-  const pausedForCache = Boolean(p['paused-for-cache']);
   const isStarting = !paused && pos === 0 && (dur === null || dur === 0);
-  const isStalled = underrun || pausedForCache
-    || (!paused && coreIdle)
-    || (!paused && Number.isFinite(cacheDur) && cacheDur < 0.3);
+  const isStalled = isPlaybackStalled(p);
   const isBuffering = isStarting || isStalled;
   const badgeEl = document.getElementById('health-badge');
   if (badgeEl) {
@@ -826,18 +862,20 @@ function _applyProps(p) {
   }
 
   // Inline cache + download speed next to time-current
-  const dlSpeedText = cacheSpeedBps > 1000
-    ? (cacheSpeedBps >= 1e6
-        ? `↓${(cacheSpeedBps / 1e6).toFixed(1)}MB/s`
-        : `↓${Math.round(cacheSpeedBps / 1e3)}KB/s`)
-    : '';
-  const cacheDurText = fmtCacheDur(cacheDur);
-  const inlineParts = [cacheDurText, dlSpeedText].filter(Boolean);
-  _setText('health-cache-speed', inlineParts.join(' '));
+  if (!livePlayback) {
+    const dlSpeedText = cacheSpeedBps > 1000
+      ? (cacheSpeedBps >= 1e6
+          ? `↓${(cacheSpeedBps / 1e6).toFixed(1)}MB/s`
+          : `↓${Math.round(cacheSpeedBps / 1e3)}KB/s`)
+      : '';
+    const cacheDurText = fmtCacheDur(cacheDur);
+    const inlineParts = [cacheDurText, dlSpeedText].filter(Boolean);
+    _setText('health-cache-speed', inlineParts.join(' '));
+  }
 
   // Cache buffer overlay on progress bar
   const cacheFill = document.getElementById('progress-cache-fill');
-  if (cacheFill) {
+  if (cacheFill && !livePlayback) {
     if (dur > 0 && Number.isFinite(cacheDur) && cacheDur > 0) {
       const cachePct = Math.min(100, (((pos ?? 0) + cacheDur) / dur) * 100);
       cacheFill.style.width = cachePct + '%';
@@ -874,13 +912,17 @@ function _applyProps(p) {
   _setText('info-sub-delay',   _fmtDelay(subDly));
   _setText('info-audio-delay', _fmtDelay(audDly));
 
-  // Movie info line (duration shown when not a series)
+  // Movie info line (duration shown when not a series; IPTV is live, no duration).
   if (!currentItemIsSeries) {
     const movieInfo = document.getElementById('now-playing-movie-info');
     if (movieInfo && !movieInfo.classList.contains('hidden')) {
-      const dur = p['duration'];
-      const durStr = (dur != null && Number.isFinite(dur) && dur > 0) ? fmtRuntime(dur * 1e7) : '';
-      movieInfo.textContent = durStr ? `${tr('movie')} · ${durStr}` : tr('movie');
+      if (isCurrentIPTVPlayback()) {
+        movieInfo.textContent = sourceTypeLabel('iptv');
+      } else {
+        const dur = p['duration'];
+        const durStr = (dur != null && Number.isFinite(dur) && dur > 0) ? fmtRuntime(dur * 1e7) : '';
+        movieInfo.textContent = durStr ? `${tr('movie')} · ${durStr}` : tr('movie');
+      }
     }
   }
 
@@ -888,6 +930,15 @@ function _applyProps(p) {
   renderTrackLists(p['track-list'] || []);
 
   if (_playbackInfoOpen) renderPlaybackInfoSheet(p);
+}
+
+function setLiveProgressHidden(hidden) {
+  document.querySelector('.playback-progress')?.classList.toggle('hidden', hidden);
+  if (hidden) {
+    _setText('health-cache-speed', '');
+    const cacheFill = document.getElementById('progress-cache-fill');
+    if (cacheFill) cacheFill.style.width = '0%';
+  }
 }
 
 function renderTrackLists(trackList) {
@@ -1124,7 +1175,7 @@ async function openIPTVQualitySheet() {
   const list = document.getElementById('iptv-quality-list');
   if (list) list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvRefreshing'))}</div>`;
   try {
-    const ch = await api('GET', `/api/iptv/channel/${encodeURIComponent(currentIPTVChannelId)}`);
+    const ch = await api('GET', `/api/iptv/channel/${encodeURIComponent(currentIPTVChannelId)}?server_id=${encodeURIComponent(_playbackServerId)}`);
     const variants = ch.variants || [];
     currentIPTVVariantCount = variants.length;
     if (list) {
@@ -1148,11 +1199,55 @@ async function selectIPTVVariant(index) {
   closeIPTVQualitySheet();
   if (!currentIPTVChannelId) return;
   try {
-    await api('POST', '/api/player/play', { channel_id: currentIPTVChannelId, variant_index: index });
+    await api('POST', '/api/player/play', { server_id: _playbackServerId, channel_id: currentIPTVChannelId, variant_index: index });
+    currentIPTVVariantIndex = index;
     _fetchAndUpdateProps();
   } catch (e) {
     toast(e.message, true);
   }
+}
+
+/// Re-opens the current channel's stream fresh. IPTV has no DVR/seek UI, so
+/// this is how the user (or the post-resume stall watchdog below) jumps back
+/// to the live edge instead of continuing from wherever local buffering left
+/// off.
+async function iptvBackToLive() {
+  if (!currentIPTVChannelId) return;
+  try {
+    await api('POST', '/api/player/play', { server_id: _playbackServerId, channel_id: currentIPTVChannelId, variant_index: currentIPTVVariantIndex });
+    toast(tr('iptvBackToLiveToast'));
+    _fetchAndUpdateProps();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+// Normal pause/resume for IPTV now behaves like any VOD source (resumes from
+// the paused position, same as mpv's default), matching the movie-channel use
+// case. The one thing IPTV needs that VOD doesn't: if resuming after a pause
+// finds the stream stalled (mpv's cache is small and a long pause can outlast
+// it, or the upstream connection dropped while idle), fall back to rejoining
+// live automatically instead of leaving the viewer stuck buffering forever.
+function togglePlayPause() {
+  const wasPaused = !!_latestProps.pause;
+  const isLive = isCurrentIPTVPlayback();
+  cmd(['cycle', 'pause']);
+  clearTimeout(_iptvResumeWatchdog);
+  if (isLive && wasPaused) {
+    _iptvResumeWatchdog = setTimeout(checkIPTVResumeHealth, 4000);
+  }
+}
+
+async function checkIPTVResumeHealth() {
+  if (!isCurrentIPTVPlayback()) return;
+  try {
+    const props = await api('GET', '/api/player/props');
+    // If the user paused again during the grace window, that's their call to
+    // make, not a stall — only auto-resync while actually (still) playing.
+    if (!props.pause && isPlaybackStalled(props)) {
+      await iptvBackToLive();
+    }
+  } catch (_) { /* props temporarily unavailable; skip this check */ }
 }
 
 /* ── IPTV programme guide sheet ───────────────────────────────────────────── */
@@ -1162,7 +1257,7 @@ function _iptvProgrammeTimeLabel(iso) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 async function openIPTVProgrammeSheet() {
-  if (!currentIPTVChannelId) return;
+  if (!currentIPTVChannelId || !currentIPTVHasProgramme) return;
   _iptvProgrammeOpen = true;
   document.getElementById('iptv-programme-backdrop').classList.remove('hidden');
   document.body.classList.add('sheet-open');
@@ -1197,6 +1292,10 @@ function closeIPTVProgrammeSheet() {
 }
 function onIPTVProgrammeBackdropClick(event) {
   if (event.target.id === 'iptv-programme-backdrop') closeIPTVProgrammeSheet();
+}
+
+function iptvChannelHasProgramme(channel) {
+  return !!(channel && (channel.has_epg || (channel.current_programme && channel.current_programme.title)));
 }
 
 /* ── More sheet ───────────────────────────────────────────────────────────── */
@@ -2061,15 +2160,16 @@ function viewAllByType(type) {
 
 async function viewAllResume() {
   resetSearchUi();
-  closeLibraryPicker();
   browseMode = 'resume';
-  browseParentId = '';
-  currentLibraryName = tr('recent');
-  updateLibraryPickerUi();
-  _updateCategoryChipActive();
-  _setViewMode('browse');
+  browseStart = 0;
+  browseHasMore = false;
+  _setViewMode('resume');
   setBrowseTitle();
-  await loadBrowse(false, { loadingMessage: tr('loadingCategory', { name: currentLibraryName }) });
+  await loadBrowse(false, { loadingMessage: tr('recent') });
+}
+
+function returnFromResume() {
+  switchLibrary('', tr('all'));
 }
 
 function setLibraryPickerBusy(isBusy) {
@@ -2147,30 +2247,24 @@ async function loadBrowse(append = false, opts = {}) {
     btn.textContent = tr('loadingMore');
   }
   try {
-    let items, totalCount;
-    if (browseMode === 'resume') {
-      const data = await api('GET', `/api/library/resume?start=${browseStart}&limit=${RESUME_PAGE_SIZE}`);
-      items = data.Items || [];
-      totalCount = data.TotalRecordCount || items.length;
-    } else {
-      const qs = new URLSearchParams({ start: browseStart, limit: PAGE_SIZE });
-      if (browseParentId) qs.set('parent_id', browseParentId);
-      const data = await api('GET', `/api/library/items?${qs}`);
-      items = data.Items || [];
-      totalCount = data.TotalRecordCount || 0;
-    }
+    const pageSize = browseMode === 'resume' ? RESUME_PAGE_SIZE : PAGE_SIZE;
+    const qs = new URLSearchParams({ start: browseStart, limit: pageSize });
+    if (browseMode === 'library' && browseParentId) qs.set('parent_id', browseParentId);
+    const endpoint = browseMode === 'resume' ? '/api/library/resume' : '/api/library/items';
+    const data = await api('GET', `${endpoint}?${qs}`);
+    const items = data.Items || [];
+    const totalCount = data.TotalRecordCount || 0;
     if (requestId !== browseLoadSeq) return;
     browseHasMore = browseStart + items.length < totalCount;
     browseStart  += items.length;
 
     const grid = document.getElementById('poster-grid');
     if (!append) grid.innerHTML = '';
-    grid.classList.toggle('resume-grid-mode', browseMode === 'resume');
     if (!items.length && !append) {
       grid.innerHTML = `<div class="search-state"><div class="search-state-title">${tr('noBrowseContentTitle')}</div><div class="search-state-subtitle">${tr('noBrowseContentSub')}</div></div>`;
     } else {
-      const cardHtml = browseMode === 'resume' ? resumeCardHtml : posterCardHtml;
-      grid.insertAdjacentHTML('beforeend', items.map(cardHtml).join(''));
+      const renderCard = browseMode === 'resume' ? resumeGridCardHtml : posterCardHtml;
+      grid.insertAdjacentHTML('beforeend', items.map(renderCard).join(''));
     }
 
     if (btn) btn.classList.toggle('hidden', !browseHasMore);
@@ -2189,7 +2283,8 @@ function loadMore() { loadBrowse(true); }
 
 function setBrowseTitle() {
   document.getElementById('browse-title').textContent =
-    (browseMode === 'resume' || browseParentId) ? currentLibraryName : tr('browse');
+    browseMode === 'resume' ? tr('recent') : (browseParentId ? currentLibraryName : tr('browse'));
+  _setText('browse-back-label', tr('back'));
 }
 
 function renderBrowseLoading(_message) {
@@ -2303,6 +2398,24 @@ function resumeCardHtml(item) {
               <div class="resume-progress-bar-fill" style="width:${pct}%"></div>
             </div>` : ''}
           </div>` : ''}
+      </div>
+    </div>`;
+}
+
+function resumeGridCardHtml(item) {
+  const seriesTitle = item.SeriesName || '';
+  const title = seriesTitle || item.Name || '';
+  const episodeLabel = episodeLabelForItem(item);
+  const subtitle = seriesTitle ? (episodeLabel || item.Name || '') : (item.ProductionYear || '');
+  const posterItemId = item.SeriesId || item.Id;
+  const pct = Math.round(item.UserData?.PlayedPercentage || 0);
+  const progress = pct > 0 ? `<div class="resume-progress"><div class="resume-progress-fill" style="width:${Math.min(100, pct)}%"></div></div>` : '';
+  return `
+    <div class="poster-card" onclick="openVideoSheet('${item.Id}')">
+      ${posterFrameHtml(posterItemId, title, 'poster-frame', 300, '', progress)}
+      <div class="poster-card-info">
+        <div class="poster-title">${esc(title)}</div>
+        ${subtitle ? `<div class="poster-year">${esc(subtitle)}</div>` : ''}
       </div>
     </div>`;
 }
@@ -3262,11 +3375,10 @@ function closeServerFormOnly() {
 }
 
 async function _onSaveSuccess(id) {
-  // Activate if this is the first / only server.
-  const servers = await api('GET', '/api/servers');
-  if (id && !servers.find(s => s.active)) {
-    await api('POST', `/api/servers/${id}/activate`);
-  }
+  // Finishing add/edit (or, for file sources, picking the folder) is a
+  // deliberate "use this now" signal — always activate it, regardless of
+  // whether another source was already active.
+  if (id) await api('POST', `/api/servers/${id}/activate`);
   await refreshServerSwitcher();
   // Close the form (without reopening the server manager) and go straight
   // to the library so the user immediately sees their content.
@@ -3364,9 +3476,6 @@ async function saveAndLogin() {
       } else {
         const srv = await api('POST', '/api/servers', { ...payload, password });
         id = srv.id;
-        const servers = await api('GET', '/api/servers');
-        if (id && !servers.find(s => s.active)) await api('POST', `/api/servers/${id}/activate`);
-        await refreshServerSwitcher();
       }
       setStatus(tr('connected'), 'ok');
       closeServerFormOnly();
@@ -3848,15 +3957,17 @@ async function playIPTVChannel(channelId, variantCount = 1) {
   currentItemIsSeries = false;
   _playbackServerId = _activeServerId;
   currentIPTVChannelId = channelId;
+  currentIPTVVariantIndex = 0;
   currentIPTVVariantCount = variantCount;
   const channel = _iptvChannels.find(c => c.id === channelId);
+  currentIPTVHasProgramme = iptvChannelHasProgramme(channel);
   setNowPlaying(channel ? channel.name : '', { isLive: true });
   switchTab('remote');
   document.getElementById('play-loading-tag')?.classList.remove('hidden');
   document.getElementById('player-info-placeholder')?.classList.remove('hidden');
   document.getElementById('player-info')?.classList.add('hidden');
   try {
-    await api('POST', '/api/player/play', { channel_id: channelId, variant_index: 0 });
+    await api('POST', '/api/player/play', { server_id: _playbackServerId, channel_id: channelId, variant_index: 0 });
     _fetchAndUpdateProps();
   } catch (e) {
     toast(e.message, true);
@@ -3954,7 +4065,7 @@ async function playFile(path, name) {
   document.getElementById('player-info-placeholder')?.classList.remove('hidden');
   document.getElementById('player-info')?.classList.add('hidden');
   try {
-    await api('POST', '/api/player/play', { path, title: name });
+    await api('POST', '/api/player/play', { server_id: _playbackServerId, path, title: name });
     _fetchAndUpdateProps();
   } catch (e) {
     toast(e.message, true);

@@ -134,11 +134,26 @@ func openWindow(url string) {
 		},
 	})
 	if w == nil {
-		return // WebView2 runtime missing
+		showWebView2Missing()
+		return
 	}
 	defer w.Destroy()
 	w.Navigate(url)
 	w.Run()
+}
+
+// webview2DownloadURL is Microsoft's official evergreen bootstrapper for the
+// WebView2 Runtime; it always redirects to the latest installer.
+const webview2DownloadURL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+
+// showWebView2Missing tells the user the window can't be shown because the
+// WebView2 Runtime isn't installed, and offers to open the download page.
+// Most Windows 10/11 machines already have it (it ships with Edge and via
+// Windows Update), so this should only fire on a stripped-down install.
+func showWebView2Missing() {
+	if messageBoxYesNo("TinyPlay", i18n.System("webview2_missing")) {
+		openWithDefaultHandler(webview2DownloadURL)
+	}
 }
 
 var (
@@ -185,5 +200,11 @@ func openThirdPartyNotices() {
 	if _, err := os.Stat(path); err != nil {
 		return
 	}
-	_ = exec.Command("cmd", "/C", "start", "", path).Start()
+	openWithDefaultHandler(path)
+}
+
+// openWithDefaultHandler opens a local path or URL with whatever the OS
+// associates it with (a browser for URLs, the registered app for a file path).
+func openWithDefaultHandler(target string) {
+	_ = exec.Command("cmd", "/C", "start", "", target).Start()
 }

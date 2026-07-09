@@ -262,13 +262,9 @@ func (s *Server) activateServer(w http.ResponseWriter, r *http.Request) {
 		s.latestSwitch[body.SwitchSession] = body.SwitchSequence
 	}
 	s.switchMu.Unlock()
-	previous := config.ActiveServer()
 	if !config.SetActiveServer(r.PathValue("id")) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"detail": i18n.Request(r, "server_not_found")})
 		return
-	}
-	if previous != nil && previous.ID != r.PathValue("id") {
-		go s.player.Stop()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": true, "active_server_id": r.PathValue("id")})
 }
@@ -285,7 +281,7 @@ func (s *Server) switchHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "host_index_out_of_range")})
 		return
 	}
-	if active := config.ActiveServer(); active != nil && active.ID == r.PathValue("id") {
+	if playbackServerID, _ := s.player.State()["server_id"].(string); playbackServerID == r.PathValue("id") {
 		go s.player.Stop()
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -385,6 +381,7 @@ func (s *Server) playerProps(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		ServerID      string `json:"server_id"`
 		ItemID        string `json:"item_id"`
 		SeriesID      string `json:"series_id"`
 		SeasonID      string `json:"season_id"`
@@ -401,13 +398,16 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
 		return
 	}
-	active := config.ActiveServer()
-	if active == nil {
+	playbackServer := config.GetServer(req.ServerID)
+	if req.ServerID == "" {
+		playbackServer = config.ActiveServer()
+	}
+	if playbackServer == nil {
 		writeErr(w, r, provider.Errorf(400, "No media source is available. Add one first."))
 		return
 	}
-	if config.IsFileServerType(active.Type) {
-		files, err := provider.ActiveFile()
+	if config.IsFileServerType(playbackServer.Type) {
+		files, err := provider.FileFromServer(playbackServer.ID)
 		if err != nil {
 			writeErr(w, r, err)
 			return
@@ -417,14 +417,14 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, r, err)
 			return
 		}
-		playURL := "http://127.0.0.1:" + strconv.Itoa(s.port) + "/api/files/stream?path=" + url.QueryEscape(req.Path)
-		opts := playOpts(active.ID, req.Path, "", "", req.Title, "", "", "", config.LocalPlaybackPosition(active.ID, req.Path), "")
+		playURL := "http://127.0.0.1:" + strconv.Itoa(s.port) + "/api/files/stream?server_id=" + url.QueryEscape(playbackServer.ID) + "&path=" + url.QueryEscape(req.Path)
+		opts := playOpts(playbackServer.ID, req.Path, "", "", req.Title, "", "", "", config.LocalPlaybackPosition(playbackServer.ID, req.Path), "")
 		result := s.player.Play(playURL, opts)
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	if config.NormalizeServerType(active.Type) == "iptv" {
-		iptvClient, err := provider.ActiveIPTV()
+	if config.NormalizeServerType(playbackServer.Type) == "iptv" {
+		iptvClient, err := iptv.FromServer(playbackServer.ID)
 		if err != nil {
 			writeErr(w, r, err)
 			return
@@ -438,12 +438,12 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 		if variantIndex < 0 || variantIndex >= len(ch.Variants) {
 			variantIndex = 0
 		}
-		result := s.player.Play(ch.Variants[variantIndex].URL, player.PlayOptions{ServerID: active.ID, Title: ch.Name, IsLive: true, ChannelID: ch.ID})
-		config.RecordIPTVRecent(active.ID, ch.ID, 50)
+		result := s.player.Play(ch.Variants[variantIndex].URL, player.PlayOptions{ServerID: playbackServer.ID, Title: ch.Name, IsLive: true, ChannelID: ch.ID})
+		config.RecordIPTVRecent(playbackServer.ID, ch.ID, 50)
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	client, err := provider.Active()
+	client, err := provider.FromServer(playbackServer.ID)
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -459,7 +459,7 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 
 	startSeconds := client.ResumePositionSeconds(req.ItemID)
 
-	opts := playOpts(active.ID, req.ItemID, req.SeriesID, req.SeasonID,
+	opts := playOpts(playbackServer.ID, req.ItemID, req.SeriesID, req.SeasonID,
 		req.Title, req.SeriesTitle, req.EpisodeLabel, req.PosterItemID, startSeconds, mediaSourceID)
 	result := s.player.Play(url, opts)
 
@@ -513,16 +513,15 @@ func (s *Server) embyItems(w http.ResponseWriter, r *http.Request) {
 		search != "",
 	)
 	if err == nil && search != "" {
-		body = dropUnmatchedEpisodes(body, search)
+		body = normalizeSearchItems(c, body, search)
 	}
 	writeRaw(w, r, body, err)
 }
 
-// dropUnmatchedEpisodes removes Episode results that only matched because the
-// server indexes an episode under its parent series name — otherwise a
-// series-title search floods the results with every episode of that show.
-// An episode stays only if its own title contains the search term.
-func dropUnmatchedEpisodes(body []byte, search string) []byte {
+// normalizeSearchItems collapses noisy flat search results into user-facing
+// entities. A series-title match becomes one Series card; episodes stay only
+// when the episode title itself matches.
+func normalizeSearchItems(c provider.Media, body []byte, search string) []byte {
 	var payload struct {
 		Items            []map[string]any `json:"Items"`
 		TotalRecordCount int              `json:"TotalRecordCount"`
@@ -530,22 +529,107 @@ func dropUnmatchedEpisodes(body []byte, search string) []byte {
 	if json.Unmarshal(body, &payload) != nil {
 		return body
 	}
-	q := strings.ToLower(search)
-	filtered := payload.Items[:0]
+	needle := normalizedSearchText(search)
+	knownSeries := map[string]bool{}
 	for _, item := range payload.Items {
-		if typ, _ := item["Type"].(string); typ == "Episode" {
-			name, _ := item["Name"].(string)
-			if !strings.Contains(strings.ToLower(name), q) {
+		item["Type"] = canonicalItemType(itemString(item, "Type"))
+		if itemString(item, "Type") == "Series" {
+			if id := itemString(item, "Id"); id != "" {
+				knownSeries[id] = true
+			}
+		}
+	}
+
+	parentIDs := map[string]bool{}
+	for _, item := range payload.Items {
+		if itemString(item, "Type") != "Episode" {
+			continue
+		}
+		seriesID := itemString(item, "SeriesId")
+		if seriesID != "" && !knownSeries[seriesID] &&
+			strings.Contains(normalizedSearchText(itemString(item, "SeriesName")), needle) {
+			parentIDs[seriesID] = true
+		}
+	}
+	ids := make([]string, 0, len(parentIDs))
+	for id := range parentIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if parent, ok := fetchSearchParentSeries(c, id); ok {
+			payload.Items = append(payload.Items, parent)
+			knownSeries[id] = true
+		}
+	}
+
+	filtered := payload.Items[:0]
+	seen := map[string]bool{}
+	for _, item := range payload.Items {
+		typ := itemString(item, "Type")
+		if typ == "Episode" {
+			seriesTitleMatches := strings.Contains(normalizedSearchText(itemString(item, "SeriesName")), needle)
+			episodeTitleMatches := strings.Contains(normalizedSearchText(itemString(item, "Name")), needle)
+			if seriesTitleMatches || !episodeTitleMatches {
 				continue
 			}
 		}
+		key := typ + ":" + itemString(item, "Id")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		filtered = append(filtered, item)
 	}
 	payload.Items = filtered
+	payload.TotalRecordCount = len(filtered)
 	if out, err := json.Marshal(payload); err == nil {
 		return out
 	}
 	return body
+}
+
+func fetchSearchParentSeries(c provider.Media, id string) (map[string]any, bool) {
+	body, err := c.ItemDetailRaw(id)
+	if err != nil {
+		return nil, false
+	}
+	var parent map[string]any
+	if json.Unmarshal(body, &parent) != nil || itemString(parent, "Id") == "" {
+		return nil, false
+	}
+	parent["Type"] = "Series"
+	return parent, true
+}
+
+func itemString(item map[string]any, key string) string {
+	if s, ok := item[key].(string); ok {
+		return s
+	}
+	return ""
+}
+
+func normalizedSearchText(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func canonicalItemType(value string) string {
+	switch strings.ToLower(value) {
+	case "movie":
+		return "Movie"
+	case "series", "show":
+		return "Series"
+	case "season":
+		return "Season"
+	case "episode":
+		return "Episode"
+	case "boxset", "collection":
+		return "BoxSet"
+	case "musicvideo":
+		return "MusicVideo"
+	default:
+		return "Video"
+	}
 }
 
 func (s *Server) embyItemDetail(w http.ResponseWriter, r *http.Request) {
@@ -671,7 +755,7 @@ func (s *Server) filesList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) filesStream(w http.ResponseWriter, r *http.Request) {
-	c, err := provider.ActiveFile()
+	c, err := filesClient(r)
 	if err != nil {
 		writeErr(w, r, err)
 		return

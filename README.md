@@ -4,7 +4,7 @@
 
 [中文说明](README.zh-CN.md) · **[View the TinyPlay website](https://yanghanqing.github.io/tinyplay/)**
 
-TinyPlay is built for the N100, NUC, mini PC, or Apple Silicon Mac that is
+TinyPlay is built for the N100, NUC, mini PC, or Mac that is
 already running downloads, Docker containers, or home services. Connect its
 often-unused HDMI port to the TV and TinyPlay gives it a second job: mpv-based
 media playback with a browser remote on your phone.
@@ -19,7 +19,9 @@ Download the latest build from [GitHub Releases](../../releases/latest).
 
 - **Windows x86-64:** unzip the package, then run `TinyPlay.exe`. Windows may
   show a SmartScreen warning because the current Windows build is unsigned.
-- **macOS:** Apple Silicon only. Open the DMG and drag TinyPlay to Applications.
+- **macOS:** Apple Silicon (`TinyPlay-macos-arm64.dmg`) and Intel
+  (`TinyPlay-macos-intel.dmg`) are both available. Open the DMG and drag
+  TinyPlay to Applications.
 
 Your phone and computer must be on the same trusted local network. TinyPlay's
 remote page has no separate authentication; do not expose its port to the
