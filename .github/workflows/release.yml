@@ -129,11 +129,21 @@ jobs:
           if [ ! -x /usr/local/bin/brew ]; then
             NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
           fi
-          # --overwrite: GitHub's runner image already ships packages under
-          # /usr/local (e.g. a prior Python with bin/idle3 symlinked), which
-          # otherwise makes `brew link` on a build dependency like python@3.x
-          # abort with "already exists" instead of just replacing its own link.
-          arch -x86_64 /usr/local/bin/brew install --overwrite mpv
+          # GitHub's runner image ships a pre-existing python.org install under
+          # /Library/Frameworks/Python.framework with matching /usr/local/bin
+          # symlinks (idle3, pip3, ...). --overwrite only applies to the
+          # formula named on the command line, not transitive build
+          # dependencies, so when brewing mpv pulls in python@3.x (only to
+          # build man pages) as a dependency, `brew link` on THAT dependency
+          # still aborts on those pre-existing symlinks even with --overwrite
+          # here. mpv itself finishes installing regardless, so tolerate the
+          # failure and verify mpv is actually present instead of treating any
+          # non-zero exit as fatal.
+          arch -x86_64 /usr/local/bin/brew install --overwrite mpv || true
+          if ! arch -x86_64 /usr/local/bin/brew list mpv >/dev/null 2>&1; then
+            echo "mpv did not install successfully" >&2
+            exit 1
+          fi
 
       - name: Download & bundle mpv (self-contained via dylibbundler)
         run: |

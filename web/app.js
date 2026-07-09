@@ -3808,6 +3808,10 @@ async function refreshIPTVSource() {
     await Promise.all([loadIPTVCategories(), loadIPTVChannels()]);
     toast(tr('iptvRefreshed'));
   } catch (e) {
+    // The backend keeps the last known-good channels on a failed refresh but
+    // does flip refresh_status to "error" — reload the status line so it
+    // reflects that instead of silently keeping a stale "ok" badge.
+    await loadIPTVSourceStatus();
     toast(e.message || tr('iptvRefreshFailed'), true);
   } finally {
     if (button) { button.disabled = false; button.classList.remove('spinning'); }
