@@ -1230,6 +1230,9 @@ button { font-family: inherit; }
   padding: 10px 14px; font-size: 12px; color: var(--text-muted);
   display: grid; gap: 4px;
 }
+.iptv-source-status-line {
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .iptv-status-error { color: #ff7a7a; }
 .iptv-category-row {
   display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none;

@@ -3207,18 +3207,27 @@ function renderServerList(servers) {
   servers.filter(s => _normType(s.type) === 'iptv').forEach(refreshIPTVServerCardStatus);
 }
 
+// Channel/EPG-matched counts shared by the settings server card and the
+// library browser status line. EPG is dropped entirely when zero — most
+// sources have no EPG configured, and "EPG 0" carries no information.
+function _iptvCountParts(summary) {
+  const parts = [tr('iptvChannelsCount', { count: summary.channel_count || 0 })];
+  if (summary.epg_matched_count) parts.push(tr('iptvEpgMatched', { count: summary.epg_matched_count }));
+  return parts;
+}
+
 async function refreshIPTVServerCardStatus(s) {
   try {
     const summary = await api('GET', `/api/iptv/summary?server_id=${encodeURIComponent(s.id)}`);
     const el = document.getElementById(`iptv-summary-${s.id}`);
     if (!el) return;
-    const statusKey = summary.refresh_status === 'ok' ? 'iptvSourceStatusOk'
-      : (summary.refresh_status === 'error' ? 'iptvSourceStatusError' : 'iptvSourceStatusPending');
-    el.textContent = [
-      tr('iptvChannelsCount', { count: summary.channel_count || 0 }),
-      tr('iptvEpgMatched', { count: summary.epg_matched_count || 0 }),
-      tr(statusKey),
-    ].join(' · ');
+    const parts = _iptvCountParts(summary);
+    // "ok" is the expected steady state and is already implied by having
+    // fresh counts; only surface the badge when there's something to flag.
+    if (summary.refresh_status !== 'ok') {
+      parts.push(tr(summary.refresh_status === 'error' ? 'iptvSourceStatusError' : 'iptvSourceStatusPending'));
+    }
+    el.textContent = parts.join(' · ');
     el.classList.toggle('iptv-status-error', summary.refresh_status === 'error');
   } catch (_) {}
 }
@@ -3782,21 +3791,18 @@ async function loadIPTVSourceStatus() {
 function renderIPTVSourceStatus(s) {
   const el = document.getElementById('iptv-source-status');
   if (!el) return;
-  const statusKey = s.refresh_status === 'ok' ? 'iptvSourceStatusOk'
-    : (s.refresh_status === 'error' ? 'iptvSourceStatusError' : 'iptvSourceStatusPending');
-  const parts = [
-    tr('iptvChannelsCount', { count: s.channel_count || 0 }),
-    tr('iptvEpgMatched', { count: s.epg_matched_count || 0 }),
-  ];
+  const parts = _iptvCountParts(s);
   if (s.last_refreshed) {
     const time = new Date(s.last_refreshed);
     if (!isNaN(time)) parts.push(tr('iptvLastUpdated', { time: time.toLocaleString() }));
   }
-  const statusCls = s.refresh_status === 'error' ? ' iptv-status-error' : '';
-  el.innerHTML = `
-    <span>${parts.map(esc).join(' · ')}</span>
-    <span class="${statusCls}">${esc(tr(statusKey))}</span>
-  `;
+  // "ok" is the expected steady state and is already implied by having
+  // fresh counts; only show a second line when there's something to flag.
+  const badge = s.refresh_status === 'ok' ? '' : `
+    <span class="${s.refresh_status === 'error' ? 'iptv-status-error' : ''}">${esc(tr(
+      s.refresh_status === 'error' ? 'iptvSourceStatusError' : 'iptvSourceStatusPending'
+    ))}</span>`;
+  el.innerHTML = `<span class="iptv-source-status-line">${parts.map(esc).join(' · ')}</span>${badge}`;
 }
 
 async function refreshIPTVSource() {
