@@ -13,6 +13,10 @@ The desktop app connects to Emby, Jellyfin, or Plex—or browses SMB/WebDAV
 shares directly—then drives the bundled mpv player and serves a phone-friendly
 library and remote over your local network. No phone app is required.
 
+TinyPlay also includes a DLNA receiver, enabled by default. A compatible app
+on the same trusted LAN can cast its stream directly to TinyPlay; the phone
+remote remains available for play, pause, and seek.
+
 ## Download
 
 Download the latest build from [GitHub Releases](../../releases/latest).

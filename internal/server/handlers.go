@@ -88,10 +88,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		MpvCacheSecs     *int    `json:"mpv_cache_secs"`
-		Language         *string `json:"language"`
-		SeekBackwardSecs *int    `json:"seek_backward_secs"`
-		SeekForwardSecs  *int    `json:"seek_forward_secs"`
+		MpvCacheSecs        *int    `json:"mpv_cache_secs"`
+		Language            *string `json:"language"`
+		SeekBackwardSecs    *int    `json:"seek_backward_secs"`
+		SeekForwardSecs     *int    `json:"seek_forward_secs"`
+		DLNAReceiverEnabled *bool   `json:"dlna_receiver_enabled"`
 	}
 	if !decode(r, &body) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": i18n.Request(r, "invalid_body")})
@@ -115,13 +116,19 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		config.SetSeekSeconds(back, forward)
 	}
+	if body.DLNAReceiverEnabled != nil {
+		config.SetDLNAReceiverEnabled(*body.DLNAReceiverEnabled)
+		s.refreshDLNAReceiver(*body.DLNAReceiverEnabled)
+	}
 	writeJSON(w, http.StatusOK, config.Settings())
 }
 
 // resetSettings is the settings danger-zone "reset everything" action: wipes
 // every server/account and preference back to defaults.
 func (s *Server) resetSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, config.ResetAll())
+	settings := config.ResetAll()
+	s.refreshDLNAReceiver(true)
+	writeJSON(w, http.StatusOK, settings)
 }
 
 // ── Server management ────────────────────────────────────────────────────────

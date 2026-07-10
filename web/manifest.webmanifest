@@ -1,6 +1,6 @@
 {
-  "name": "TV Remote",
-  "short_name": "TV Remote",
+  "name": "TinyPlay",
+  "short_name": "TinyPlay",
   "description": "Phone remote control for TV playback",
   "start_url": "/",
   "scope": "/",
@@ -9,10 +9,28 @@
   "theme_color": "#0a0c14",
   "icons": [
     {
-      "src": "/static/pwa-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "src": "/static/pwa-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/pwa-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/pwa-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/static/pwa-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

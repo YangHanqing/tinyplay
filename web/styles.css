@@ -29,7 +29,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   bottom: calc(var(--nav-h) + 14px + env(safe-area-inset-bottom, 0px));
   z-index: 4000;
   display: grid;
-  grid-template-columns: 28px 1fr auto;
+  grid-template-columns: 28px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   padding: 12px;
@@ -48,18 +48,6 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .service-offline-copy { min-width: 0; }
 .service-offline-title { font-size: 14px; font-weight: 800; color: var(--text); }
 .service-offline-body { margin-top: 2px; font-size: 12px; line-height: 1.45; color: rgba(255,255,255,.68); }
-.service-offline-action {
-  border: 1px solid rgba(251,191,36,.45);
-  background: rgba(251,191,36,.14);
-  color: #fde68a;
-  border-radius: 9px;
-  padding: 7px 10px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 800;
-}
-.service-offline-action:active { background: rgba(251,191,36,.24); }
-
 /* ── Header ───────────────────────────────────────────────────────────────── */
 .header {
   display: grid; grid-template-columns: 44px 1fr 44px;
@@ -743,6 +731,16 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .remote-empty-hint { font-size: 14px; color: var(--text-muted); line-height: 1.5; }
 .remote-empty-btn { margin-top: 8px; padding: 10px 28px; border-radius: 999px; background: var(--accent); border: none; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; transition: opacity .15s; font-family: inherit; }
 .remote-empty-btn:active { opacity: .8; }
+
+/* The library's unconfigured state replaces the normal library content. It is
+ * deliberately separate from the remote tab's "nothing playing" state, so the
+ * onboarding prompt stays centered in the available library pane. */
+.library-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: calc(100dvh - var(--header-h) - var(--nav-h)); gap: 12px; text-align: center; padding: 24px; }
+.library-empty-icon { width: 72px; height: 72px; color: var(--text-muted); opacity: .4; margin-bottom: 4px; }
+.library-empty-title { font-size: 18px; font-weight: 700; color: var(--text); }
+.library-empty-hint { max-width: 320px; font-size: 14px; color: var(--text-muted); line-height: 1.5; }
+.library-empty-btn { margin-top: 8px; padding: 10px 28px; border-radius: 999px; background: var(--accent); border: none; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; transition: opacity .15s; font-family: inherit; }
+.library-empty-btn:active { opacity: .8; }
 
 /* Now playing card */
 .now-playing {

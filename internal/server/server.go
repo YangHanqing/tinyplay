@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 
+	"tvremote/internal/config"
+	"tvremote/internal/dlna"
 	"tvremote/internal/player"
 	"tvremote/web"
 )
@@ -18,16 +20,32 @@ type Server struct {
 	port         int // the actual bound port (may differ from config if it was taken)
 	switchMu     sync.Mutex
 	latestSwitch map[string]int
+	dlna         *dlna.Receiver
 }
 
 // New builds the server. The player's reporters should already be wired.
 func New(p *player.Player) *Server {
-	return &Server{player: p, webFS: web.FS(), latestSwitch: map[string]int{}}
+	s := &Server{player: p, webFS: web.FS(), latestSwitch: map[string]int{}}
+	s.dlna = dlna.New(p, func() int { return s.port })
+	return s
 }
 
 // SetPort records the port the HTTP server actually bound to, so the QR / intro
 // page advertise the right address even when we fell back off a busy port.
-func (s *Server) SetPort(port int) { s.port = port }
+func (s *Server) SetPort(port int) {
+	s.port = port
+	if config.Load().DLNAReceiverEnabled {
+		s.dlna.Start()
+	}
+}
+
+func (s *Server) refreshDLNAReceiver(enabled bool) {
+	if enabled {
+		s.dlna.Start()
+	} else {
+		s.dlna.Stop()
+	}
+}
 
 // Handler returns the full router with request logging applied.
 func (s *Server) Handler() http.Handler {
@@ -47,6 +65,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.updateSettings)
 	mux.HandleFunc("POST /api/settings/reset", s.resetSettings)
+	// Register methods explicitly so Go's method-aware ServeMux can keep the
+	// frontend's GET / catch-all without an ambiguity.
+	mux.HandleFunc("GET /dlna/{path...}", s.dlna.ServeHTTP)
+	mux.HandleFunc("POST /dlna/{path...}", s.dlna.ServeHTTP)
+	mux.HandleFunc("SUBSCRIBE /dlna/{path...}", s.dlna.ServeHTTP)
 
 	// ── Player ──
 	mux.HandleFunc("GET /api/player/state", s.playerState)

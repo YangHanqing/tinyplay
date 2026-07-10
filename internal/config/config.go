@@ -140,6 +140,8 @@ type Config struct {
 	SeekBackwardSecs     int                  `json:"seek_backward_secs,omitempty"`
 	SeekForwardSecs      int                  `json:"seek_forward_secs,omitempty"`
 	Language             string               `json:"language,omitempty"`
+	DLNAReceiverEnabled  bool                 `json:"dlna_receiver_enabled"`
+	DLNAReceiverID       string               `json:"dlna_receiver_id,omitempty"`
 	LocalPlaybackHistory []LocalPlaybackEntry `json:"local_playback_history,omitempty"`
 }
 
@@ -236,13 +238,14 @@ func Load() *Config {
 
 func loadLocked() (*Config, bool) {
 	cfg := &Config{
-		Servers:          []*Server{},
-		ListenPort:       1980,
-		MpvPipe:          `\\.\pipe\mpvsocket`,
-		MpvExe:           "mpv",
-		MpvCacheSecs:     DefaultMpvCacheSecs,
-		SeekBackwardSecs: 5,
-		SeekForwardSecs:  30,
+		Servers:             []*Server{},
+		ListenPort:          1980,
+		MpvPipe:             `\\.\pipe\mpvsocket`,
+		MpvExe:              "mpv",
+		MpvCacheSecs:        DefaultMpvCacheSecs,
+		SeekBackwardSecs:    5,
+		SeekForwardSecs:     30,
+		DLNAReceiverEnabled: true,
 	}
 	raw, err := os.ReadFile(ConfigFile())
 	if err != nil {
@@ -269,6 +272,10 @@ func loadLocked() (*Config, bool) {
 		cfg.MpvExe = "mpv"
 	}
 	cfg.MpvCacheSecs = NormalizeMpvCacheSecs(cfg.MpvCacheSecs)
+	if cfg.DLNAReceiverID == "" {
+		cfg.DLNAReceiverID = newID()
+		migrated = true
+	}
 	return cfg, migrated
 }
 
@@ -591,10 +598,11 @@ func IPTVRecent(serverID string) []RecentChannel {
 func Settings() map[string]any {
 	cfg := Load()
 	return map[string]any{
-		"mpv_cache_secs":     NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
-		"seek_backward_secs": normalizeSeek(cfg.SeekBackwardSecs, 5),
-		"seek_forward_secs":  normalizeSeek(cfg.SeekForwardSecs, 30),
-		"language":           NormalizeLanguage(cfg.Language),
+		"mpv_cache_secs":        NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
+		"seek_backward_secs":    normalizeSeek(cfg.SeekBackwardSecs, 5),
+		"seek_forward_secs":     normalizeSeek(cfg.SeekForwardSecs, 30),
+		"language":              NormalizeLanguage(cfg.Language),
+		"dlna_receiver_enabled": cfg.DLNAReceiverEnabled,
 		// The source-type picker filters its file-source cards against this
 		// list, so a build that can't actually serve a given kind doesn't
 		// offer it as an option.
@@ -613,8 +621,20 @@ func ResetAll() map[string]any {
 		cfg.SeekBackwardSecs = 5
 		cfg.SeekForwardSecs = 30
 		cfg.Language = ""
+		cfg.DLNAReceiverEnabled = true
+		cfg.DLNAReceiverID = newID()
 		cfg.LocalPlaybackHistory = nil
 	})
+	return Settings()
+}
+
+// DLNAReceiverID is a stable UPnP device UUID, generated once and persisted.
+func DLNAReceiverID() string { return Load().DLNAReceiverID }
+
+// SetDLNAReceiverEnabled persists the receiver toggle. The server owns the
+// socket lifecycle; callers apply this result immediately after saving.
+func SetDLNAReceiverEnabled(enabled bool) map[string]any {
+	patch(func(cfg *Config) { cfg.DLNAReceiverEnabled = enabled })
 	return Settings()
 }
 

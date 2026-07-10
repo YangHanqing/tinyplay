@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tv-remote-shell-v20260623-1';
+const CACHE_NAME = 'tinyplay-shell-v20260710-icons';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -6,7 +6,11 @@ const SHELL_ASSETS = [
   '/static/app.js',
   '/static/i18n.js',
   '/static/styles.css',
-  '/static/pwa-icon.svg',
+  '/static/pwa-icon-192.png',
+  '/static/pwa-icon-512.png',
+  '/static/pwa-maskable-192.png',
+  '/static/pwa-maskable-512.png',
+  '/static/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', event => {

@@ -63,6 +63,9 @@ type PlayContext struct {
 	// state() can still tell the frontend which channel survived a browser
 	// reconnect, without re-enabling that reporting.
 	ChannelID string `json:"channel_id"`
+	// SourceType is "dlna" for receiver playback. It tells the phone UI to
+	// remove library-specific controls and prevents media-server reporting.
+	SourceType string `json:"source_type"`
 }
 
 // PlayOptions are the arguments to Play (mirrors player.play kwargs).
@@ -79,6 +82,7 @@ type PlayOptions struct {
 	StartSeconds  float64
 	MediaSourceID string
 	IsLive        bool
+	SourceType    string
 }
 
 // Player owns the mpv process and its IPC connection.
@@ -400,6 +404,12 @@ func (p *Player) progressRun() {
 		if reporter == nil || itemID == "" || !p.isRunning() {
 			continue
 		}
+		p.mu.Lock()
+		sourceType := p.ctx.SourceType
+		p.mu.Unlock()
+		if sourceType == "dlna" {
+			continue
+		}
 		pos := atomic.LoadInt64(&p.lastPosTicks)
 		if pos <= 0 {
 			continue
@@ -422,6 +432,12 @@ func (p *Player) fireStopReport() {
 	serverID := p.ctx.ServerID
 	p.mu.Unlock()
 	if reporter == nil || itemID == "" {
+		return
+	}
+	p.mu.Lock()
+	sourceType := p.ctx.SourceType
+	p.mu.Unlock()
+	if sourceType == "dlna" {
 		return
 	}
 	p.propsMu.Lock()
@@ -472,6 +488,7 @@ func (p *Player) State() map[string]any {
 		"poster_item_id": ctx.PosterItemID,
 		"is_live":        ctx.IsLive,
 		"channel_id":     ctx.ChannelID,
+		"source_type":    ctx.SourceType,
 	}
 }
 
@@ -603,6 +620,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		PosterItemID: opt.PosterItemID,
 		IsLive:       opt.IsLive,
 		ChannelID:    opt.ChannelID,
+		SourceType:   opt.SourceType,
 	}
 	p.mu.Unlock()
 	return result

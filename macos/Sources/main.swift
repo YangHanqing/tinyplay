@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let urlFile = NSTemporaryDirectory() + "tvremote-url-\(ProcessInfo.processInfo.processIdentifier).txt"
 	private var lanBrowser: NWBrowser?
 	private var webView: WKWebView?
+	private var localNetworkDenied = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         primeLocalNetworkAccess()
@@ -68,10 +69,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let params = NWParameters()
         params.includePeerToPeer = true
         let browser = NWBrowser(for: .bonjour(type: "_http._tcp", domain: nil), using: params)
-        browser.stateUpdateHandler = { _ in }
+        browser.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .waiting(let error) where self?.isLocalNetworkPolicyDenied(error) == true:
+                self?.setLocalNetworkDenied(true)
+            case .ready:
+                // This also clears the guidance if the person enables access in
+                // System Settings while TinyPlay is running.
+                self?.setLocalNetworkDenied(false)
+            default:
+                break
+            }
+        }
         browser.browseResultsChangedHandler = { _, _ in }
         browser.start(queue: .main)
         lanBrowser = browser // retain so it keeps running (and the prompt stays)
+    }
+
+    /// Bonjour reports a denied Local Network grant as this specific DNS-SD
+    /// error. Treat other browser failures (for example, a temporarily offline
+    /// network) as non-permission failures so we never send the person to
+    /// System Settings for the wrong reason.
+    private func isLocalNetworkPolicyDenied(_ error: NWError) -> Bool {
+        guard case .dns(let code) = error else { return false }
+        return code == kDNSServiceErr_PolicyDenied
+    }
+
+    private func setLocalNetworkDenied(_ denied: Bool) {
+        guard localNetworkDenied != denied else { return }
+        localNetworkDenied = denied
+        // The Go core owns the bilingual desktop page. Reloading it preserves
+        // the selected language and swaps in/out the precise permission help.
+        if let webView { webView.load(URLRequest(url: desktopURL())) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -223,7 +252,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		let resolved = preference == "auto"
 			? (Locale.current.language.languageCode?.identifier.lowercased().hasPrefix("zh") == true ? "zh-CN" : "en")
 			: preference
-		return URL(string: coreURL + "/desktop?lang=" + resolved)!
+		var components = URLComponents(string: coreURL + "/desktop")!
+		var query = [URLQueryItem(name: "lang", value: resolved)]
+		if localNetworkDenied {
+			query.append(URLQueryItem(name: "local_network", value: "denied"))
+		}
+		components.queryItems = query
+		return components.url!
 	}
 
     @objc private func quit() {

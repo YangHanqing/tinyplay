@@ -47,6 +47,12 @@ chmod +x "$MACOS/TinyPlay" "$RES/tvremote-core"
 # App icon (Finder / Dock / DMG). CFBundleIconFile below points at this.
 cp "$HERE/../assets/TinyPlay.icns" "$RES/TinyPlay.icns"
 
+# Localized system privacy prompts. Info.plist itself contains the fallback;
+# these resources make the explanation match the person's macOS language.
+if [ -d "$HERE/Resources" ]; then
+    cp -R "$HERE/Resources/." "$RES/"
+fi
+
 # Third-party notices shown from the tray's About panel.
 if [ -f "$HERE/../THIRD_PARTY_NOTICES.md" ]; then
     cp "$HERE/../THIRD_PARTY_NOTICES.md" "$RES/THIRD_PARTY_NOTICES.md"
@@ -77,7 +83,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSLocalNetworkUsageDescription</key><string>Needs local network access to connect to your Emby server and control mpv on this computer.</string>
+    <key>NSLocalNetworkUsageDescription</key><string>TinyPlay needs access to your local network so your phone can connect to this computer and TinyPlay can reach your configured media server or network folder.</string>
     <key>NSBonjourServices</key><array><string>_http._tcp</string></array>
 </dict>
 </plist>

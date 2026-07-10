@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="132" y1="68" x2="892" y2="958" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172659"/><stop offset=".48" stop-color="#0a1740"/><stop offset="1" stop-color="#060b22"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="256" y1="270" x2="778" y2="700" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7cf6f2"/><stop offset=".43" stop-color="#3ea8ff"/><stop offset="1" stop-color="#4265f6"/>
+    </linearGradient>
+    <linearGradient id="stand" x1="405" y1="716" x2="620" y2="832" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9cf8f4"/><stop offset="1" stop-color="#637cff"/>
+    </linearGradient>
+  </defs>
+  <!-- Full bleed is intentional for Android's maskable-icon crop. -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect x="174" y="246" width="676" height="470" rx="92" fill="#0a1230" stroke="url(#screen)" stroke-width="26"/>
+  <rect x="204" y="276" width="616" height="410" rx="66" fill="url(#screen)"/>
+  <path d="M446 378c0-25 28-40 49-26l178 104c21 12 21 42 0 54L495 614c-21 13-49-2-49-26V378Z" fill="#fff"/>
+  <path d="M512 716v86M388 832h248" stroke="url(#stand)" stroke-width="34" stroke-linecap="round"/>
+</svg>

@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="theme-color" content="#0a0c14">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="TV Remote">
+  <meta name="apple-mobile-web-app-title" content="TinyPlay">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>TV Remote</title>
+  <title>TinyPlay</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="icon" href="/static/favicon.png" type="image/png">
-  <link rel="icon" href="/static/pwa-icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/static/pwa-icon.svg">
+  <link rel="icon" href="/static/favicon.ico" sizes="any">
+  <link rel="icon" href="/static/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="/static/favicon-16.png" type="image/png" sizes="16x16">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" sizes="180x180">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -81,15 +82,15 @@
       </div>
 
       <!-- No media source configured yet -->
-      <div class="remote-empty hidden" id="lib-empty-state">
-        <svg class="remote-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <div class="library-empty hidden" id="lib-empty-state">
+        <svg class="library-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <ellipse cx="12" cy="5" rx="8" ry="3"/>
           <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/>
           <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>
         </svg>
-        <div class="remote-empty-title" data-i18n="noMediaSourceYet">No media source yet</div>
-        <div class="remote-empty-hint" data-i18n="noMediaSourceHint">Add an Emby, Jellyfin, Plex, network folder, or IPTV playlist to start browsing your library</div>
-        <button class="remote-empty-btn" onclick="openSourceTypePicker()" data-i18n="addMediaSource">Add media source</button>
+        <div class="library-empty-title" data-i18n="noMediaSourceYet">No media source yet</div>
+        <div class="library-empty-hint" data-i18n="noMediaSourceHint">Add an Emby, Jellyfin, Plex, network folder, or IPTV playlist to start browsing your library</div>
+        <button class="library-empty-btn" onclick="openSourceTypePicker()" data-i18n="addMediaSource">Add media source</button>
       </div>
 
       <!-- Home view -->
@@ -285,7 +286,7 @@
               <span>Subtitles</span>
             </button>
 
-            <button class="tool-tile" onclick="openAudioTracksSheet()" aria-label="Audio">
+            <button class="tool-tile" id="tool-tile-audio" onclick="openAudioTracksSheet()" aria-label="Audio">
               <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13h2"/><path d="M8 9v8"/><path d="M12 5v14"/><path d="M16 9v8"/><path d="M20 13h-2"/></svg>
               <span>Audio</span>
             </button>
@@ -435,6 +436,18 @@
           </div>
           <p class="settings-hint-sm" id="cache-minutes-range-hint">1-120 minutes</p>
           <div class="settings-status" id="settings-status"></div>
+        </section>
+
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2 id="dlna-receiver-title"></h2>
+            <p id="dlna-receiver-hint"></p>
+          </div>
+          <label class="seek-setting-item" for="dlna-receiver-toggle">
+            <input type="checkbox" id="dlna-receiver-toggle" onchange="toggleDLNAReceiver()">
+            <span id="dlna-receiver-status"></span>
+          </label>
+          <div class="settings-status" id="dlna-receiver-settings-status"></div>
         </section>
       </div>
     </div>

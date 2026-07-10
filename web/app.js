@@ -66,7 +66,7 @@ let _moreSheetOpen = false;
 let _aspectSheetOpen = false;
 let _currentAspect = 'fit';
 let _loopFile = false;
-let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30 };
+let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true };
 // null = unknown/unrestricted (Python branch never sends this field, and it
 // implements every protocol); an array restricts the file-source dropdown to
 // what this backend can actually browse (see desktop-go's config.Settings()).
@@ -94,6 +94,7 @@ let _iptvCategory = 'all';
 let _iptvSearch = '';
 let _iptvChannels = [];         // last-loaded channel rows for the active category/search
 let currentItemIsLive = false;  // true while an IPTV channel is the now-playing item
+let currentPlaybackSourceType = 'emby';
 let currentIPTVChannelId = '';
 let currentIPTVVariantIndex = 0;
 let currentIPTVVariantCount = 0;
@@ -188,8 +189,7 @@ function renderServiceOfflineBanner() {
     <div class="service-offline-copy">
       <div class="service-offline-title">${esc(tr('serviceOfflineTitle'))}</div>
       <div class="service-offline-body">${esc(tr('serviceOfflineBody'))}</div>
-    </div>
-    <button class="service-offline-action" type="button" onclick="retryServiceConnection()">${esc(tr('serviceOfflineRetry'))}</button>`;
+    </div>`;
 }
 
 async function retryServiceConnection() {
@@ -222,6 +222,15 @@ function offlineServiceError() {
 /* Load the active source into the library tab: poster wall for media servers,
  * file browser for file sources. */
 async function loadActiveSource() {
+  // An unconfigured installation has a dedicated empty state. Do not probe the
+  // library API in that case: its expected "no active server" response is not
+  // an actionable error and must not become a first-launch toast.
+  if (!_hasAnyServer || !_activeServerId) {
+    resetLibraryState();
+    updateLibraryEmptyState(true);
+    return;
+  }
+  updateLibraryEmptyState(false);
   if (isFileSourceType(_activeSourceType)) {
     _enterFileMode();
     await loadDir('');
@@ -249,11 +258,12 @@ async function restorePlayerContext() {
     const state = await api('GET', '/api/player/state');
     if (state.item_id || state.title) {
       _playbackServerId = state.server_id || _activeServerId;
+      currentPlaybackSourceType = state.source_type || 'emby';
       currentSeriesId  = state.series_id || '';
       currentSeasonId  = state.season_id || '';
       currentSeriesTitle = state.series_title || '';
       currentEpisodeLabel = state.episode_label || '';
-      currentPosterItemId = state.is_live ? '' : (state.poster_item_id || state.series_id || state.item_id || '');
+      currentPosterItemId = state.source_type === 'dlna' || state.is_live ? '' : (state.poster_item_id || state.series_id || state.item_id || '');
       currentItemId    = state.item_id || '';
       currentItemIsSeries = !!currentSeriesId;
       currentIPTVChannelId = state.is_live ? (state.channel_id || '') : '';
@@ -423,6 +433,7 @@ async function stopPlayer() {
     currentEpisodeLabel = '';
     currentPosterItemId = '';
     currentItemIsSeries = false;
+    currentPlaybackSourceType = 'emby';
     _loopFile = false;
     _currentAspect = 'fit';
     resetPosterColor();
@@ -513,6 +524,7 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
   currentEpisodeLabel = episodeLabel || '';
   currentPosterItemId = resolvedPoster;
   currentItemIsSeries = !!currentSeriesId;
+  currentPlaybackSourceType = _activeSourceType;
   currentIPTVChannelId = '';
   currentIPTVVariantIndex = 0;
   currentIPTVVariantCount = 0;
@@ -654,13 +666,15 @@ function updateEpisodeNavVisibility(isSeries) {
   const movieInfo = document.getElementById('now-playing-movie-info');
   if (movieInfo) {
     movieInfo.classList.toggle('hidden', isSeries);
-    if (!isSeries) movieInfo.textContent = isCurrentIPTVPlayback() ? sourceTypeLabel('iptv') : tr('movie');
+    if (!isSeries) movieInfo.textContent = isCurrentIPTVPlayback() ? sourceTypeLabel('iptv') : (isDLNAPlayback() ? tr('dlnaReceiver') : tr('movie'));
   }
 }
 
 function isCurrentIPTVPlayback() {
   return currentItemIsLive || !!currentIPTVChannelId;
 }
+
+function isDLNAPlayback() { return currentPlaybackSourceType === 'dlna'; }
 
 // Live channels have no seek bar/duration (nothing to scrub through) and get
 // two extra tool tiles (quality/variant switcher, programme guide) instead.
@@ -670,13 +684,17 @@ function isCurrentIPTVPlayback() {
 // alternate audio.
 function updateLiveControlsVisibility(isLive) {
   const live = isLive || isCurrentIPTVPlayback();
+  const dlna = isDLNAPlayback();
   setLiveProgressHidden(live);
   document.getElementById('btn-seek-backward')?.classList.toggle('hidden', live);
   document.getElementById('btn-seek-forward')?.classList.toggle('hidden', live);
   document.getElementById('tool-tile-iptv-quality')?.classList.toggle('hidden', !live || currentIPTVVariantCount <= 1);
   document.getElementById('tool-tile-iptv-guide')?.classList.toggle('hidden', !live || !currentIPTVHasProgramme);
   document.getElementById('tool-tile-iptv-live')?.classList.toggle('hidden', !live);
-  document.getElementById('tool-tile-subtitle')?.classList.toggle('hidden', live);
+  // DLNA contributes the stream URL, but does not standardise runtime audio or
+  // subtitle track selection. Keep those local-player controls out of its UI.
+  document.getElementById('tool-tile-audio')?.classList.toggle('hidden', dlna);
+  document.getElementById('tool-tile-subtitle')?.classList.toggle('hidden', live || dlna);
   document.getElementById('tool-tile-speed')?.classList.toggle('hidden', live);
   _setText('tool-tile-iptv-quality-label', tr('iptvQualitySwitcher'));
   _setText('tool-tile-iptv-guide-label', tr('iptvProgrammeGuide'));
@@ -733,12 +751,22 @@ function stopPropPolling() {
 }
 
 let _sysVolPollTicks = 0;
+let _playerStatePollTicks = 0;
 
 function _schedulePropPoll() {
   if (!_propPolling) return;
   _propPollTimer = setTimeout(async () => {
     if (!document.hidden) {
       await _fetchAndUpdateProps();
+      // A DLNA sender can replace playback without a phone-originated API
+      // call. Re-read context periodically so an already-open remote switches
+      // from its old library metadata to the receiver-safe DLNA layout.
+      if (++_playerStatePollTicks % 5 === 0) {
+        const state = await api('GET', '/api/player/state').catch(() => null);
+        if (state?.running && state.source_type !== currentPlaybackSourceType) {
+          await restorePlayerContext();
+        }
+      }
       // System volume can change outside the app (physical keys, another
       // app); refresh it every ~5s while the remote tab is open, not every
       // tick — each check spawns a native OS call.
@@ -1181,9 +1209,12 @@ async function openIPTVQualitySheet() {
     const variants = ch.variants || [];
     currentIPTVVariantCount = variants.length;
     if (list) {
-      list.innerHTML = variants.map((v, i) => `
-        <button class="track-pill" onclick="selectIPTVVariant(${i})">${esc(v.label || `#${i + 1}`)}</button>
-      `).join('') || `<div class="iptv-empty">${esc(tr('iptvNoChannels'))}</div>`;
+      list.innerHTML = variants.map((v, i) => {
+        const active = i === currentIPTVVariantIndex;
+        return `
+        <button class="track-pill${active ? ' active' : ''}" onclick="selectIPTVVariant(${i})" aria-pressed="${active}">${esc(v.label || `#${i + 1}`)}</button>
+      `;
+      }).join('') || `<div class="iptv-empty">${esc(tr('iptvNoChannels'))}</div>`;
     }
   } catch (e) {
     if (list) list.innerHTML = `<div class="iptv-empty">${esc(e.message)}</div>`;
@@ -1735,6 +1766,7 @@ function isIPTVSourceType(type) {
 }
 
 function sourceTypeLabel(type) {
+  if (_normType(type) === 'dlna') return tr('dlnaReceiver');
   return {
     emby: 'Emby', jellyfin: 'Jellyfin', plex: 'Plex', webdav: 'WebDAV', smb: 'SMB',
     local: tr('sourceTypeLocalTitle'), nfs: tr('sourceTypeNFSTitle'), iptv: 'IPTV',
@@ -1928,6 +1960,12 @@ async function switchServerHost(event, serverId, hostIndex, isActive = false) {
 }
 
 async function reloadLibraryForActiveServer(message = tr('loadingLibrary')) {
+  if (!_hasAnyServer || !_activeServerId) {
+    resetLibraryState();
+    updateLibraryEmptyState(true);
+    return;
+  }
+  updateLibraryEmptyState(false);
   resetSearchUi();
   if (isFileSourceType(_activeSourceType)) {
     _enterFileMode();
@@ -3021,6 +3059,7 @@ async function loadSettings() {
       mpv_cache_secs: Number(settings.mpv_cache_secs) || 300,
       seek_backward_secs: Number(settings.seek_backward_secs) || 5,
       seek_forward_secs: Number(settings.seek_forward_secs) || 30,
+      dlna_receiver_enabled: settings.dlna_receiver_enabled !== false,
     };
     _supportedFileProtocols = Array.isArray(settings.supported_file_protocols)
       ? settings.supported_file_protocols
@@ -3044,6 +3083,11 @@ function renderSettingsUi() {
   if (saveBtn) saveBtn.textContent = tr('saveSettings');
   _setText('cache-minutes-unit', tr('minutesUnit'));
   _setText('cache-minutes-range-hint', tr('cacheMinutesRangeHint'));
+  _setText('dlna-receiver-title', tr('dlnaReceiverTitle'));
+  _setText('dlna-receiver-hint', tr('dlnaReceiverHint'));
+  const dlnaToggle = document.getElementById('dlna-receiver-toggle');
+  if (dlnaToggle) dlnaToggle.checked = _settings.dlna_receiver_enabled !== false;
+  _setText('dlna-receiver-status', tr(_settings.dlna_receiver_enabled !== false ? 'dlnaReceiverOn' : 'dlnaReceiverOff'));
 
   // Seek settings
   _renderSeekSelect('seek-backward-select', _settings.seek_backward_secs || 5);
@@ -3055,6 +3099,25 @@ function renderSettingsUi() {
   const fwdLabel = document.getElementById('seek-forward-label');
   if (backLabel) backLabel.textContent = String(_settings.seek_backward_secs || 5);
   if (fwdLabel) fwdLabel.textContent = String(_settings.seek_forward_secs || 30);
+}
+
+async function toggleDLNAReceiver() {
+  const enabled = document.getElementById('dlna-receiver-toggle')?.checked !== false;
+  try {
+    const saved = await api('PUT', '/api/settings', { dlna_receiver_enabled: enabled });
+    _settings.dlna_receiver_enabled = saved.dlna_receiver_enabled !== false;
+    _setDLNAReceiverStatus(tr('settingsSaved'));
+  } catch (e) {
+    _setDLNAReceiverStatus(e.message || tr('settingsSaveFailed'), true);
+  }
+  renderSettingsUi();
+}
+
+function _setDLNAReceiverStatus(message, isError = false) {
+  const el = document.getElementById('dlna-receiver-settings-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.className = 'settings-status' + (message ? (isError ? ' err' : ' ok') : '');
 }
 
 function _renderSeekSelect(id, selectedValue) {
