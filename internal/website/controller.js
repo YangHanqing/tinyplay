@@ -4,7 +4,7 @@
  */
 (function () {
   'use strict';
-  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 11) {
+  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 12) {
     return;
   }
 
@@ -690,6 +690,36 @@
     if (pinState) return true;
     return grownFullscreen(video);
   }
+
+  // WebView2's renderer can put an element into the DOM Fullscreen API, but
+  // unlike a full browser it cannot change the embedding Win32 host window.
+  // Report the real document state to the Windows shell so a user's own click
+  // on a site's fullscreen button gets true monitor fullscreen (no title bar
+  // or taskbar), and Esc / the site's exit button restores the normal window.
+  // AddScriptToExecuteOnDocumentCreated runs in child frames too, which matters
+  // for cross-origin embedded players. Other hosts simply do not expose the
+  // optional binding, so this remains harmless in WKWebView and unit tests.
+  function reportNativeFullscreen(active) {
+    try {
+      if (typeof window.tinyplayWebsiteSetFullscreen !== 'function') return;
+      var result = window.tinyplayWebsiteSetFullscreen(!!active);
+      if (result && typeof result.catch === 'function') result.catch(function () {});
+    } catch (_) {}
+  }
+
+  function onNativeFullscreenChange() {
+    reportNativeFullscreen(!!(document.fullscreenElement || document.webkitFullscreenElement));
+  }
+
+  document.addEventListener('fullscreenchange', onNativeFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onNativeFullscreenChange);
+  // Navigation normally emits fullscreenchange first. This top-level fallback
+  // prevents a disappearing document from ever stranding the HWND fullscreen.
+  window.addEventListener('pagehide', function () {
+    try {
+      if (window.top === window) reportNativeFullscreen(false);
+    } catch (_) {}
+  });
 
   function enterFullscreen() {
     var video = primaryVideo();
@@ -1408,7 +1438,7 @@
   }
 
   window.__tinyplayWebsite = {
-    __version: 11,
+    __version: 12,
     handle: handle,
     clearHints: clearHints,
     isHintActive: function () { return !!hintState.active; },

@@ -593,8 +593,18 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 		t.Fatal("bilibili/iqiyi SITE_KEYS host tests missing")
 	}
 	// Version gate must re-inject after controller upgrades.
-	if !contains(js, "__version >= 11") {
+	if !contains(js, "__version >= 12") {
 		t.Fatal("controller version gate missing")
+	}
+	// A real DOM fullscreen transition must be forwarded to the Windows host;
+	// WebView2 does not resize its embedding HWND the way standalone Edge does.
+	if !containsAll(js, []string{
+		"tinyplayWebsiteSetFullscreen",
+		"fullscreenchange",
+		"webkitfullscreenchange",
+		"pagehide",
+	}) {
+		t.Fatal("native fullscreen host bridge missing")
 	}
 	// Single-container guard: a lone WebView2 must fold every new-window route
 	// (window.open, target=_blank/_new links/forms) back into this same page.

@@ -23,7 +23,7 @@ import (
 	"tvremote/internal/website"
 )
 
-// websiteHost owns the dedicated full-screen website WebView2 window and
+// websiteHost owns the dedicated website WebView2 window and
 // consumes loopback shell commands from the Go core. There is exactly one
 // native window and one WebView2 page for website mode: selecting a catalog
 // site navigates that page to the site's fixed home URL instead of creating a
@@ -327,11 +327,32 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 		return nil
 	})
 
+	// WebView2 deliberately does not resize its host HWND when a page enters
+	// the DOM Fullscreen API. Edge owns its top-level window and does that work
+	// itself; an embedded WebView2 expects the app to react to the fullscreen
+	// state. ControllerJS reports fullscreenchange from every document/frame,
+	// and this bridge promotes the one website HWND to true monitor fullscreen.
+	// Exiting (including Esc) restores the normal maximized browsing window.
+	var fs winFullscreen
+	_ = w.Bind("tinyplayWebsiteSetFullscreen", func(enter bool) error {
+		hwnd := uintptr(w.Window())
+		if hwnd == 0 {
+			return nil
+		}
+		if enter {
+			return fs.enter(hwnd)
+		}
+		fs.exit(hwnd)
+		maximizeWindow(hwnd)
+		return nil
+	})
+
 	// A normal maximized app window, not a borderless kiosk surface: it keeps the
 	// system title bar (close / maximize) and the taskbar, so the user can always
 	// close it natively — the message loop's WM_CLOSE path then destroys it
-	// cleanly and the deferred cleanup reports window_closed to the broker. Video
-	// "fullscreen" is the site player's own concern inside the page.
+	// cleanly and the deferred cleanup reports window_closed to the broker. A
+	// site's ordinary page remains here. Only an actual DOM fullscreen
+	// transition temporarily promotes this host window to monitor fullscreen.
 	hwnd := uintptr(w.Window())
 	if hwnd != 0 {
 		maximizeWindow(hwnd)
@@ -365,21 +386,17 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 	if initial.URL != "" {
 		w.Navigate(initial.URL)
 	}
-	// w.Run blocks until Terminate or Alt-F4/native close.
+	// w.Run blocks until the native window closes.
 	w.Run()
 }
 
 func (h *websiteHost) applyOnWindow(w webview2.WebView, cmd websiteCmd) {
 	switch cmd.Action {
 	case website.ActionClose:
-		// Destroy, not Terminate. The website window is borderless WS_POPUP with
-		// no native close affordance, so this programmatic path is the only way it
-		// ever closes. Terminate() only posts WM_QUIT — it exits w.Run() while
-		// leaving the native window (and its full-screen WebView2 surface) on
-		// screen, since the deferred w.Destroy() then posts WM_CLOSE to a message
-		// loop that has already stopped. Destroy() posts WM_CLOSE while this loop
-		// is still pumping (we run inside a Dispatch callback), so it reaches
-		// DestroyWindow → WM_DESTROY → Terminate and the window actually goes away.
+		// Destroy, not Terminate. Terminate only exits w.Run's message loop; it
+		// does not destroy the native HWND. Destroy posts WM_CLOSE while this loop
+		// is still pumping, so phone-initiated close follows the same real teardown
+		// path as the title-bar X / Alt-F4.
 		w.Destroy()
 	case website.ActionOpen:
 		if cmd.URL == "" {

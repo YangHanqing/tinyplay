@@ -131,7 +131,7 @@ func runShell(localURL string, httpSrv *http.Server) {
 			}
 		}()
 
-		// Website playback shell: dedicated full-screen WebView2, separate from QR.
+		// Website playback shell: dedicated singleton WebView2, separate from QR.
 		go startWebsiteShell(localURL)
 
 		// Show the window once on first launch so users see the QR immediately.
@@ -222,6 +222,10 @@ func openWindow(url string) {
 			}
 		} else {
 			fs.exit(hwnd)
+			// The compact QR window intentionally has no minimize affordance.
+			// winFullscreen is also used by the normal website window, so keep
+			// that window-style policy at this call site rather than in exit().
+			removeMinimizeButton(hwnd)
 		}
 		notifyJS(enter)
 		return nil
@@ -235,8 +239,8 @@ func openWindow(url string) {
 	w.Run()
 }
 
-// winFullscreen tracks the compact-window style/rect so borderless HTPC mode
-// can reverse cleanly without recreating the WebView2 host.
+// winFullscreen tracks a window's normal style/rect so a temporary borderless
+// monitor fullscreen can reverse cleanly without recreating the WebView2 host.
 type winFullscreen struct {
 	active bool
 	style  uintptr
@@ -280,7 +284,7 @@ func (fs *winFullscreen) enter(hwnd uintptr) error {
 	fs.active = true
 
 	// Drop chrome; keep visible. WS_POPUP gives a true borderless surface.
-	newStyle := (style &^ (wsCaption | wsThickFrame | wsSysMenu | wsMinimizeBox | wsMaximizeBox)) | wsPopup | wsVisible
+	newStyle := (style &^ (wsCaption | wsThickFrame | wsSysMenu | wsMinimizeBox | wsMaximizeBox | wsMaximize)) | wsPopup | wsVisible
 	_, _, _ = procSetWindowLongPtrW.Call(hwnd, gwlStyle, newStyle)
 	w := mi.Monitor.Right - mi.Monitor.Left
 	h := mi.Monitor.Bottom - mi.Monitor.Top
@@ -302,8 +306,6 @@ func (fs *winFullscreen) exit(hwnd uintptr) {
 		uintptr(fs.rect.Left), uintptr(fs.rect.Top),
 		uintptr(w), uintptr(h),
 		uintptr(swpNoZOrder|swpShowWindow|swpFrameChanged))
-	// Re-apply the no-minimize chrome tweak on the restored frame.
-	removeMinimizeButton(hwnd)
 	fs.active = false
 }
 
@@ -346,6 +348,7 @@ const (
 	wsSysMenu               = 0x00080000
 	wsMinimizeBox           = 0x00020000
 	wsMaximizeBox           = 0x00010000
+	wsMaximize              = 0x01000000
 	swpNoSize               = 0x0001
 	swpNoMove               = 0x0002
 	swpNoZOrder             = 0x0004
