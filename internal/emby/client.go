@@ -35,6 +35,10 @@ func errf(status int, format string, a ...any) *APIError {
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
+// Artwork requests can fan out across an entire library grid. Keep them from
+// holding the mobile UI for the longer API/playback timeout.
+var imageHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
 // Client wraps a single Emby server. Build it with FromActive() in handlers.
 type Client struct {
 	server *config.Server
@@ -269,7 +273,7 @@ func Authenticate(srv *config.Server, username, password string) (string, string
 func (c *Client) Login(serverID, username, password string) (map[string]any, error) {
 	srv := config.GetServer(serverID)
 	if srv == nil {
-		return nil, errf(404, "Server not found")
+		return nil, errf(404, "Media Source not found")
 	}
 	token, userID, err := Authenticate(srv, username, password)
 	if err != nil {
@@ -415,13 +419,16 @@ func (c *Client) imageBytes(itemID string, maxHeight int, imageType string, inde
 		}
 		req, _ := http.NewRequest("GET", u, nil)
 		req.Header = c.headers(c.token())
-		resp, err := httpClient.Do(req)
+		resp, err := imageHTTPClient.Do(req)
 		if err != nil {
 			continue
 		}
-		data, _ := io.ReadAll(resp.Body)
+		data, readErr := io.ReadAll(resp.Body)
 		ct := resp.Header.Get("Content-Type")
 		resp.Body.Close()
+		if readErr != nil || len(data) == 0 {
+			continue
+		}
 		if resp.StatusCode == 200 {
 			if ct == "" {
 				ct = "image/jpeg"

@@ -19,18 +19,30 @@ import (
 // copies the report into a support email, but keeping this endpoint's own
 // output free of secrets is a second line of defense.
 func (s *Server) playerDebugReport(w http.ResponseWriter, r *http.Request) {
+	diagnostics, available := s.player.Diagnostics()
+	if !available {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"detail": "No playback diagnostic is available for this app session.",
+		})
+		return
+	}
 	mpvInfo := player.DetectMPV()
 	report := map[string]any{
-		"report_schema_version": 1,
+		"report_schema_version": 4,
 		"generated_at":          time.Now().UTC().Format(time.RFC3339),
+		"report_scope":          diagnostics["report_scope"],
 		"platform":              runtime.GOOS,
 		"arch":                  runtime.GOARCH,
 		"mpv": map[string]any{
 			"source":    mpvInfo.Source,
 			"available": mpvInfo.Available,
 		},
-		"session": s.player.State(),
-		"source":  activeSourceSummary(),
+		"session":          s.player.State(),
+		"source":           activeSourceSummary(),
+		"playback_attempt": diagnostics["playback_attempt"],
+		"engine":           diagnostics["engine"],
+		"engine_events":    diagnostics["engine_events"],
+		"playback":         diagnostics["playback"],
 		"logs": map[string]any{
 			"core_log_tail": tailLines(filepath.Join(config.LogDir(), "tvremote.log"), 60),
 			"mpv_log_tail":  tailLines(filepath.Join(config.LogDir(), "mpv.log"), 60),

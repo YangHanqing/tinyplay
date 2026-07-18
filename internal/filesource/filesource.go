@@ -91,6 +91,13 @@ func segments(path string) ([]string, error) {
 	return out, nil
 }
 func (c *Client) listing(segs []string, entries []Entry) Listing {
+	visible := entries[:0]
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name, ".") {
+			visible = append(visible, e)
+		}
+	}
+	entries = visible
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].IsDir != entries[j].IsDir {
 			return entries[i].IsDir
@@ -420,17 +427,32 @@ func (c *Client) withSMBSessionContext(ctx context.Context, fn func(*smb2.Sessio
 
 // withSMB mounts the configured Share and browses RootPath+segs — used by
 // playback (Serve/ResolvePlayURL), where the source is always already fully
-// configured (Share is never empty by the time anything plays).
+// smbTarget resolves the saved share/root pair, or (when the user deliberately
+// left the source at the SMB host's top level) treats the first requested path
+// component as the share. The latter mirrors listSMB: an unscoped SMB source
+// first shows its share list, and a file chosen below one of those shares must
+// remain playable without forcing the user to configure a root folder first.
+func (c *Client) smbTarget(segs []string) (string, []string, error) {
+	share := strings.TrimSpace(c.server.Share)
+	if share == "" {
+		if len(segs) == 0 {
+			return "", nil, errf(400, "Select an SMB share first")
+		}
+		return segs[0], segs[1:], nil
+	}
+	return share, append(segments0(c.server.RootPath), segs...), nil
+}
+
 func (c *Client) withSMB(segs []string, fn func(*smb2.Share, string) error) error {
 	return c.withSMBContext(context.Background(), segs, fn)
 }
 
 func (c *Client) withSMBContext(ctx context.Context, segs []string, fn func(*smb2.Share, string) error) error {
-	share := strings.TrimSpace(c.server.Share)
-	if share == "" {
-		return errf(400, "An SMB share is required")
+	share, pathSegs, err := c.smbTarget(segs)
+	if err != nil {
+		return err
 	}
-	path := filepath.ToSlash(filepath.Join(append(segments0(c.server.RootPath), segs...)...))
+	path := filepath.ToSlash(filepath.Join(pathSegs...))
 	return c.withSMBSessionContext(ctx, func(session *smb2.Session) error {
 		mounted, e := session.Mount(share)
 		if e != nil {
@@ -599,6 +621,9 @@ func (c *Client) Serve(w http.ResponseWriter, r *http.Request, path string) erro
 		if c.server.Username != "" {
 			req.SetBasicAuth(c.server.Username, c.server.Password)
 		}
+		// Timeout: 0 is deliberate — a long playback stream must not be cut off
+		// by a client-wide deadline; cancellation rides on the request context
+		// (bound above), which fires when the player disconnects.
 		resp, err := (&http.Client{Timeout: 0}).Do(req)
 		if err != nil {
 			return errf(502, "Could not stream WebDAV file: %v", err)

@@ -25,7 +25,9 @@ func driveEntries() []Entry {
 		if _, err := os.Stat(letter + `:\`); err != nil {
 			continue
 		}
-		out = append(out, Entry{Name: letter + ":", Path: letter + ":", IsDir: true})
+		// Keep the trailing slash in the API path. "C:" is drive-relative on
+		// Windows, while "C:/" is the absolute drive root users selected.
+		out = append(out, Entry{Name: letter + ":", Path: letter + ":/", IsDir: true})
 	}
 	return out
 }

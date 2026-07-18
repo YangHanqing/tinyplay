@@ -408,9 +408,9 @@ func (c *Client) ImageBytes(id string, maxHeight int, imageType string) ([]byte,
 		req, _ := http.NewRequest("GET", u, nil)
 		req.Header.Set("Accept", "image/*")
 		if resp, err := httpClient.Do(req); err == nil {
-			body, _ := io.ReadAll(resp.Body)
+			body, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if resp.StatusCode == 200 && len(body) > 0 {
+			if readErr == nil && resp.StatusCode == 200 && len(body) > 0 {
 				ct := resp.Header.Get("Content-Type")
 				if ct == "" {
 					ct = "image/jpeg"

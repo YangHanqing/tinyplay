@@ -125,7 +125,7 @@ func (p *Player) refreshScreensaverBackdrop(serverID, itemID, posterItemID strin
 		return
 	}
 
-	p.sendNative(map[string]any{
+	p.send(map[string]any{
 		"_name":  "overlay-add",
 		"id":     screensaverBackdropID,
 		"x":      0,
@@ -152,7 +152,7 @@ func (p *Player) refreshScreensaverBackdrop(serverID, itemID, posterItemID strin
 }
 
 func (p *Player) refreshScreensaverText(ctx PlayContext, screenW, screenH int, now time.Time) {
-	p.sendNative(map[string]any{
+	p.send(map[string]any{
 		"_name":  "osd-overlay",
 		"id":     screensaverTextID,
 		"format": "ass-events",
@@ -185,7 +185,7 @@ func (p *Player) hideScreensaver() {
 		return
 	}
 	p.send([]any{"overlay-remove", screensaverBackdropID})
-	p.sendNative(map[string]any{
+	p.send(map[string]any{
 		"_name":  "osd-overlay",
 		"id":     screensaverTextID,
 		"format": "none",

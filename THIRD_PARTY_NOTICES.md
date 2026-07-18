@@ -12,6 +12,18 @@ and source-availability obligations for every bundled component.
 - FFmpeg and codec libraries pulled into the selected mpv build — licensing
   depends on the exact build configuration.
 
+## Bundled desktop imagery
+
+- **Carina Nebula “Cosmic Cliffs”** (NASA ID: `carina_nebula`) — James Webb Space
+  Telescope NIRCam image of the “Cosmic Cliffs” in the Carina Nebula.
+  - Credit: **NASA, ESA, CSA, STScI**
+  - Source record: https://images.nasa.gov/details/carina_nebula
+  - Bundled asset: `desktop-go/internal/server/assets/carina_nebula.jpg`
+    (served at `/desktop/background.jpg` for the desktop intro/standby window)
+  - NASA image and media guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/
+  - This distribution does **not** include a NASA logo and does **not** imply
+    NASA endorsement of TinyPlay.
+
 ## Go source dependencies
 
 - fyne.io/systray

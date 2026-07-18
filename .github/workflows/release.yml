@@ -166,7 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="0.0.0-dev"; fi
-          ARCH="${{ matrix.arch }}" VERSION="$VER" MPV_DIR="$PWD/mpvstage" ./macos/build-app.sh
+          ARCH="${{ matrix.arch }}" VERSION="$VER" MPV_DIR="$PWD/mpvstage" REQUIRE_BUNDLED_MPV=1 ./macos/build-app.sh
 
       # Import the Developer ID cert into a keychain that persists for the whole
       # job, so both the app-signing and DMG-signing steps below can use it.

@@ -5,9 +5,11 @@ import (
 	"net"
 	"os"
 	"runtime"
-
-	"tvremote/internal/i18n"
 )
+
+// singleInstanceAddr is a loopback-only, arbitrary high port claimed purely as
+// a process-wide mutex (see guardSingleInstance).
+const singleInstanceAddr = "127.0.0.1:47611"
 
 // guardLn holds the single-instance lock for the whole process lifetime; it is
 // never closed on purpose so no second instance can grab the port.
@@ -25,10 +27,9 @@ func guardSingleInstance() {
 	if runtime.GOOS != "windows" {
 		return
 	}
-	// Loopback-only, arbitrary high port used purely as a lock.
-	ln, err := net.Listen("tcp", "127.0.0.1:47611")
+	ln, err := net.Listen("tcp", singleInstanceAddr)
 	if err != nil {
-		log.Print(i18n.System("log_already_running"))
+		log.Print("TinyPlay is already running; exiting this duplicate launch.")
 		os.Exit(0)
 	}
 	guardLn = ln

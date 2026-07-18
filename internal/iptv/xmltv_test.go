@@ -24,10 +24,10 @@ func TestParseXMLTV(t *testing.T) {
 	if len(programmes) != 3 {
 		t.Fatalf("got %d programmes, want 3 (one malformed entry skipped)", len(programmes))
 	}
-	if programmes[0].ChannelID != "cctv1.cn" || programmes[0].Title != "新闻联播" {
+	if programmes[0].ChannelID != "news1.example" || programmes[0].Title != "Evening Bulletin" {
 		t.Errorf("unexpected first programme: %+v", programmes[0])
 	}
-	if programmes[0].Desc != "今日要闻" {
+	if programmes[0].Desc != "Today's headlines" {
 		t.Errorf("desc not parsed: %+v", programmes[0])
 	}
 	wantStart := time.Date(2026, 7, 6, 19, 0, 0, 0, time.FixedZone("", 8*3600))

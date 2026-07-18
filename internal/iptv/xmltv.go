@@ -6,7 +6,13 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
+
+const maxEPGProgrammes = 500_000
 
 type xmltvProgramme struct {
 	Channel  string `xml:"channel,attr"`
@@ -24,6 +30,7 @@ type xmltvProgramme struct {
 // playlist channels happens by tvg-id/channel attribute equality only.
 func ParseXMLTV(r io.Reader) ([]Programme, error) {
 	dec := xml.NewDecoder(r)
+	dec.CharsetReader = xmlCharsetReader
 	var out []Programme
 	for {
 		tok, err := dec.Token()
@@ -46,6 +53,12 @@ func ParseXMLTV(r io.Reader) ([]Programme, error) {
 		if errStart != nil || errStop != nil || p.Channel == "" {
 			continue
 		}
+		if !stop.After(start) {
+			continue
+		}
+		if len(out) >= maxEPGProgrammes {
+			return nil, errf(502, "The EPG has too many programmes")
+		}
 		out = append(out, Programme{
 			ChannelID: strings.ToLower(strings.TrimSpace(p.Channel)),
 			Start:     start,
@@ -56,6 +69,23 @@ func ParseXMLTV(r io.Reader) ([]Programme, error) {
 		})
 	}
 	return out, nil
+}
+
+// XMLTV feeds are often declared as UTF-8 but a number of long-lived Chinese
+// providers still declare/serve GBK or GB18030. Keep the supported set narrow
+// and explicit; unknown charsets should fail rather than being silently
+// mis-decoded into a plausible but wrong programme guide.
+func xmlCharsetReader(charset string, input io.Reader) (io.Reader, error) {
+	switch strings.ToLower(strings.TrimSpace(charset)) {
+	case "utf-8", "utf8", "us-ascii", "ascii":
+		return input, nil
+	case "gbk", "gb2312", "gb18030", "cp936":
+		return transform.NewReader(input, simplifiedchinese.GB18030.NewDecoder()), nil
+	case "windows-1252", "cp1252", "iso-8859-1", "latin1":
+		return transform.NewReader(input, charmap.Windows1252.NewDecoder()), nil
+	default:
+		return nil, fmt.Errorf("unsupported XMLTV charset %q", charset)
+	}
 }
 
 // parseXMLTVTime parses the XMLTV timestamp format, e.g. "20260706083000

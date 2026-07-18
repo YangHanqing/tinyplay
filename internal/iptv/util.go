@@ -5,9 +5,39 @@ import (
 	"compress/gzip"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"io"
 	"strings"
 )
+
+var errInputTooLarge = errors.New("input exceeds the safe size limit")
+
+// boundedReader makes limits effective while streaming, including for gzip
+// input. It deliberately fails at the boundary instead of silently truncating
+// a provider response and treating a partial playlist/guide as valid data.
+type boundedReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func newBoundedReader(r io.Reader, maximum int64) io.Reader {
+	return &boundedReader{r: r, remaining: maximum}
+}
+
+func (r *boundedReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, errInputTooLarge
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.r.Read(p)
+	r.remaining -= int64(n)
+	if n > 0 && r.remaining == 0 && err == nil {
+		return n, errInputTooLarge
+	}
+	return n, err
+}
 
 // maybeGunzip transparently decompresses gzip-encoded input (common for
 // large hosted XMLTV feeds, e.g. guide.xml.gz), detected by magic bytes

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,8 +24,11 @@ import (
 )
 
 const (
-	group        = "239.255.255.250:1900"
-	rendererType = "urn:schemas-upnp-org:device:MediaRenderer:1"
+	group                 = "239.255.255.250:1900"
+	rendererType          = "urn:schemas-upnp-org:device:MediaRenderer:1"
+	avTransportType       = "urn:schemas-upnp-org:service:AVTransport:1"
+	connectionManagerType = "urn:schemas-upnp-org:service:ConnectionManager:1"
+	renderingControlType  = "urn:schemas-upnp-org:service:RenderingControl:1"
 )
 
 // Receiver is safe to start/stop repeatedly as the Settings toggle changes.
@@ -38,6 +42,18 @@ type Receiver struct {
 }
 
 func New(p *player.Player, port func() int) *Receiver { return &Receiver{p: p, port: port} }
+
+// FriendlyName is the stable name shown in DLNA sender device pickers.
+// Keep the same value available to the desktop standby screen so users can
+// immediately identify which target to choose on their phone.
+func FriendlyName() string {
+	id := config.DLNAReceiverID()
+	suffix := id
+	if len(suffix) > 4 {
+		suffix = suffix[len(suffix)-4:]
+	}
+	return "TinyPlay (" + strings.ToUpper(suffix) + ")"
+}
 
 func (r *Receiver) Start() {
 	r.mu.Lock()
@@ -57,6 +73,15 @@ func (r *Receiver) Start() {
 	go r.serve(conn, stop, stopped)
 	go r.advertiseLoop(conn, stop)
 	log.Printf("DLNA receiver enabled on UDP 1900")
+}
+
+// Running reports whether this receiver currently owns its SSDP multicast
+// socket. It deliberately reflects the live socket rather than the persisted
+// setting: another application may prevent us from binding UDP 1900.
+func (r *Receiver) Running() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.conn != nil
 }
 
 func (r *Receiver) Stop() {
@@ -115,24 +140,61 @@ func (r *Receiver) handleSearch(conn *net.UDPConn, addr *net.UDPAddr, request st
 	if !strings.HasPrefix(upper, "M-SEARCH * HTTP/1.1") || !strings.Contains(upper, "SSDP:DISCOVER") {
 		return
 	}
-	st := strings.ToLower(header(request, "st"))
-	var targets []string
-	switch st {
-	case "ssdp:all":
-		targets = []string{"upnp:rootdevice", rendererType}
-	case "upnp:rootdevice", rendererType:
-		targets = []string{st}
-	default:
+	targets := r.searchTargets(header(request, "st"))
+	if len(targets) == 0 {
 		return
 	}
+	delayLimit := searchDelay(header(request, "mx"))
 	for _, target := range targets {
-		_, _ = conn.WriteToUDP([]byte(r.response(target)), addr)
+		target := target
+		delay := time.Duration(0)
+		if delayLimit > 0 {
+			delay = time.Duration(rand.Int63n(int64(delayLimit) + 1))
+		}
+		time.AfterFunc(delay, func() {
+			_, _ = conn.WriteToUDP([]byte(r.response(target)), addr)
+		})
 	}
+}
+
+func (r *Receiver) targets() []string {
+	return []string{
+		"upnp:rootdevice",
+		"uuid:" + config.DLNAReceiverID(),
+		rendererType,
+		renderingControlType,
+		connectionManagerType,
+		avTransportType,
+	}
+}
+
+func (r *Receiver) searchTargets(requested string) []string {
+	requested = strings.TrimSpace(requested)
+	if strings.EqualFold(requested, "ssdp:all") {
+		return r.targets()
+	}
+	for _, target := range r.targets() {
+		if strings.EqualFold(requested, target) {
+			return []string{target}
+		}
+	}
+	return nil
+}
+
+func searchDelay(mx string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(mx))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	if seconds > 5 {
+		seconds = 5
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func (r *Receiver) notify(conn *net.UDPConn, nts string) {
 	addr, _ := net.ResolveUDPAddr("udp4", group)
-	for _, target := range []string{"upnp:rootdevice", rendererType} {
+	for _, target := range r.targets() {
 		message := strings.Join([]string{
 			"NOTIFY * HTTP/1.1", "HOST: " + group, "CACHE-CONTROL: max-age=1800",
 			"LOCATION: " + r.location(), "NT: " + target, "NTS: " + nts,
@@ -145,7 +207,8 @@ func (r *Receiver) notify(conn *net.UDPConn, nts string) {
 func (r *Receiver) response(target string) string {
 	return strings.Join([]string{
 		"HTTP/1.1 200 OK", "CACHE-CONTROL: max-age=1800", "EXT:", "LOCATION: " + r.location(),
-		"SERVER: TinyPlay/1.0 UPnP/1.1", "ST: " + target, "USN: " + r.usn(target), "", "",
+		"SERVER: TinyPlay/1.0 UPnP/1.1", "DATE: " + time.Now().UTC().Format(http.TimeFormat),
+		"ST: " + target, "USN: " + r.usn(target), "", "",
 	}, "\r\n")
 }
 
@@ -154,6 +217,9 @@ func (r *Receiver) location() string {
 }
 func (r *Receiver) usn(target string) string {
 	base := "uuid:" + config.DLNAReceiverID()
+	if strings.EqualFold(target, base) {
+		return base
+	}
 	if target == "upnp:rootdevice" {
 		return base + "::upnp:rootdevice"
 	}
@@ -179,6 +245,8 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeXML(w, http.StatusOK, connectionManagerSCPD)
 	case req.Method == http.MethodGet && req.URL.Path == "/dlna/AVTransport.xml":
 		writeXML(w, http.StatusOK, avTransportSCPD)
+	case req.Method == http.MethodGet && req.URL.Path == "/dlna/RenderingControl.xml":
+		writeXML(w, http.StatusOK, renderingControlSCPD)
 	case req.Method == "SUBSCRIBE" && strings.HasPrefix(req.URL.Path, "/dlna/"):
 		w.Header().Set("SID", "uuid:"+config.DLNAReceiverID())
 		w.Header().Set("TIMEOUT", "Second-300")
@@ -187,6 +255,8 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.connectionManager(w, req)
 	case req.Method == http.MethodPost && req.URL.Path == "/dlna/AVTransport/control":
 		r.avTransport(w, req)
+	case req.Method == http.MethodPost && req.URL.Path == "/dlna/RenderingControl/control":
+		r.renderingControl(w, req)
 	default:
 		http.NotFound(w, req)
 	}
@@ -194,14 +264,10 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 func (r *Receiver) deviceXML() string {
 	id := config.DLNAReceiverID()
-	suffix := id
-	if len(suffix) > 4 {
-		suffix = suffix[len(suffix)-4:]
-	}
 	// The UUID remains the protocol identity. Its short, stable suffix keeps
 	// multiple TinyPlay receivers distinguishable in a sender's device picker.
-	name := xmlEscape("TinyPlay (" + strings.ToUpper(suffix) + ")")
-	return `<?xml version="1.0" encoding="UTF-8"?><root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><device><deviceType>` + rendererType + `</deviceType><friendlyName>` + name + `</friendlyName><manufacturer>TinyPlay</manufacturer><modelName>TinyPlay DLNA Receiver</modelName><modelNumber>1.0</modelNumber><UDN>uuid:` + id + `</UDN><serviceList><service><serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType><serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId><SCPDURL>/dlna/ConnectionManager.xml</SCPDURL><controlURL>/dlna/ConnectionManager/control</controlURL><eventSubURL>/dlna/ConnectionManager/event</eventSubURL></service><service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><serviceId>urn:upnp-org:serviceId:AVTransport</serviceId><SCPDURL>/dlna/AVTransport.xml</SCPDURL><controlURL>/dlna/AVTransport/control</controlURL><eventSubURL>/dlna/AVTransport/event</eventSubURL></service></serviceList></device></root>`
+	name := xmlEscape(FriendlyName())
+	return `<?xml version="1.0" encoding="UTF-8"?><root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><device><deviceType>` + rendererType + `</deviceType><friendlyName>` + name + `</friendlyName><manufacturer>TinyPlay</manufacturer><modelDescription>TinyPlay DLNA Media Renderer</modelDescription><modelName>TinyPlay DLNA Receiver</modelName><modelNumber>1.0</modelNumber><UDN>uuid:` + id + `</UDN><dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC><serviceList><service><serviceType>` + avTransportType + `</serviceType><serviceId>urn:upnp-org:serviceId:AVTransport</serviceId><SCPDURL>/dlna/AVTransport.xml</SCPDURL><controlURL>/dlna/AVTransport/control</controlURL><eventSubURL>/dlna/AVTransport/event</eventSubURL></service><service><serviceType>` + renderingControlType + `</serviceType><serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId><SCPDURL>/dlna/RenderingControl.xml</SCPDURL><controlURL>/dlna/RenderingControl/control</controlURL><eventSubURL>/dlna/RenderingControl/event</eventSubURL></service><service><serviceType>` + connectionManagerType + `</serviceType><serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId><SCPDURL>/dlna/ConnectionManager.xml</SCPDURL><controlURL>/dlna/ConnectionManager/control</controlURL><eventSubURL>/dlna/ConnectionManager/event</eventSubURL></service></serviceList></device></root>`
 }
 
 func (r *Receiver) connectionManager(w http.ResponseWriter, req *http.Request) {
@@ -266,6 +332,45 @@ func (r *Receiver) avTransport(w http.ResponseWriter, req *http.Request) {
 		soapOK(w, action, "AVTransport", map[string]string{"PlayMedia": "NETWORK", "RecMedia": "NOT_IMPLEMENTED", "RecQualityModes": "NOT_IMPLEMENTED"})
 	case "GetTransportSettings":
 		soapOK(w, action, "AVTransport", map[string]string{"PlayMode": "NORMAL", "RecQualityMode": "NOT_IMPLEMENTED"})
+	default:
+		soapFault(w, 401, "Invalid Action")
+	}
+}
+
+func (r *Receiver) renderingControl(w http.ResponseWriter, req *http.Request) {
+	body, _ := io.ReadAll(req.Body)
+	action := soapAction(req)
+	switch action {
+	case "GetVolume":
+		volume := 100
+		if value, ok := r.p.Props()["volume"]; ok {
+			volume = max(0, min(100, int(number(value))))
+		}
+		soapOK(w, action, "RenderingControl", map[string]string{"CurrentVolume": strconv.Itoa(volume)})
+	case "SetVolume":
+		volume, err := strconv.Atoi(xmlTag(string(body), "DesiredVolume"))
+		if err != nil || volume < 0 || volume > 100 {
+			soapFault(w, 402, "Invalid Args")
+			return
+		}
+		r.p.Command([]any{"set_property", "volume", volume})
+		soapOK(w, action, "RenderingControl", nil)
+	case "GetMute":
+		muted, _ := r.p.Props()["mute"].(bool)
+		value := "0"
+		if muted {
+			value = "1"
+		}
+		soapOK(w, action, "RenderingControl", map[string]string{"CurrentMute": value})
+	case "SetMute":
+		value := xmlTag(string(body), "DesiredMute")
+		if value != "0" && value != "1" && !strings.EqualFold(value, "true") && !strings.EqualFold(value, "false") {
+			soapFault(w, 402, "Invalid Args")
+			return
+		}
+		muted := value == "1" || strings.EqualFold(value, "true")
+		r.p.Command([]any{"set_property", "mute", muted})
+		soapOK(w, action, "RenderingControl", nil)
 	default:
 		soapFault(w, 401, "Invalid Action")
 	}
@@ -350,5 +455,8 @@ func xmlEscape(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;").Replace(s)
 }
 
-const connectionManagerSCPD = `<?xml version="1.0"?><scpd xmlns="urn:schemas-upnp-org:service-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><actionList><action><name>GetProtocolInfo</name></action><action><name>GetCurrentConnectionIDs</name></action><action><name>GetCurrentConnectionInfo</name></action></actionList></scpd>`
-const avTransportSCPD = `<?xml version="1.0"?><scpd xmlns="urn:schemas-upnp-org:service-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><actionList><action><name>SetAVTransportURI</name></action><action><name>Play</name></action><action><name>Pause</name></action><action><name>Stop</name></action><action><name>Seek</name></action><action><name>GetTransportInfo</name></action><action><name>GetPositionInfo</name></action><action><name>GetMediaInfo</name></action><action><name>GetDeviceCapabilities</name></action><action><name>GetTransportSettings</name></action></actionList></scpd>`
+const connectionManagerSCPD = `<?xml version="1.0" encoding="UTF-8"?><scpd xmlns="urn:schemas-upnp-org:service-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><actionList><action><name>GetProtocolInfo</name></action><action><name>GetCurrentConnectionIDs</name></action><action><name>GetCurrentConnectionInfo</name></action></actionList><serviceStateTable><stateVariable sendEvents="yes"><name>SourceProtocolInfo</name><dataType>string</dataType></stateVariable><stateVariable sendEvents="yes"><name>SinkProtocolInfo</name><dataType>string</dataType></stateVariable><stateVariable sendEvents="yes"><name>CurrentConnectionIDs</name><dataType>string</dataType></stateVariable></serviceStateTable></scpd>`
+
+const avTransportSCPD = `<?xml version="1.0" encoding="UTF-8"?><scpd xmlns="urn:schemas-upnp-org:service-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><actionList><action><name>SetAVTransportURI</name></action><action><name>Play</name></action><action><name>Pause</name></action><action><name>Stop</name></action><action><name>Seek</name></action><action><name>GetTransportInfo</name></action><action><name>GetPositionInfo</name></action><action><name>GetMediaInfo</name></action><action><name>GetDeviceCapabilities</name></action><action><name>GetTransportSettings</name></action></actionList><serviceStateTable><stateVariable sendEvents="yes"><name>TransportState</name><dataType>string</dataType><allowedValueList><allowedValue>STOPPED</allowedValue><allowedValue>PLAYING</allowedValue><allowedValue>PAUSED_PLAYBACK</allowedValue><allowedValue>TRANSITIONING</allowedValue><allowedValue>NO_MEDIA_PRESENT</allowedValue></allowedValueList></stateVariable><stateVariable sendEvents="no"><name>AVTransportURI</name><dataType>string</dataType></stateVariable><stateVariable sendEvents="no"><name>RelativeTimePosition</name><dataType>string</dataType></stateVariable><stateVariable sendEvents="no"><name>CurrentTrackDuration</name><dataType>string</dataType></stateVariable></serviceStateTable></scpd>`
+
+const renderingControlSCPD = `<?xml version="1.0" encoding="UTF-8"?><scpd xmlns="urn:schemas-upnp-org:service-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><actionList><action><name>GetMute</name><argumentList><argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument><argument><name>Channel</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Channel</relatedStateVariable></argument><argument><name>CurrentMute</name><direction>out</direction><relatedStateVariable>Mute</relatedStateVariable></argument></argumentList></action><action><name>SetMute</name><argumentList><argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument><argument><name>Channel</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Channel</relatedStateVariable></argument><argument><name>DesiredMute</name><direction>in</direction><relatedStateVariable>Mute</relatedStateVariable></argument></argumentList></action><action><name>GetVolume</name><argumentList><argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument><argument><name>Channel</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Channel</relatedStateVariable></argument><argument><name>CurrentVolume</name><direction>out</direction><relatedStateVariable>Volume</relatedStateVariable></argument></argumentList></action><action><name>SetVolume</name><argumentList><argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument><argument><name>Channel</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Channel</relatedStateVariable></argument><argument><name>DesiredVolume</name><direction>in</direction><relatedStateVariable>Volume</relatedStateVariable></argument></argumentList></action></actionList><serviceStateTable><stateVariable sendEvents="no"><name>A_ARG_TYPE_InstanceID</name><dataType>ui4</dataType></stateVariable><stateVariable sendEvents="no"><name>A_ARG_TYPE_Channel</name><dataType>string</dataType><allowedValueList><allowedValue>Master</allowedValue></allowedValueList></stateVariable><stateVariable sendEvents="yes"><name>Mute</name><dataType>boolean</dataType><defaultValue>0</defaultValue></stateVariable><stateVariable sendEvents="yes"><name>Volume</name><dataType>ui2</dataType><defaultValue>100</defaultValue><allowedValueRange><minimum>0</minimum><maximum>100</maximum><step>1</step></allowedValueRange></stateVariable></serviceStateTable></scpd>`

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tinyplay-shell-v20260710-icons';
+const CACHE_NAME = 'tinyplay-shell-v20260718-website-remote-layout-v9';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -35,7 +35,14 @@ self.addEventListener('fetch', event => {
   if (url.origin !== self.location.origin) return;
 
   if (url.pathname.startsWith('/api/')) {
-    event.respondWith(fetch(request).catch(() => offlineAPIResponse()));
+    event.respondWith(fetch(request).catch(error => {
+      // A source switch deliberately aborts obsolete browse requests. Treating
+      // that normal control flow as an offline backend makes the whole page
+      // flash a false "service unavailable" banner while the next source is
+      // still loading.
+      if (error?.name === 'AbortError' || request.signal?.aborted) throw error;
+      return offlineAPIResponse();
+    }));
     return;
   }
 

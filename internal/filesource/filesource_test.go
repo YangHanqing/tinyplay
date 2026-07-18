@@ -14,10 +14,11 @@ import (
 )
 
 func TestWebDAVBrowseAndResolve(t *testing.T) {
+	const password = "s3cret!"
 	var authOK bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
-		authOK = ok && u == "alice" && p == "秘密"
+		authOK = ok && u == "alice" && p == password
 		if r.Method == "GET" {
 			if r.Header.Get("Range") != "bytes=2-4" {
 				t.Errorf("range=%q", r.Header.Get("Range"))
@@ -37,7 +38,7 @@ func TestWebDAVBrowseAndResolve(t *testing.T) {
 	defer ts.Close()
 	tsURL, _ := url.Parse(ts.URL)
 	port, _ := strconv.Atoi(tsURL.Port())
-	c := New(&config.Server{Name: "DAV", Type: "webdav", Protocol: tsURL.Scheme, Hosts: []string{tsURL.Hostname()}, Port: port, RootPath: "dav", Username: "alice", Password: "秘密"})
+	c := New(&config.Server{Name: "DAV", Type: "webdav", Protocol: tsURL.Scheme, Hosts: []string{tsURL.Hostname()}, Port: port, RootPath: "dav", Username: "alice", Password: password})
 	listing, err := c.ListDir("")
 	if err != nil {
 		t.Fatal(err)
@@ -127,13 +128,21 @@ func TestLocalRelativeRootPathResolvesFromOSRootNotCWD(t *testing.T) {
 	}
 }
 
-func TestSMBServeRequiresShare(t *testing.T) {
+func TestSMBTargetUsesFirstPathSegmentAsShareWhenUnset(t *testing.T) {
 	c := New(&config.Server{Type: "smb", Hosts: []string{"nas"}})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
-	err := c.Serve(rec, req, "movie.mkv")
-	if err == nil {
-		t.Fatal("expected missing share error")
+	share, path, err := c.smbTarget([]string{"Media", "Movies", "demo.mkv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if share != "Media" || len(path) != 2 || path[0] != "Movies" || path[1] != "demo.mkv" {
+		t.Fatalf("share=%q path=%#v", share, path)
+	}
+}
+
+func TestSMBTargetWithoutShareOrPathRequiresShareSelection(t *testing.T) {
+	c := New(&config.Server{Type: "smb", Hosts: []string{"nas"}})
+	if _, _, err := c.smbTarget(nil); err == nil {
+		t.Fatal("expected share-selection error")
 	}
 }
 

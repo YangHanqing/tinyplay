@@ -36,7 +36,7 @@ chmod u+w mpvstage/bin/mpv
 dylibbundler -cd -of -od -b -x mpvstage/bin/mpv \
     -d mpvstage/bin/libs -p @executable_path/libs/
 
-ARCH="$ARCH" VERSION="$VERSION" MPV_DIR="$ROOT/mpvstage" "$HERE/build-app.sh"
+ARCH="$ARCH" VERSION="$VERSION" MPV_DIR="$ROOT/mpvstage" REQUIRE_BUNDLED_MPV=1 "$HERE/build-app.sh"
 
 # Workspaces under Documents may be managed by a File Provider that attaches a
 # protected com.apple.provenance xattr. Sign in a private temporary directory,

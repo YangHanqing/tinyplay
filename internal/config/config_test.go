@@ -29,7 +29,8 @@ func TestLegacyServerDefaultsToEmby(t *testing.T) {
 
 func TestFileSourceAndLanguagePersist(t *testing.T) {
 	dir := useTempData(t)
-	srv := AddServer(Server{Name: "NAS", Type: "webdav", Hosts: []string{"nas"}, Protocol: "https", RootPath: "dav", Username: "u", Password: "秘密"})
+	const password = "s3cret!"
+	srv := AddServer(Server{Name: "NAS", Type: "webdav", Hosts: []string{"nas"}, Protocol: "https", RootPath: "dav", Username: "u", Password: password})
 	SetLanguage("zh-CN")
 	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
@@ -39,7 +40,7 @@ func TestFileSourceAndLanguagePersist(t *testing.T) {
 	if err = json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Language != "zh-CN" || len(persisted.Servers) != 1 || persisted.Servers[0].ID != srv.ID || persisted.Servers[0].Password != "秘密" {
+	if persisted.Language != "zh-CN" || len(persisted.Servers) != 1 || persisted.Servers[0].ID != srv.ID || persisted.Servers[0].Password != password {
 		t.Fatalf("unexpected persisted config: %#v", persisted)
 	}
 }
@@ -54,6 +55,30 @@ func TestHostsCappedAtThree(t *testing.T) {
 	updated := UpdateServer(srv.ID, patch)
 	if len(updated.Hosts) != 3 || updated.Hosts[2] != "z" {
 		t.Fatalf("patched hosts = %#v", updated.Hosts)
+	}
+}
+
+func TestBlankServerNamesIncludeSourceTypeAndAddress(t *testing.T) {
+	useTempData(t)
+	cases := []struct {
+		server Server
+		want   string
+	}{
+		{Server{Type: "emby", Hosts: []string{"192.168.1.10"}}, "Emby - 192.168.1.10"},
+		{Server{Type: "smb", Hosts: []string{"nas.local"}}, "SMB - nas.local"},
+		{Server{Type: "iptv", PlaylistURL: "https://tv.example:8443/list.m3u"}, "IPTV - tv.example"},
+	}
+	for _, tc := range cases {
+		srv := AddServer(tc.server)
+		if srv.Name != tc.want {
+			t.Fatalf("default name = %q, want %q", srv.Name, tc.want)
+		}
+	}
+
+	blank := "   "
+	updated := UpdateServer(AddServer(Server{Name: "Custom", Type: "plex", Hosts: []string{"plex.local"}}).ID, ServerPatch{Name: &blank})
+	if updated.Name != "Plex - plex.local" {
+		t.Fatalf("updated blank name = %q", updated.Name)
 	}
 }
 

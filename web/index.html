@@ -18,7 +18,7 @@
 <body>
   <div id="app">
 
-    <!-- Header (library tab only) -->
+    <!-- Header -->
     <header class="header">
       <div class="header-side"></div>
       <div class="header-center">
@@ -30,13 +30,21 @@
         <div class="server-menu hidden" id="server-menu"></div>
       </div>
       <div class="header-side header-right">
-        <button class="topbar-action-btn" id="search-toggle" onclick="activateSearch()" aria-label="Search">
-          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <button class="topbar-action-btn" id="search-toggle" onclick="onSearchToggleClick()" aria-label="Search">
+          <svg class="search-toggle-icon icon-search" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <svg class="search-toggle-icon icon-back" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
         </button>
         <button class="topbar-action-btn hidden" id="btn-iptv-refresh" onclick="refreshIPTVSource()" aria-label="Refresh">
           <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.3-2.7L20 9"/><path d="M17.9 15a7 7 0 0 1-11.3 2.7L4 15"/></svg>
         </button>
         <button class="topbar-action-btn hidden" id="btn-exit" onclick="openExitConfirm()" aria-label="End playback">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </button>
+        <button class="topbar-action-btn hidden" id="btn-website-close" onclick="websiteClose()" aria-label="Close" title="Close">
           <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
             <polyline points="16 17 21 12 16 7"/>
@@ -59,7 +67,7 @@
                oninput="onSearchInput(getSearchValue())"
                onfocus="enterSearchMode()"
                onkeydown="onSearchKeydown(event)"></div>
-          <button class="search-cancel" id="search-cancel" onclick="cancelSearch()" aria-label="Cancel search">
+          <button class="search-clear hidden" id="search-clear" onclick="clearSearchText()" aria-label="Clear search text">
             <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></svg>
           </button>
         </div>
@@ -88,9 +96,9 @@
           <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/>
           <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>
         </svg>
-        <div class="library-empty-title" data-i18n="noMediaSourceYet">No media source yet</div>
+        <div class="library-empty-title" data-i18n="noMediaSourceYet">No Media Source yet</div>
         <div class="library-empty-hint" data-i18n="noMediaSourceHint">Add an Emby, Jellyfin, Plex, network folder, or IPTV playlist to start browsing your library</div>
-        <button class="library-empty-btn" onclick="openSourceTypePicker()" data-i18n="addMediaSource">Add media source</button>
+        <button class="library-empty-btn" onclick="openSourceTypePicker()" data-i18n="addMediaSource">Add Media Source</button>
       </div>
 
       <!-- Home view -->
@@ -147,12 +155,102 @@
         <div class="iptv-channel-list" id="iptv-channel-list"></div>
       </div>
 
+      <!-- Website workspace: fixed allowlisted catalog (no free-form URL) -->
+      <div id="lib-website-view" class="hidden">
+        <div class="website-catalog-head">
+          <h2 class="section-title-h" data-i18n="websiteLibrary">Website Library</h2>
+          <p class="website-catalog-hint" data-i18n="websiteCatalogHint">Tap a site to open it on TV, then control it from Remote.</p>
+        </div>
+        <div class="website-catalog" id="website-catalog"></div>
+      </div>
+
     </div>
 
     <!-- Remote tab -->
     <div class="main-panel" id="tab-remote">
 
       <div class="remote-shell">
+
+        <!-- Website workspace panel (shown when phone workspace is Website) -->
+        <div class="website-remote hidden" id="website-remote">
+          <!-- Empty: native window not actually open -->
+          <div class="remote-empty" id="website-remote-empty">
+            <svg class="remote-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"/>
+              <path d="M3 12h18"/>
+              <path d="M12 3a14 14 0 0 1 0 18"/>
+              <path d="M12 3a14 14 0 0 0 0 18"/>
+            </svg>
+            <div class="remote-empty-title" data-i18n="websiteRemoteEmptyTitle">No website open</div>
+            <div class="remote-empty-hint" data-i18n="websiteRemoteEmptyHint">Open a site from the Website Library first</div>
+            <button class="remote-empty-btn" data-i18n="websiteRemoteEmptyBtn" onclick="setWorkspace('website'); switchTab('library');">Go to Website Library</button>
+          </div>
+
+          <!-- Active remote controls when the singleton WebView is reported open -->
+          <div class="website-remote-active hidden" id="website-remote-active">
+            <!-- 常用 -->
+            <div class="website-section">
+              <div class="website-section-title" data-i18n="websitePrimaryTitle">Playback</div>
+              <div class="website-row website-row-play">
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteSeekBack"
+                        onclick="websiteAction('seek', {text:'-10'})">Rewind</button>
+                <button type="button" class="website-btn website-btn-primary website-control-action" data-i18n="websitePlayPause"
+                        onclick="websiteAction('play_pause')">Play/Pause</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteSeekForward"
+                        onclick="websiteAction('seek', {text:'10'})">Forward</button>
+              </div>
+            </div>
+
+            <!-- 倍速 -->
+            <div class="website-section">
+              <div class="website-section-title" data-i18n="websiteSpeedSection">Speed</div>
+              <div class="website-row website-row-4">
+                <button type="button" class="website-btn website-control-action" onclick="websiteAction('speed', {text:'1'})">1.0x</button>
+                <button type="button" class="website-btn website-control-action" onclick="websiteAction('speed', {text:'1.25'})">1.25x</button>
+                <button type="button" class="website-btn website-control-action" onclick="websiteAction('speed', {text:'1.5'})">1.5x</button>
+                <button type="button" class="website-btn website-control-action" onclick="websiteAction('speed', {text:'2'})">2.0x</button>
+              </div>
+            </div>
+
+            <!-- 页面控制 -->
+            <div class="website-section">
+              <div class="website-section-title" data-i18n="websitePageSection">Page</div>
+              <div class="website-row website-row-2">
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteFullscreenEnter"
+                        onclick="websiteAction('fullscreen_enter')">Enter Fullscreen</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteFullscreenExit"
+                        onclick="websiteAction('fullscreen_exit')">Exit Fullscreen</button>
+              </div>
+              <div class="website-row website-row-2">
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteScrollUp" onclick="websiteAction('scroll_up')">Scroll Up</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteScrollDown" onclick="websiteAction('scroll_down')">Scroll Down</button>
+              </div>
+              <div class="website-row website-row-1">
+                <button type="button" class="website-btn website-btn-accent website-control-action" id="website-btn-hint-enter"
+                        data-i18n="websiteClickPage" onclick="openWebsiteHintSheet()">Select page element</button>
+              </div>
+            </div>
+
+            <!-- 其他 -->
+            <div class="website-section">
+              <div class="website-section-title" data-i18n="websiteOtherSection">More</div>
+              <div class="website-row website-row-3">
+                <button type="button" class="website-btn website-control-action" id="website-btn-home" data-i18n="websiteHome" onclick="websiteAction('home')">Home</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteBack" onclick="websiteAction('back')">Back</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteForward" onclick="websiteAction('forward')">Forward</button>
+              </div>
+              <div class="website-row website-row-3">
+                <button type="button" class="website-btn website-control-action" id="website-btn-login" data-i18n="websiteLogin" onclick="websiteAction('login')">Login</button>
+                <button type="button" class="website-btn website-btn-primary website-control-action" data-i18n="websiteSearch"
+                        onclick="openWebsiteSearchSheet()">Search</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteRefresh" onclick="websiteAction('refresh')">Refresh</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Server (mpv) mode: existing remote UI -->
+        <div id="remote-server-panel">
 
         <!-- Empty state -->
         <div class="remote-empty" id="remote-empty">
@@ -163,6 +261,8 @@
           <div class="remote-empty-title">Nothing playing</div>
           <div class="remote-empty-hint">Choose something from the library to jump here automatically</div>
           <button class="remote-empty-btn" onclick="switchTab('library')">Go to library</button>
+          <button class="playback-issue-link remote-empty-debug hidden" id="last-playback-debug-btn"
+                  onclick="openPlaybackDebugSheet()">Last playback report</button>
         </div>
 
         <!-- Now playing card -->
@@ -170,7 +270,7 @@
           <div class="now-playing-content">
             <div class="poster-nav-wrap">
               <div class="remote-poster-card" id="remote-poster-card">
-                <img id="remote-poster-img" alt="" loading="lazy" onerror="markPosterMissing(this)">
+                <img id="remote-poster-img" alt="" loading="lazy" onload="showPoster(this)" onerror="retryPoster(this)">
                 <div class="remote-poster-fallback">TV</div>
               </div>
             </div>
@@ -221,9 +321,12 @@
               <div class="progress-times">
                 <div class="progress-times-left">
                   <span id="time-current">--:--</span>
-                  <span class="progress-health-inline" id="health-cache-speed"></span>
+                  <span class="progress-health-inline" id="health-cache-duration"></span>
                 </div>
-                <span id="time-total">--:--</span>
+                <div class="progress-times-right">
+                  <span class="progress-health-inline" id="health-download-speed"></span>
+                  <span id="time-total">--:--</span>
+                </div>
               </div>
             </div>
             <div class="health-row">
@@ -321,6 +424,8 @@
 
         </div>
 
+        </div><!-- /remote-server-panel -->
+
       </div>
     </div>
 
@@ -328,7 +433,7 @@
     <div class="sheet-backdrop hidden" id="playback-debug-backdrop" onclick="onPlaybackDebugBackdropClick(event)">
       <section class="video-sheet playback-debug-sheet" role="dialog" aria-modal="true" aria-labelledby="playback-debug-title">
         <div class="sheet-handle"></div>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="playback-debug-title" data-i18n="playbackDebugTitle">Playback debug report</h3>
           <p class="playback-debug-sub" id="playback-debug-subtitle" data-i18n="playbackDebugSubtitle">Copy playback details and recent logs to help diagnose the issue.</p>
         </div>
@@ -337,11 +442,10 @@
             <strong id="playback-debug-guide-title" data-i18n="playbackDebugGuideTitle">How to report an issue</strong>
             <ol>
               <li id="playback-debug-step-copy" data-i18n="playbackDebugStepCopy">Select "Copy debug report" below.</li>
-              <li id="playback-debug-step-describe" data-i18n="playbackDebugStepDescribe">Email tinyday.app@gmail.com describing what happened, when it occurred, and the steps that led to it.</li>
+              <li><span data-i18n="playbackDebugStepDescribePrefix">Email </span><a href="mailto:tinyday.app@gmail.com">tinyday.app@gmail.com</a><span data-i18n="playbackDebugStepDescribeSuffix"> describing what happened, when it occurred, and the steps that led to it.</span></li>
               <li id="playback-debug-step-paste" data-i18n="playbackDebugStepPaste">Paste the copied report at the end of the email.</li>
             </ol>
           </div>
-          <p class="playback-debug-privacy" id="playback-debug-privacy" data-i18n="playbackDebugPrivacy">Request headers and URL credentials are redacted.</p>
           <pre class="playback-debug-preview" id="playback-debug-preview" data-i18n="playbackDebugLoading">Generating debug report...</pre>
           <div class="playback-debug-actions">
             <span class="playback-debug-status" id="playback-debug-status" role="status" aria-live="polite"></span>
@@ -357,10 +461,8 @@
     <div class="sheet-backdrop hidden" id="engine-backdrop" onclick="onEngineBackdropClick(event)">
       <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="engine-sheet-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeEngineSheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="engine-sheet-title" data-i18n="engineSheetTitleMpv">Player</h3>
-          <p class="engine-sheet-sub" data-i18n="engineSheetSubMpv">TinyPlay desktop uses MPV as its playback engine.</p>
         </div>
         <div class="engine-option-list" id="engine-option-list">
           <button class="engine-option-row engine-option-locked" disabled>
@@ -369,7 +471,6 @@
               <span class="engine-opt-check">✓</span>
             </div>
             <p class="engine-opt-desc" data-i18n="mpvEngineDesc">MPV is a mature general-purpose playback engine with broad support for containers, codecs, subtitles, and network streams.</p>
-            <p class="engine-opt-status" data-i18n="mpvEngineStatus">Desktop playback uses MPV exclusively.</p>
           </button>
         </div>
         <div class="engine-support-section">
@@ -389,17 +490,6 @@
       <div class="settings-page">
         <section class="settings-card">
           <div class="settings-card-head">
-            <h2>Language</h2>
-            <p>The page reloads after switching so all labels update.</p>
-          </div>
-          <div class="segmented-control" id="language-segments">
-            <button class="segment-btn" data-lang="zh-CN" onclick="setAppLanguage('zh-CN')">Chinese</button>
-            <button class="segment-btn" data-lang="en" onclick="setAppLanguage('en')">English</button>
-          </div>
-        </section>
-
-        <section class="settings-card">
-          <div class="settings-card-head">
             <h2 data-i18n="seekSettings">Seek time</h2>
             <p data-i18n="seekSettingsHint">Applies to both the phone remote buttons and the Apple TV Siri Remote.</p>
           </div>
@@ -415,27 +505,20 @@
               </select>
             </div>
           </div>
-          <div class="settings-status" id="seek-settings-status"></div>
         </section>
 
         <section class="settings-card">
           <div class="settings-card-head">
             <h2>Playback cache</h2>
-            <p>Use 30 minutes for unstable servers. Changes apply on the next play or episode switch.</p>
+            <p>Used for on-demand playback. IPTV uses a separate short live buffer; direct local folders use the OS cache.</p>
           </div>
-          <label class="setting-label" for="cache-minutes-input">Cache duration</label>
-          <div class="cache-preset-row" id="cache-preset-row">
-            <button class="cache-preset-btn" data-minutes="5" onclick="setCacheMinutes(5)">5</button>
-            <button class="cache-preset-btn" data-minutes="15" onclick="setCacheMinutes(15)">15</button>
-            <button class="cache-preset-btn" data-minutes="30" onclick="setCacheMinutes(30)">30</button>
-            <button class="cache-preset-btn" data-minutes="60" onclick="setCacheMinutes(60)">60</button>
-          </div>
-          <div class="cache-custom-row">
-            <input type="number" id="cache-minutes-input" min="1" max="120" step="1" inputmode="numeric" value="5" oninput="onCacheMinutesInput()">
-            <span id="cache-minutes-unit">minutes</span>
-          </div>
-          <p class="settings-hint-sm" id="cache-minutes-range-hint">1-120 minutes</p>
-          <div class="settings-status" id="settings-status"></div>
+          <label class="setting-label" for="cache-duration-select">Cache duration</label>
+          <select class="form-select" id="cache-duration-select" onchange="onCacheDurationChange()">
+            <option value="300">5 minutes</option>
+            <option value="900">15 minutes</option>
+            <option value="1800">30 minutes</option>
+            <option value="3600">60 minutes</option>
+          </select>
         </section>
 
         <section class="settings-card">
@@ -443,11 +526,41 @@
             <h2 id="dlna-receiver-title"></h2>
             <p id="dlna-receiver-hint"></p>
           </div>
-          <label class="seek-setting-item" for="dlna-receiver-toggle">
-            <input type="checkbox" id="dlna-receiver-toggle" onchange="toggleDLNAReceiver()">
-            <span id="dlna-receiver-status"></span>
-          </label>
-          <div class="settings-status" id="dlna-receiver-settings-status"></div>
+          <div class="segmented-control" id="dlna-receiver-segments">
+            <button class="segment-btn" data-dlna="on" onclick="setDLNAReceiverEnabled(true)" id="dlna-receiver-on-btn"></button>
+            <button class="segment-btn" data-dlna="off" onclick="setDLNAReceiverEnabled(false)" id="dlna-receiver-off-btn"></button>
+          </div>
+          <p class="dlna-receiver-status hidden" id="dlna-receiver-status" role="alert"></p>
+        </section>
+
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2 id="autoplay-next-episode-title"></h2>
+            <p id="autoplay-next-episode-hint"></p>
+          </div>
+          <div class="segmented-control" id="autoplay-next-episode-segments">
+            <button class="segment-btn" onclick="setAutoplayNextEpisode(true)" id="autoplay-next-episode-on-btn"></button>
+            <button class="segment-btn" onclick="setAutoplayNextEpisode(false)" id="autoplay-next-episode-off-btn"></button>
+          </div>
+        </section>
+
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2 data-i18n="language">Language</h2>
+            <p data-i18n="languageHint">The page reloads after switching so all labels update.</p>
+          </div>
+          <label class="setting-label" for="language-select" data-i18n="language">Language</label>
+          <select id="language-select" class="form-select">
+            <option value="auto">Automatic</option>
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+            <option value="zh-TW">繁體中文</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+          </select>
         </section>
       </div>
     </div>
@@ -456,7 +569,6 @@
     <div class="sheet-backdrop hidden" id="video-sheet-backdrop" onclick="onSheetBackdropClick(event)">
       <section class="video-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeVideoSheet()" aria-label="Close">×</button>
         <div id="video-sheet-content"></div>
       </section>
     </div>
@@ -465,7 +577,6 @@
     <div class="sheet-backdrop hidden" id="playback-info-backdrop" onclick="onPlaybackInfoBackdropClick(event)">
       <section class="video-sheet playback-info-sheet" role="dialog" aria-modal="true" aria-labelledby="playback-info-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closePlaybackInfoSheet()" aria-label="Close">×</button>
         <div id="playback-info-content"></div>
       </section>
     </div>
@@ -474,8 +585,7 @@
     <div class="sheet-backdrop hidden" id="sub-tracks-backdrop" onclick="onSubTracksBackdropClick(event)">
       <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="sub-tracks-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeSubTracksSheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="sub-tracks-title">Subtitles</h3>
         </div>
         <div class="track-pills sheet-track-pills" id="sub-track-list"></div>
@@ -496,8 +606,7 @@
     <div class="sheet-backdrop hidden" id="audio-tracks-backdrop" onclick="onAudioTracksBackdropClick(event)">
       <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="audio-tracks-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeAudioTracksSheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="audio-tracks-title">Audio</h3>
         </div>
         <div class="track-pills sheet-track-pills" id="audio-track-list"></div>
@@ -518,8 +627,7 @@
     <div class="sheet-backdrop hidden" id="speed-backdrop" onclick="onSpeedBackdropClick(event)">
       <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="speed-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeSpeedSheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="speed-title">Speed</h3>
         </div>
         <div class="speed-list" id="speed-list">
@@ -536,12 +644,66 @@
       </section>
     </div>
 
+    <!-- Website search sheet -->
+    <div class="sheet-backdrop hidden" id="website-search-backdrop" onclick="onWebsiteSearchBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="website-search-title">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3 id="website-search-title" data-i18n="websiteSearchSection">Search</h3>
+        </div>
+        <div class="website-sheet-body">
+          <div class="website-sheet-row">
+            <input type="search" class="website-sheet-input" id="website-search-input"
+                   data-i18n-placeholder="websiteSearchPlaceholder" placeholder="Search…"
+                   enterkeyhint="search" autocomplete="off" autocapitalize="none" spellcheck="false"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();websiteSearch();}">
+            <button type="button" class="website-btn website-btn-primary website-sheet-go" data-i18n="websiteSearch"
+                    onclick="websiteSearch()">Search</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Website select-page-element sheet -->
+    <div class="sheet-backdrop hidden" id="website-hint-backdrop" onclick="onWebsiteHintBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="website-hint-title">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3 id="website-hint-title" data-i18n="websiteClickModeTitle">Select page element</h3>
+        </div>
+        <div class="website-sheet-body">
+          <p class="website-hint-help" data-i18n="websiteClickModeHelp">
+            Labels mark clickable items on the TV. Tap two keypad keys to select.
+          </p>
+          <div class="website-hint-pending" id="website-hint-pending" aria-live="polite">
+            <span class="website-hint-pending-slot" id="website-hint-pending-slot">·</span>
+            <span class="website-hint-pending-slot website-hint-pending-second">·</span>
+          </div>
+          <div class="website-hint-keypad" id="website-hint-keypad" role="group" aria-labelledby="website-hint-title">
+            <button type="button" class="website-hint-key" data-hint-key="A" onclick="websiteHintKey('A')">A</button>
+            <button type="button" class="website-hint-key" data-hint-key="1" onclick="websiteHintKey('1')">1</button>
+            <button type="button" class="website-hint-key" data-hint-key="2" onclick="websiteHintKey('2')">2</button>
+            <button type="button" class="website-hint-key" data-hint-key="3" onclick="websiteHintKey('3')">3</button>
+            <button type="button" class="website-hint-key" data-hint-key="X" onclick="websiteHintKey('X')">X</button>
+            <button type="button" class="website-hint-key" data-hint-key="4" onclick="websiteHintKey('4')">4</button>
+            <button type="button" class="website-hint-key" data-hint-key="5" onclick="websiteHintKey('5')">5</button>
+            <button type="button" class="website-hint-key" data-hint-key="6" onclick="websiteHintKey('6')">6</button>
+            <button type="button" class="website-hint-key" data-hint-key="Y" onclick="websiteHintKey('Y')">Y</button>
+            <button type="button" class="website-hint-key" data-hint-key="7" onclick="websiteHintKey('7')">7</button>
+            <button type="button" class="website-hint-key" data-hint-key="8" onclick="websiteHintKey('8')">8</button>
+            <button type="button" class="website-hint-key" data-hint-key="9" onclick="websiteHintKey('9')">9</button>
+          </div>
+          <button type="button" class="website-btn website-hint-clear" id="website-hint-clear"
+                  data-i18n="websiteHintClear" onclick="websiteHintClear()">Clear</button>
+        </div>
+      </section>
+    </div>
+
     <!-- IPTV quality/variant switcher sheet -->
     <div class="sheet-backdrop hidden" id="iptv-quality-backdrop" onclick="onIPTVQualityBackdropClick(event)">
       <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="iptv-quality-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeIPTVQualitySheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="iptv-quality-title">Quality</h3>
         </div>
         <div class="track-pills sheet-track-pills" id="iptv-quality-list"></div>
@@ -552,8 +714,7 @@
     <div class="sheet-backdrop hidden" id="iptv-programme-backdrop" onclick="onIPTVProgrammeBackdropClick(event)">
       <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="iptv-programme-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeIPTVProgrammeSheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="iptv-programme-title">Programme guide</h3>
         </div>
         <div id="iptv-programme-list"></div>
@@ -564,8 +725,7 @@
     <div class="sheet-backdrop hidden" id="aspect-backdrop" onclick="onAspectBackdropClick(event)">
       <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="aspect-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeAspectSheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="aspect-title">Aspect</h3>
         </div>
         <div class="speed-list" id="aspect-list"></div>
@@ -576,8 +736,7 @@
     <div class="sheet-backdrop hidden" id="more-backdrop" onclick="onMoreBackdropClick(event)">
       <section class="video-sheet more-sheet" role="dialog" aria-modal="true" aria-labelledby="more-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeMoreSheet()" aria-label="Close">×</button>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="more-title">More</h3>
         </div>
         <div class="more-actions-grid">
@@ -605,11 +764,10 @@
     <div class="sheet-backdrop hidden" id="library-picker-backdrop" onclick="onLibraryPickerBackdropClick(event)">
       <section class="video-sheet library-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="library-picker-title">
         <div class="sheet-handle"></div>
-        <button class="sheet-close" onclick="closeLibraryPicker()" aria-label="Close">×</button>
-        <div class="library-picker-head">
+        <div class="sheet-header library-picker-head">
           <div>
             <div class="sheet-subtitle">Library</div>
-            <h2 class="sheet-title" id="library-picker-title">Choose category</h2>
+            <h3 id="library-picker-title">Choose category</h3>
           </div>
         </div>
         <div class="library-picker-list" id="library-picker-list"></div>
@@ -620,8 +778,8 @@
     <div class="sheet-backdrop hidden" id="server-manager-backdrop" onclick="onServerManagerBackdropClick(event)">
       <section class="video-sheet server-manager-sheet" role="dialog" aria-modal="true" aria-labelledby="server-manager-title">
         <div class="sheet-handle"></div>
-        <div class="settings-section-header">
-          <h3 id="server-manager-title">Sources</h3>
+        <div class="sheet-header sheet-header-actions">
+          <h3 id="server-manager-title">Media Sources</h3>
           <button class="btn-add" onclick="openSourceTypePicker()">+ Add</button>
         </div>
         <div id="server-list"></div>
@@ -642,7 +800,7 @@
     <div class="sheet-backdrop hidden" id="source-type-backdrop" onclick="onSourceTypeBackdropClick(event)">
       <section class="video-sheet source-type-sheet" role="dialog" aria-modal="true" aria-labelledby="source-type-title">
         <div class="sheet-handle"></div>
-        <div class="media-select-head">
+        <div class="sheet-header">
           <h3 id="source-type-title">What are you adding?</h3>
           <p class="engine-sheet-sub">Choose the media source type</p>
         </div>
@@ -687,67 +845,36 @@
     <div class="sheet-backdrop hidden" id="server-form-backdrop" onclick="onServerFormBackdropClick(event)">
       <section class="video-sheet server-form-sheet" role="dialog" aria-modal="true" aria-labelledby="server-form-title">
         <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3 id="server-form-title">Add Media Source</h3>
+        </div>
         <div class="server-form-content" id="server-form">
-          <h4 id="server-form-title">Add server</h4>
           <input type="hidden" id="form-server-id">
           <input type="hidden" id="form-type" value="emby">
-          <div class="form-row">
-            <label>Type</label>
-            <div class="source-type-readonly" id="form-type-label">Emby</div>
-          </div>
-          <div class="form-row">
-            <label>Name <span class="optional">Auto-generated if blank</span></label>
-            <input type="text" id="form-name" placeholder="Home NAS">
-          </div>
-          <div class="form-row" id="form-protocol-row">
-            <label>Protocol</label>
-            <div class="radio-group">
-              <label><input type="radio" name="proto" value="http" checked onchange="onSourceProtocolChange()"> http</label>
-              <label><input type="radio" name="proto" value="https" onchange="onSourceProtocolChange()"> https</label>
-            </div>
-          </div>
+          <input type="hidden" id="form-root-path">
           <div class="form-row" id="form-host0-row">
-            <label>Address 1 <span class="required">*</span></label>
+            <div class="form-row-header">
+              <label>Address 1 <span class="required">*</span></label>
+              <button type="button" class="btn-ghost" id="form-add-backup-btn" onclick="revealBackupAddresses()">Add backup address</button>
+            </div>
             <input type="text" id="form-host0" placeholder="192.168.1.100 or emby.example.com">
           </div>
-          <div class="form-row" id="form-port-row">
-            <label>Port</label>
-            <input type="number" id="form-port" value="8096" min="1" max="65535">
-          </div>
-          <details class="advanced-options" id="form-advanced-options">
-            <summary>Advanced options</summary>
-            <div class="advanced-body">
-              <div class="advanced-hint">Add up to two backup addresses</div>
-              <div class="form-row">
-                <label>Address 2 <span class="optional">Backup</span></label>
-                <input type="text" id="form-host1" placeholder="10.0.0.1 (optional)">
-              </div>
-              <div class="form-row">
-                <label>Address 3 <span class="optional">Backup</span></label>
-                <input type="text" id="form-host2" placeholder="emby.lan (optional)">
-              </div>
+          <div class="backup-addresses hidden" id="form-backup-addresses">
+            <div class="form-row">
+              <label>Address 2 <span class="optional">Backup</span></label>
+              <input type="text" id="form-host1" placeholder="10.0.0.1 (optional)">
             </div>
-          </details>
+            <div class="form-row">
+              <label>Address 3 <span class="optional">Backup</span></label>
+              <input type="text" id="form-host2" placeholder="emby.lan (optional)">
+            </div>
+          </div>
           <div class="form-row hidden" id="form-share-row">
             <label>Share <span class="required">*</span></label>
             <input type="text" id="form-share" placeholder="Media">
           </div>
-          <input type="hidden" id="form-root-path">
-          <div class="form-row hidden" id="form-domain-row">
-            <label>Domain <span class="optional">Optional</span></label>
-            <input type="text" id="form-domain" placeholder="WORKGROUP">
-          </div>
           <div class="form-row hidden" id="form-local-hint-row">
             <p class="form-hint" id="form-local-hint"></p>
-          </div>
-          <!-- Plex token: not part of Apple TV's form (typing a token via Siri
-               Remote isn't worth it there), but pasting one to skip Plex
-               account sign-in is a real, working shortcut on the phone
-               keyboard — kept rather than silently dropped. -->
-          <div class="form-row hidden" id="form-row-token">
-            <label>Plex Token <span class="optional">Optional</span></label>
-            <input type="text" id="form-token" placeholder="xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
-            <div class="form-hint" id="form-token-hint"></div>
           </div>
           <div class="form-row hidden" id="form-iptv-playlist-row">
             <label>Playlist URL <span class="required">*</span></label>
@@ -772,7 +899,34 @@
               </div>
             </div>
           </div>
-          <div class="form-status" id="form-status"></div>
+          <!-- Plex token: an alternative to username/password sign-in — pasting
+               one skips Plex account login entirely, so it lives right after
+               the credentials it substitutes for. -->
+          <div class="form-row hidden" id="form-row-token">
+            <label>Plex Token <span class="optional">Optional</span></label>
+            <input type="text" id="form-token" placeholder="xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+            <div class="form-hint" id="form-token-hint"></div>
+          </div>
+          <div class="form-row">
+            <label>Name <span class="optional">Auto-generated if blank</span></label>
+            <input type="text" id="form-name" placeholder="Home NAS">
+          </div>
+          <div class="form-row" id="form-port-row">
+            <label>Port</label>
+            <input type="number" id="form-port" value="8096" min="1" max="65535">
+          </div>
+          <div class="form-row hidden" id="form-domain-row">
+            <label>Domain <span class="optional">Optional</span></label>
+            <input type="text" id="form-domain" placeholder="WORKGROUP">
+          </div>
+          <div class="form-row" id="form-protocol-row">
+            <label>Protocol</label>
+            <div class="radio-group">
+              <label><input type="radio" name="proto" value="http" checked onchange="onSourceProtocolChange()"> http</label>
+              <label><input type="radio" name="proto" value="https" onchange="onSourceProtocolChange()"> https</label>
+            </div>
+          </div>
+          <div class="form-status" id="form-status" role="status" aria-live="polite"></div>
           <div class="form-actions">
             <button class="btn-secondary" onclick="closeServerForm()">Cancel</button>
             <button class="btn-primary" id="form-save-btn" onclick="saveAndLogin()">Save and sign in</button>
@@ -785,8 +939,14 @@
     <div class="sheet-backdrop hidden" id="folder-picker-backdrop" onclick="onFolderPickerBackdropClick(event)">
       <section class="video-sheet folder-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
         <div class="sheet-handle"></div>
-        <h4 id="folder-picker-title">Choose import folder</h4>
+        <div class="sheet-header">
+          <h3 id="folder-picker-title">Choose import folder</h3>
+        </div>
         <p class="folder-picker-hint" id="folder-picker-hint"></p>
+        <div class="folder-picker-name hidden" id="folder-picker-name-row">
+          <label for="folder-picker-name">Name <span class="optional">Auto-generated if blank</span></label>
+          <input type="text" id="folder-picker-name" placeholder="My folder">
+        </div>
         <nav class="folder-picker-breadcrumb" id="folder-picker-breadcrumb"></nav>
         <div class="folder-picker-list" id="folder-picker-list"></div>
         <div class="folder-picker-actions">
@@ -805,7 +965,7 @@
           <rect x="3" y="14" width="7" height="7" rx="1.5"/>
           <rect x="14" y="14" width="7" height="7" rx="1.5"/>
         </svg>
-        <span class="nav-label">Library</span>
+        <span class="nav-label" id="nav-library-label" data-i18n="library">Library</span>
       </button>
       <button class="nav-tab" id="nav-remote" onclick="switchTab('remote')" aria-label="Remote">
         <span class="nav-dot hidden" id="nav-remote-dot"></span>
@@ -816,14 +976,14 @@
           <circle cx="9.8" cy="17" r=".7" fill="currentColor" stroke="none"/>
           <circle cx="14.2" cy="17" r=".7" fill="currentColor" stroke="none"/>
         </svg>
-        <span class="nav-label">Remote</span>
+        <span class="nav-label" data-i18n="remote">Remote</span>
       </button>
       <button class="nav-tab" id="nav-settings" onclick="switchTab('settings')" aria-label="Settings">
         <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/>
           <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.15 2.15 0 1 1-3.04 3.04l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65V21.4a2.15 2.15 0 1 1-4.3 0v-.09a1.8 1.8 0 0 0-1.08-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2.15 2.15 0 1 1-3.04-3.04l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.08h-.09a2.15 2.15 0 1 1 0-4.3h.09A1.8 1.8 0 0 0 4.6 8.54a1.8 1.8 0 0 0-.36-1.98l-.04-.04a2.15 2.15 0 1 1 3.04-3.04l.04.04a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.34 2.2v-.09a2.15 2.15 0 1 1 4.3 0v.09a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.15 2.15 0 1 1 3.04 3.04l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.08h.09a2.15 2.15 0 1 1 0 4.3h-.09A1.8 1.8 0 0 0 19.4 15Z"/>
         </svg>
-        <span class="nav-label">Settings</span>
+        <span class="nav-label" data-i18n="settings">Settings</span>
       </button>
     </nav>
 
@@ -835,6 +995,17 @@
         <div class="confirm-actions">
           <button class="confirm-cancel-btn" onclick="closeExitConfirm()">Cancel</button>
           <button class="confirm-ok-btn" onclick="confirmExit()">Stop playback</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="confirm-overlay hidden" id="autoplay-countdown-overlay">
+      <div class="confirm-dialog">
+        <div class="confirm-title" id="autoplay-countdown-title"></div>
+        <div class="confirm-body" id="autoplay-countdown-episode"></div>
+        <div class="confirm-actions">
+          <button class="confirm-cancel-btn" onclick="cancelAutoplayNext()"></button>
+          <button class="confirm-ok-btn" id="autoplay-play-now-btn" onclick="_confirmAutoplayNext()"></button>
         </div>
       </div>
     </div>

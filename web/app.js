@@ -23,6 +23,9 @@ let browseHasMore = false;
 let libraryItems = [{ Id: '', Name: tr('all'), CollectionType: '' }];
 let currentLibraryName = tr('all');
 let libraryLoadError = '';
+// Kept separately from `_homeLibraries`: an empty array is valid only after a
+// successful response, while it is also the natural value during loading/error.
+let libraryNavState = 'idle'; // 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 let libraryLoadSeq = 0;
 let browseLoadSeq = 0;
 
@@ -38,6 +41,7 @@ let _lastSearchQuery = '';
 
 const EPISODE_PAGE_SIZE = 50;
 let sheetSeriesId = '';
+let sheetServerId = '';
 let _sheetPlayableItem = null;
 let _sheetMediaSourceId = '';
 let _locateEpisode = null;  // { id, num } to scroll to when opening a series sheet
@@ -58,6 +62,13 @@ let _progressPointerId = null;
 let _pendingSeekTarget = null; // { seconds, percent, expiry } – suppress poll resets after a seek
 let _latestProps = {};
 let _hadProps = false;  // true once we've received at least one non-empty prop update
+// A props snapshot fetched before the newest play request describes the previous
+// session, so it can arrive empty while this page already owns the new item —
+// which reads exactly like "mpv exited". Both counters exist to reject that:
+// the sequence discards a reply that predates the newest play, the in-flight
+// count covers the window where the play request has not reached mpv yet.
+let _playRequestSeq = 0;
+let _playRequestsInFlight = 0;
 let _playbackInfoOpen = false;
 let _subTracksOpen = false;
 let _audioTracksOpen = false;
@@ -66,13 +77,22 @@ let _moreSheetOpen = false;
 let _aspectSheetOpen = false;
 let _currentAspect = 'fit';
 let _loopFile = false;
-let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true };
+let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true, mpv_available: true, language: 'auto', autoplay_next_episode: true };
+// Display-only countdown: the Go host owns the 5s timer and next-episode
+// transition. These locals only mirror autoplay_remaining_ms from player state.
+let _autoplayCountdownTimer = null;
+let _autoplayCountdownDeadline = 0;
+let _autoplayShowing = false;
+let _autoplayDismissed = false;
 // null = unknown/unrestricted (Python branch never sends this field, and it
 // implements every protocol); an array restricts the file-source dropdown to
 // what this backend can actually browse (see desktop-go's config.Settings()).
 let _supportedFileProtocols = null;
+let _platform = '';
 let _serviceOnline = true;
 let _serviceProbeInFlight = false;
+let _lastPlaybackDebugAvailable = false;
+let _lastPlaybackDebugScope = '';
 
 // Active source type drives whether the library tab shows the poster wall
 // (emby/jellyfin/plex) or the file browser (webdav/smb/local/nfs). Set by
@@ -80,7 +100,14 @@ let _serviceProbeInFlight = false;
 let _activeSourceType = 'emby';
 let _activeServerId = '';
 let _playbackServerId = '';
+let _lastPlaybackRevision = -1;
+let _knownServers = [];
+// localStorage is scoped by origin, so this is per phone/browser rather than
+// the desktop process's legacy active_server_id.
+const _browseSourceStorageKey = 'tinyplay.browse.source_id';
 let _serverSwitchSeq = 0;
+let _serverListRefreshSeq = 0;
+const _serverDeleteInFlight = new Set();
 const _serverSwitchSession = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 let _libraryGeneration = 0;
 let _libraryAbortController = new AbortController();
@@ -88,17 +115,21 @@ let _libraryAbortController = new AbortController();
 // starts true so the search icon isn't hidden for a flash before the first load.
 let _hasAnyServer = true;
 let _filesPath = '';            // current folder path in file mode
+let _fileLoadSeq = 0;
 
 /* ── IPTV state ───────────────────────────────────────────────────────────── */
 let _iptvCategory = 'all';
 let _iptvSearch = '';
 let _iptvChannels = [];         // last-loaded channel rows for the active category/search
+let _iptvLoadSeq = 0;
 let currentItemIsLive = false;  // true while an IPTV channel is the now-playing item
 let currentPlaybackSourceType = 'emby';
 let currentIPTVChannelId = '';
 let currentIPTVVariantIndex = 0;
 let currentIPTVVariantCount = 0;
 let currentIPTVHasProgramme = false;
+let currentIPTVCanCatchup = false;
+let currentIPTVIsCatchup = false;
 let _iptvQualityOpen = false;
 let _iptvProgrammeOpen = false;
 let _iptvResumeWatchdog = null;
@@ -121,26 +152,435 @@ function detectPlatformAndPatchI18n() {
 }
 
 function patchServiceOfflineForDesktop() {
-  const zh = window.I18N?.t;
-  if (!zh) return;
-  // Override the key lookup so tr('serviceOfflineBody') returns desktop text.
+  if (!window.I18N?.t) return;
+  // Remap Apple TV offline copy to desktop-specific i18n keys.
   const origT = I18N.t;
   I18N.t = (key, params) => {
-    if (key === 'serviceOfflineTitle') {
-      return window.I18N.isZh() ? 'TinyPlay 服务不在线' : 'TinyPlay is offline';
-    }
-    if (key === 'serviceOfflineBody') {
-      return window.I18N.isZh()
-        ? '手机页面还在，但现在连不上桌面端服务。请确认 TinyPlay 正在运行。'
-        : 'The remote page is still here, but it cannot reach TinyPlay. Make sure TinyPlay is running on your computer.';
-    }
+    if (key === 'serviceOfflineTitle') return origT('serviceOfflineTitleDesktop', params);
+    if (key === 'serviceOfflineBody') return origT('serviceOfflineBodyDesktop', params);
     return origT(key, params);
   };
+}
+
+/* ── Website source (desktop experimental) ────────────────────────────────── */
+// Website is a phone-local virtual content source. It appears only in the
+// source dropdown, is never written to backend config, and therefore never
+// appears in source management. Backend owns native window open state + current
+// site id (derived from the real WebView URL, never from last request).
+const WORKSPACE_STORAGE_KEY = 'tvremote.workspace';
+// Workspace is intentionally NOT persisted: every load starts in 'media' so a
+// user who once opened the website source is never silently restored into it.
+// The website source is re-chosen from the source dropdown each session.
+let _workspace = 'media'; // 'media' | 'website' — session-only, not stored
+let _websiteEndpointOK = false; // Go desktop exposes /api/website/*
+let _websiteAvailable = false;  // endpoint OK + resolved language is zh-CN
+let _websiteState = null;
+let _websitePollTimer = null;
+let _websiteCatalog = [];
+
+const FALLBACK_WEBSITE_CATALOG = [
+  { id: 'bilibili', name: '哔哩哔哩', url: 'https://www.bilibili.com/' },
+  { id: 'iqiyi', name: '爱奇艺', url: 'https://www.iqiyi.com/' },
+  { id: 'tencent', name: '腾讯视频', url: 'https://v.qq.com/' },
+  { id: 'youku', name: '优酷', url: 'https://www.youku.com/' },
+];
+
+// Clear any workspace value persisted by older builds so users previously
+// stuck in the website workspace come back to media on their next load.
+function clearStoredWorkspace() {
+  try { localStorage.removeItem(WORKSPACE_STORAGE_KEY); } catch (_) {}
+}
+
+function isSimplifiedChineseWebsiteLanguage() {
+  const lang = window.I18N?.lang || '';
+  return lang === 'zh-CN';
+}
+
+function isWebsiteWorkspace() {
+  return _websiteAvailable && _workspace === 'website';
+}
+
+function applyWebsiteLanguageGate() {
+  // Until feature detection finishes, language alone is not enough to decide
+  // whether the virtual Website source should be exposed.
+  if (!_websiteEndpointOK) {
+    _websiteAvailable = false;
+    paintWorkspace();
+    return;
+  }
+  const nextAvailable = _websiteEndpointOK && isSimplifiedChineseWebsiteLanguage();
+  if (!nextAvailable && _workspace === 'website') {
+    _workspace = 'media';
+  }
+  _websiteAvailable = nextAvailable;
+  if (!_websiteAvailable && _workspace === 'website') {
+    _workspace = 'media';
+  }
+  paintWorkspace();
+}
+
+async function initWebsiteRemote() {
+  // Endpoint exists only on Go desktop; 404 on other backends is fine.
+  // Always begin in media; the workspace is not restored across loads.
+  _workspace = 'media';
+  clearStoredWorkspace();
+  try {
+    const st = await api('GET', '/api/website/state');
+    if (st && Array.isArray(st.catalog)) {
+      _websiteEndpointOK = true;
+      applyWebsiteState(st);
+      startWebsitePolling();
+      applyWebsiteLanguageGate();
+      return;
+    }
+  } catch (_) {}
+  _websiteEndpointOK = false;
+  _websiteAvailable = false;
+  _workspace = 'media';
+  paintWorkspace();
+}
+
+function startWebsitePolling() {
+  if (_websitePollTimer) return;
+  _websitePollTimer = setInterval(() => {
+    if (isWebsiteWorkspace()) {
+      refreshWebsiteState().catch(() => {});
+    }
+  }, 1500);
+}
+
+async function refreshWebsiteState() {
+  try {
+    const st = await api('GET', '/api/website/state');
+    if (st) applyWebsiteState(st);
+  } catch (_) {}
+}
+
+function applyWebsiteState(st) {
+  _websiteState = st;
+  if (Array.isArray(st.catalog) && st.catalog.length) {
+    _websiteCatalog = st.catalog;
+  }
+  maybeToastWebsiteError(st);
+  paintWebsiteCatalog();
+  paintWebsiteRemote();
+  paintHeaderActions();
+}
+
+// Controller results are asynchronous (shell report → next state poll), so
+// failures like no_player/effect_unconfirmed surface here, not from the action
+// POST. Toast once per new error; enqueue clears last_error, so consecutive
+// failures re-toast. null sentinel: never toast a stale error on first load.
+let _websiteErrorToastKey = null;
+function maybeToastWebsiteError(st) {
+  const err = st?.last_status === 'error' && st.last_error ? st.last_error : '';
+  const key = err ? `${st.last_action || ''}:${err}` : '';
+  if (key && _websiteErrorToastKey !== null && key !== _websiteErrorToastKey && isWebsiteWorkspace()) {
+    toast(websiteErrorMessage(err), true);
+  }
+  _websiteErrorToastKey = key;
+}
+
+function websiteErrorMessage(err) {
+  switch (err) {
+    case 'no_player':
+    case 'effect_unconfirmed':
+      // Honest degradation: this page doesn't expose a controllable player —
+      // point at the hint flow instead of failing silently.
+      return tr('websiteControlUnavailable');
+    default:
+      return tr('websiteActionFailed');
+  }
+}
+
+// Switch phone UI workspace only — never opens/closes website or stops mpv.
+function setWorkspace(ws) {
+  if (!_websiteAvailable && ws === 'website') return;
+  const next = ws === 'website' ? 'website' : 'media';
+  _workspace = next;
+  closeServerMenu();
+  paintWorkspace();
+  if (next === 'website') refreshWebsiteState().catch(() => {});
+}
+
+function paintWorkspace() {
+  const website = isWebsiteWorkspace();
+  // Website shares the same centered content-source switcher as every real
+  // source. Repaint its label and the active checkmark whenever modes change.
+  paintSourceSwitcher();
+
+  // Media-only topbar actions + website close.
+  paintHeaderActions();
+
+  // Library tab content swap.
+  document.getElementById('lib-website-view')?.classList.toggle('hidden', !website);
+  if (website) {
+    [
+      'lib-home-view', 'lib-grid-view', 'lib-search-view', 'lib-files-view',
+      'lib-iptv-view', 'lib-empty-state', 'lib-search-area', 'library-toolbar',
+    ].forEach((id) => document.getElementById(id)?.classList.add('hidden'));
+    paintWebsiteCatalog();
+  } else if (_activeTab === 'library') {
+    _setViewMode(_viewMode);
+    updateLibraryEmptyState(!_hasAnyServer);
+  }
+
+  // Remote tab: website controls vs mpv remote.
+  document.getElementById('remote-server-panel')?.classList.toggle('hidden', website);
+  document.getElementById('website-remote')?.classList.toggle('hidden', !website);
+
+  updateNavLabels();
+  paintWebsiteRemote();
+}
+
+function paintHeaderActions() {
+  const website = isWebsiteWorkspace();
+  const onLibrary = _activeTab === 'library';
+  const onRemote = _activeTab === 'remote';
+  const websiteClose = document.getElementById('btn-website-close');
+  if (website) {
+    document.getElementById('search-toggle')?.classList.add('hidden');
+    document.getElementById('btn-iptv-refresh')?.classList.add('hidden');
+    document.getElementById('btn-exit')?.classList.add('hidden');
+    // Close only when Website Remote has a reported-open window.
+    const showClose = onRemote && !!_websiteState?.reported_open;
+    websiteClose?.classList.toggle('hidden', !showClose);
+    if (websiteClose) {
+      websiteClose.setAttribute('aria-label', tr('websiteClose'));
+      websiteClose.setAttribute('title', tr('websiteClose'));
+    }
+    return;
+  }
+  websiteClose?.classList.add('hidden');
+  document.getElementById('search-toggle')?.classList.toggle(
+    'hidden',
+    !onLibrary || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv' || !_hasAnyServer
+  );
+  document.getElementById('btn-iptv-refresh')?.classList.toggle(
+    'hidden',
+    !onLibrary || _viewMode !== 'iptv'
+  );
+  document.getElementById('btn-exit')?.classList.toggle('hidden', !onRemote);
+}
+
+function updateNavLabels() {
+  const libLabel = document.getElementById('nav-library-label');
+  const libKey = isWebsiteWorkspace() ? 'websiteLibrary' : 'library';
+  if (libLabel) {
+    libLabel.setAttribute('data-i18n', libKey);
+    libLabel.textContent = tr(libKey);
+  }
+  const navLib = document.getElementById('nav-library');
+  if (navLib) navLib.setAttribute('aria-label', tr(libKey));
+}
+
+function websiteCatalogSites() {
+  return _websiteCatalog.length ? _websiteCatalog : FALLBACK_WEBSITE_CATALOG;
+}
+
+function paintWebsiteCatalog() {
+  const host = document.getElementById('website-catalog');
+  if (!host || !isWebsiteWorkspace()) return;
+  const sites = websiteCatalogSites();
+  host.innerHTML = sites.map((s) => {
+    const url = s.url || '';
+    return `
+      <button type="button" class="website-card" data-site-id="${esc(s.id)}"
+              onclick="websiteOpenSite('${jsStr(s.id)}')">
+        <span class="website-card-name">${esc(s.name || s.id)}</span>
+        <span class="website-card-url">${esc(url)}</span>
+      </button>`;
+  }).join('');
+}
+
+function paintWebsiteRemote() {
+  if (!isWebsiteWorkspace()) return;
+
+  const reported = !!_websiteState?.reported_open;
+  const hintActive = !!_websiteState?.hint_active;
+  document.getElementById('website-remote-empty')?.classList.toggle('hidden', reported);
+  document.getElementById('website-remote-active')?.classList.toggle('hidden', !reported);
+
+  // The select-element flow is a modal sheet, driven by the server-authoritative
+  // hint_active flag: open it when the TV enters hint mode, close it when it
+  // leaves (label selected, exited, or the window closed). The sheet backdrop
+  // blocks the controls behind it, so playback/search commands can't race the
+  // page-element pick. Sync is pure DOM here — server actions fire only from the
+  // explicit open/cancel/select handlers.
+  syncWebsiteHintSheet(reported && hintActive);
+  paintWebsiteHintPending();
+  if (!reported) closeWebsiteSearchSheet();
+
+  document.querySelectorAll('.website-control-action').forEach((button) => {
+    button.disabled = !reported;
+  });
+  // Home is a fixed catalog-root action, so it is meaningful only while the
+  // current document still maps to one of the recognized Website sources.
+  const needsRecognizedSite = !reported || !_websiteState?.current_site_id;
+  const home = document.getElementById('website-btn-home');
+  if (home) home.disabled = needsRecognizedSite;
+  const login = document.getElementById('website-btn-login');
+  if (login) login.disabled = needsRecognizedSite;
+}
+
+// Catalog card tap: atomically open allowlisted site and jump to Remote.
+async function websiteOpenSite(siteId) {
+  try {
+    const st = await api('POST', '/api/website/open', { site_id: siteId });
+    if (st) applyWebsiteState(st);
+    switchTab('remote');
+  } catch (e) {
+    toast(e.message || tr('websiteActionFailed'), true);
+  }
+}
+
+async function websiteClose() {
+  try {
+    const st = await api('POST', '/api/website/close', {});
+    if (st) applyWebsiteState(st);
+  } catch (e) {
+    toast(e.message || tr('websiteActionFailed'), true);
+  }
+}
+
+async function websiteAction(action, extra = {}) {
+  try {
+    const st = await api('POST', '/api/website/action', { action, ...extra });
+    if (st) applyWebsiteState(st);
+    return true;
+  } catch (e) {
+    toast(e.message || tr('websiteActionFailed'), true);
+    return false;
+  }
+}
+
+/* ── Website search sheet ─────────────────────────────────────────────────── */
+function openWebsiteSearchSheet() {
+  if (!_websiteState?.reported_open) return;
+  document.getElementById('website-search-backdrop')?.classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  const input = document.getElementById('website-search-input');
+  if (input) { input.value = ''; setTimeout(() => input.focus(), 60); }
+}
+function closeWebsiteSearchSheet() {
+  document.getElementById('website-search-backdrop')?.classList.add('hidden');
+  if (!document.querySelector('.sheet-backdrop:not(.hidden)')) {
+    document.body.classList.remove('sheet-open');
+  }
+}
+function onWebsiteSearchBackdropClick(event) {
+  if (event.target.id === 'website-search-backdrop') closeWebsiteSearchSheet();
+}
+
+async function websiteSearch() {
+  const input = document.getElementById('website-search-input');
+  const text = (input?.value || '').trim();
+  if (!text) {
+    toast(tr('websiteTextRequired'), true);
+    return;
+  }
+  await websiteAction('search', { text });
+  closeWebsiteSearchSheet();
+}
+
+/* ── Website select-page-element (hint) sheet ─────────────────────────────── */
+// Enter/exit fire server actions; hint_active in the returned state drives the
+// sheet's visibility through syncWebsiteHintSheet (called from paintWebsiteRemote).
+// Phone UI is a touch-only 12-key pad (A/1–3, X/4–6, Y/7–9): first tap arms a
+// pending symbol, second tap posts the two-symbol hint_label. No keyboard.
+const WEBSITE_HINT_KEYS = 'AXY123456789';
+let _websiteHintPending = '';
+let _websiteHintDispatching = false;
+
+function openWebsiteHintSheet() {
+  if (!_websiteState?.reported_open) return;
+  websiteAction('hint_enter');
+}
+function resetWebsiteHintPending() {
+  _websiteHintPending = '';
+  _websiteHintDispatching = false;
+  paintWebsiteHintPending();
+}
+function paintWebsiteHintPending() {
+  const first = document.getElementById('website-hint-pending-slot');
+  if (first) first.textContent = _websiteHintPending || '·';
+  const pending = document.getElementById('website-hint-pending');
+  if (pending) pending.classList.toggle('has-first', !!_websiteHintPending);
+  // Highlight the armed first key on the pad.
+  const labels = Array.isArray(_websiteState?.hint_labels) ? _websiteState.hint_labels : [];
+  document.querySelectorAll('.website-hint-key').forEach((btn) => {
+    const key = btn.dataset.hintKey || '';
+    // Before a first key, only offer prefixes that exist. Once a first key is
+    // armed, only offer its actual second-symbol completions. This prevents a
+    // touch from ever sending a label not displayed on the TV.
+    const selectable = _websiteHintPending
+      ? labels.includes(_websiteHintPending + key)
+      : labels.some((label) => label.startsWith(key));
+    btn.classList.toggle('is-pending', !!_websiteHintPending && btn.dataset.hintKey === _websiteHintPending);
+    btn.disabled = _websiteHintDispatching || !selectable;
+  });
+  const clear = document.getElementById('website-hint-clear');
+  if (clear) clear.disabled = !_websiteHintPending || _websiteHintDispatching;
+}
+function syncWebsiteHintSheet(show) {
+  const backdrop = document.getElementById('website-hint-backdrop');
+  if (!backdrop) return;
+  const isOpen = !backdrop.classList.contains('hidden');
+  if (show === isOpen) return;
+  // Opening or closing always drops any half-entered first key.
+  resetWebsiteHintPending();
+  if (show) {
+    backdrop.classList.remove('hidden');
+    document.body.classList.add('sheet-open');
+  } else {
+    backdrop.classList.add('hidden');
+    if (!document.querySelector('.sheet-backdrop:not(.hidden)')) {
+      document.body.classList.remove('sheet-open');
+    }
+  }
+}
+function onWebsiteHintBackdropClick(event) {
+  if (event.target.id === 'website-hint-backdrop') {
+    resetWebsiteHintPending();
+    websiteAction('hint_exit');
+  }
+}
+
+function websiteHintClear() {
+  // Drop the pending first key only — never dispatch a label.
+  resetWebsiteHintPending();
+}
+
+function websiteHintKey(sym) {
+  const key = String(sym || '').toUpperCase();
+  if (_websiteHintDispatching || !_websiteState?.hint_active || !WEBSITE_HINT_KEYS.includes(key)) return;
+  const labels = Array.isArray(_websiteState?.hint_labels) ? _websiteState.hint_labels : [];
+  if (_websiteHintPending ? !labels.includes(_websiteHintPending + key) : !labels.some((label) => label.startsWith(key))) return;
+  if (!_websiteHintPending) {
+    _websiteHintPending = key;
+    paintWebsiteHintPending();
+    return;
+  }
+  const label = _websiteHintPending + key;
+  _websiteHintPending = '';
+  _websiteHintDispatching = true;
+  paintWebsiteHintPending();
+  websiteAction('hint_label', { label }).then((queued) => {
+    // Once queued, wait for the shell's result to close Hint mode. Re-enabling
+    // immediately would let fast taps enqueue a second label for one overlay.
+    if (!queued) {
+      _websiteHintDispatching = false;
+      paintWebsiteHintPending();
+    }
+  });
 }
 
 /* ── Boot ─────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('click', onDocClick);
+  document.getElementById('language-select')?.addEventListener('change', (e) => {
+    setAppLanguage(e.target.value);
+  });
   registerPWA();
   detectPlatformAndPatchI18n();
   setupServiceReachability();
@@ -152,6 +592,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   _fetchAndUpdateProps();
   await loadActiveSource();
   await loadSettings();
+  await initWebsiteRemote();
   fetchSystemVolume();
 });
 
@@ -226,7 +667,7 @@ async function loadActiveSource() {
   // library API in that case: its expected "no active server" response is not
   // an actionable error and must not become a first-launch toast.
   if (!_hasAnyServer || !_activeServerId) {
-    resetLibraryState();
+    resetLibraryState('idle');
     updateLibraryEmptyState(true);
     return;
   }
@@ -241,7 +682,7 @@ async function loadActiveSource() {
     return;
   }
   _exitFileMode();
-  _setViewMode('home');
+  _showLibrarySkeletons();
   await loadLibraryNav();
   await loadHomeData();
 }
@@ -253,9 +694,23 @@ async function loadActiveSource() {
  * On the next page load we ask the backend for this context and restore
  * the now-playing label.
  */
-async function restorePlayerContext() {
+async function restorePlayerContext(state = null) {
   try {
-    const state = await api('GET', '/api/player/state');
+    state = state || await api('GET', '/api/player/state');
+    _lastPlaybackRevision = Number(state.playback_revision ?? _lastPlaybackRevision);
+    updateLastPlaybackDebugEntry(state);
+    if (state.playback_completed && !state.running && !_autoplayCoordinating(state)) {
+      // A finished episode with no host transition pending is history, not a
+      // startup: repainting it would pin a poster card in the "starting" state
+      // forever (no props ever arrive). Keep the series context so the
+      // episodes tab stays usable. Defense in depth — the backend clears this
+      // context itself moments after EOF.
+      currentSeriesId = state.series_id || currentSeriesId;
+      currentSeasonId = state.season_id || currentSeasonId;
+      currentSeriesTitle = state.series_title || currentSeriesTitle;
+      _clearNowPlayingChrome();
+      return;
+    }
     if (state.item_id || state.title) {
       _playbackServerId = state.server_id || _activeServerId;
       currentPlaybackSourceType = state.source_type || 'emby';
@@ -263,11 +718,15 @@ async function restorePlayerContext() {
       currentSeasonId  = state.season_id || '';
       currentSeriesTitle = state.series_title || '';
       currentEpisodeLabel = state.episode_label || '';
-      currentPosterItemId = state.source_type === 'dlna' || state.is_live ? '' : (state.poster_item_id || state.series_id || state.item_id || '');
+      currentPosterItemId = state.source_type === 'dlna' || state.source_type === 'iptv' || state.source_type === 'iptv-catchup' || state.is_live
+        ? '' : (state.poster_item_id || state.series_id || state.item_id || '');
       currentItemId    = state.item_id || '';
       currentItemIsSeries = !!currentSeriesId;
-      currentIPTVChannelId = state.is_live ? (state.channel_id || '') : '';
-      currentIPTVVariantIndex = 0;
+      const isIPTVPlayback = state.source_type === 'iptv' || state.source_type === 'iptv-catchup';
+      currentIPTVChannelId = isIPTVPlayback ? (state.channel_id || '') : '';
+      currentIPTVIsCatchup = state.source_type === 'iptv-catchup';
+      const variantIndex = Number(state.variant_index);
+      currentIPTVVariantIndex = Number.isInteger(variantIndex) && variantIndex >= 0 ? variantIndex : 0;
       currentIPTVVariantCount = 0;
       setNowPlaying(state.title, {
         seriesTitle: currentSeriesTitle,
@@ -275,22 +734,51 @@ async function restorePlayerContext() {
         posterItemId: currentPosterItemId,
         isLive: !!state.is_live,
       });
-      if (state.is_live && currentIPTVChannelId) {
+      if (isIPTVPlayback && currentIPTVChannelId) {
         // variant_count isn't in /api/player/state; fetch it once so the
         // quality tile's visibility (shown only when >1 variant) is correct
         // right after a browser reconnect, not just after a fresh play().
         api('GET', `/api/iptv/channel/${encodeURIComponent(currentIPTVChannelId)}?server_id=${encodeURIComponent(_playbackServerId)}`).then(ch => {
           currentIPTVVariantCount = (ch.variants || []).length;
           currentIPTVHasProgramme = iptvChannelHasProgramme(ch);
+          currentIPTVCanCatchup = ch.can_catchup === true;
           updateLiveControlsVisibility(currentItemIsLive);
         }).catch(() => {});
       }
+    } else {
+      // An empty context is the backend saying nothing is playing — a cancelled
+      // autoplay transition, or a stop. Without this the last card stays on
+      // screen forever, since the poll only ever repaints a non-empty state.
+      _clearNowPlayingChrome();
     }
   } catch (_) { /* backend may not be ready yet */ }
 }
 
+function updateLastPlaybackDebugEntry(state = {}) {
+  _lastPlaybackDebugAvailable = state.debug_report_available === true;
+  _lastPlaybackDebugScope = String(state.debug_report_scope || '');
+  const button = document.getElementById('last-playback-debug-btn');
+  if (button) {
+    button.textContent = tr('lastPlaybackReport');
+    button.classList.toggle('hidden', !_lastPlaybackDebugAvailable);
+  }
+}
+
 /* ── API helper ───────────────────────────────────────────────────────────── */
 async function api(method, path, body, extra = {}) {
+  const isPlayRequest = method === 'POST' && path === '/api/player/play';
+  if (isPlayRequest) {
+    _playRequestSeq++;
+    _playRequestsInFlight++;
+  }
+  try {
+    return await _apiRequest(method, path, body, extra);
+  } finally {
+    if (isPlayRequest) _playRequestsInFlight = Math.max(0, _playRequestsInFlight - 1);
+  }
+}
+
+async function _apiRequest(method, path, body, extra = {}) {
   if (method === 'GET' && path.startsWith('/api/library/') && _activeServerId && !/[?&]server_id=/.test(path)) {
     path += `${path.includes('?') ? '&' : '?'}server_id=${encodeURIComponent(_activeServerId)}`;
     if (!extra.signal) extra.signal = _libraryAbortController.signal;
@@ -329,7 +817,7 @@ function currentLibraryLoad() {
 }
 
 function isCurrentLibraryLoad(load) {
-  return load && load.generation === _libraryGeneration && load.serverId === _activeServerId;
+  return load && load.generation === _libraryGeneration && load.serverId === _activeServerId && !load.signal.aborted;
 }
 
 function libraryApi(method, path, body, load = currentLibraryLoad()) {
@@ -420,7 +908,7 @@ function toggleMute() {
 
 function openCurrentSeriesSheet() {
   const targetId = currentSeriesId || currentItemId;
-  if (targetId) openVideoSheet(targetId);
+  if (targetId) openVideoSheet(targetId, _playbackServerId);
 }
 
 async function stopPlayer() {
@@ -428,6 +916,7 @@ async function stopPlayer() {
   document.getElementById('player-info-placeholder')?.classList.add('hidden');
   try {
     await api('POST', '/api/player/stop');
+    api('GET', '/api/player/state').then(updateLastPlaybackDebugEntry).catch(() => {});
     setNowPlaying('');
     currentItemId = '';
     currentEpisodeLabel = '';
@@ -512,7 +1001,9 @@ function resetPosterColor() {
   if (tab) tab.style.background = '';
 }
 
-async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', episodeLabel = '', posterItemId = '', mediaSourceId = '', serverId = _activeServerId) {
+async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', episodeLabel = '', posterItemId = '', mediaSourceId = '', serverId) {
+  if (!serverId) return;
+  _hideAutoplayCountdown();
   const resolvedPoster = posterItemId || seriesId || itemId || '';
   _hadProps = false;
   _currentAspect = 'fit';
@@ -524,11 +1015,13 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
   currentEpisodeLabel = episodeLabel || '';
   currentPosterItemId = resolvedPoster;
   currentItemIsSeries = !!currentSeriesId;
-  currentPlaybackSourceType = _activeSourceType;
+  currentPlaybackSourceType = browseSourceType(serverId);
   currentIPTVChannelId = '';
   currentIPTVVariantIndex = 0;
   currentIPTVVariantCount = 0;
   currentIPTVHasProgramme = false;
+  currentIPTVCanCatchup = false;
+  currentIPTVIsCatchup = false;
   _playbackServerId = serverId;
   setNowPlaying(title, {
     seriesTitle: currentSeriesTitle,
@@ -544,7 +1037,7 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
   document.getElementById('player-info-placeholder')?.classList.remove('hidden');
   document.getElementById('player-info')?.classList.add('hidden');
   try {
-    await api('POST', '/api/player/play', {
+    const result = await api('POST', '/api/player/play', {
       server_id: _playbackServerId,
       item_id: itemId,
       series_id: currentSeriesId,
@@ -556,13 +1049,20 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
       media_source_id: mediaSourceId || '',
       preferred_language: window.I18N?.lang || navigator.language || 'zh-CN',
     });
+    // The backend always answers HTTP 200 for /api/player/play, even on
+    // failure (mpv couldn't be started, IPC write failed, …) — the real
+    // outcome is in the body's `ok`/`error` fields, which `api()` doesn't
+    // inspect. Without this check a reported failure was silently treated
+    // as a successful play.
+    if (result?.superseded) return;
+    if (result && result.ok === false) {
+      throw new Error(result.error || 'Playback failed');
+    }
     _fetchAndUpdateProps();
   } catch (e) {
     toast(e.message, true);
     setNowPlaying('');
     currentItemId = '';
-  } finally {
-    document.getElementById('play-loading-tag')?.classList.add('hidden');
   }
   // Preload the season's episode list so previous/next respond instantly.
   if (currentSeriesId) _ensureEpisodeNav(itemId, currentSeriesId, currentSeasonId);
@@ -616,6 +1116,137 @@ async function _stepEpisode(delta) {
   );
 }
 
+// Called when props detect mpv is no longer running while a title was still
+// considered current. Host-owned autoplay (if any) continues independently;
+// the UI only clears local "now playing" chrome and mirrors autoplay_status
+// from the next state poll. A fresh state fetch is used so a one-tick-stale
+// cache cannot miss playback_completed / autoplay_status.
+// Clears the "now playing" chrome only. currentSeriesId/currentSeasonId are
+// deliberately kept so the episodes tab stays usable after playback ends.
+function _clearNowPlayingChrome() {
+  currentItemId = '';
+  currentItemIsSeries = false;
+  _currentAspect = 'fit';
+  _loopFile = false;
+  setNowPlaying('');
+  resetPosterColor();
+  document.getElementById('player-info')?.classList.add('hidden');
+  document.getElementById('player-info-placeholder')?.classList.add('hidden');
+  document.getElementById('nav-remote-dot')?.classList.add('hidden');
+}
+
+// True while host autoplay is actively driving a next-episode transition.
+// playback_completed alone is not coordination: with autoplay off (or no next
+// episode) the backend clears that context itself moments after EOF.
+function _autoplayCoordinating(state) {
+  return state?.autoplay_status === 'finding_next' || state?.autoplay_status === 'next_available';
+}
+
+async function _handlePlaybackEnded() {
+  _clearNowPlayingChrome();
+
+  const finishedState = await api('GET', '/api/player/state').catch(() => null);
+  if (finishedState) {
+    _applyAutoplayStatus(finishedState);
+    if (_autoplayCoordinating(finishedState)) {
+      // Host is coordinating the next episode; its play (or clear) repaints.
+      return;
+    }
+  }
+  // The process has already exited and the Go player has completed terminal
+  // cleanup. Never POST stop here: the backend timer may have started the next
+  // episode between the props and state requests, and a client-side stop would
+  // kill that legitimate host-owned transition.
+  loadResume().catch(() => {});
+}
+
+// Mirror the host autoplay countdown. Display timers are cosmetic only — the
+// backend fires the actual next-episode play when its own deadline elapses.
+//
+// The countdown is driven by autoplay_remaining_ms (server-relative), never by
+// autoplay_deadline_ms: the deadline is stamped from the desktop's clock, and
+// comparing it to a phone's Date.now() bakes in whatever skew exists between
+// the two devices. A phone running behind keeps the overlay up past the real
+// fire, offering a cancel that can no longer stop the transition.
+function _autoplayLocalDeadline(state) {
+  const remainingMs = Number(state.autoplay_remaining_ms);
+  if (Number.isFinite(remainingMs) && remainingMs >= 0) return Date.now() + remainingMs;
+  return Date.now() + 5000;
+}
+
+function _applyAutoplayStatus(state) {
+  const status = state?.autoplay_status || null;
+  if (status !== 'next_available') {
+    _autoplayDismissed = false;
+    if (_autoplayShowing) _hideAutoplayCountdown();
+    return;
+  }
+  if (_autoplayDismissed) return;
+  const title = state.next_episode_title || '';
+  if (_autoplayShowing) {
+    _autoplayCountdownDeadline = _autoplayLocalDeadline(state);
+    return;
+  }
+  _showAutoplayCountdown(title, _autoplayLocalDeadline(state));
+}
+
+function _showAutoplayCountdown(title, localDeadlineMs) {
+  _autoplayShowing = true;
+  const overlay = document.getElementById('autoplay-countdown-overlay');
+  if (!overlay) return;
+  _setText('autoplay-countdown-title', tr('autoplayCountdownTitle'));
+  _setText('autoplay-countdown-episode', title || '');
+  const cancelBtn = document.querySelector('#autoplay-countdown-overlay .confirm-cancel-btn');
+  if (cancelBtn) cancelBtn.textContent = tr('autoplayCancel');
+  overlay.classList.remove('hidden');
+  _autoplayCountdownDeadline = localDeadlineMs;
+  _tickAutoplayCountdown();
+}
+
+function _tickAutoplayCountdown() {
+  clearTimeout(_autoplayCountdownTimer);
+  const remainingMs = _autoplayCountdownDeadline - Date.now();
+  const seconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  _setText('autoplay-countdown-seconds', String(seconds));
+  const btn = document.getElementById('autoplay-play-now-btn');
+  if (btn) btn.textContent = tr('autoplayPlayNow', { seconds });
+  // Do not call play-now here: the host owns the transition. Once the deadline
+  // passes the host is starting the next episode, so drop the overlay rather
+  // than leave a dead "0" with a cancel button that would arrive too late.
+  // _autoplayDismissed keeps the next poll from re-showing it for the same
+  // completion while autoplay_status is still catching up.
+  if (remainingMs <= 0) {
+    _autoplayDismissed = true;
+    _hideAutoplayCountdown();
+    return;
+  }
+  _autoplayCountdownTimer = setTimeout(_tickAutoplayCountdown, 250);
+}
+
+function _hideAutoplayCountdown() {
+  clearTimeout(_autoplayCountdownTimer);
+  _autoplayCountdownTimer = null;
+  _autoplayShowing = false;
+  document.getElementById('autoplay-countdown-overlay')?.classList.add('hidden');
+}
+
+function cancelAutoplayNext() {
+  _autoplayDismissed = true;
+  _hideAutoplayCountdown();
+  api('POST', '/api/player/next/cancel').catch(() => {});
+  loadResume().catch(() => {});
+}
+
+async function _confirmAutoplayNext() {
+  _hideAutoplayCountdown();
+  try {
+    const result = await api('POST', '/api/player/next');
+    if (result && result.ok === false) throw new Error(result.error || 'Playback failed');
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 function setNowPlaying(title, meta = {}) {
   const titleEl = document.getElementById('remote-title');
   if (titleEl) titleEl.textContent = title || '';
@@ -633,6 +1264,7 @@ function setNowPlaying(title, meta = {}) {
       nowPlaying.style.setProperty('--now-poster', `url("${libraryImageUrl(posterItemId, 700, 'Backdrop', _playbackServerId)}")`);
       nowPlaying.classList.add('has-poster');
       if (posterImg) {
+        preparePoster(posterImg);
         posterImg.src = libraryImageUrl(posterItemId, 520, '', _playbackServerId);
         posterImg.alt = title || '';
       }
@@ -647,9 +1279,16 @@ function setNowPlaying(title, meta = {}) {
   const hasTitle = !!title;
   nowPlaying?.classList.toggle('hidden', !hasTitle);
   document.getElementById('remote-empty')?.classList.toggle('hidden', hasTitle);
-  document.getElementById('remote-controls')?.classList.toggle('hidden', !hasTitle);
+  // A selected title is not evidence that mpv has started. Keep the remote
+  // controls out of the startup state until the first real player props arrive.
+  document.getElementById('remote-controls')?.classList.toggle('hidden', !hasTitle || !_hadProps);
   if (!hasTitle) {
     document.getElementById('player-info')?.classList.add('hidden');
+    document.getElementById('player-info-placeholder')?.classList.add('hidden');
+    document.getElementById('play-loading-tag')?.classList.add('hidden');
+  } else if (!_hadProps) {
+    document.getElementById('player-info')?.classList.add('hidden');
+    document.getElementById('player-info-placeholder')?.classList.remove('hidden');
   }
   currentItemIsLive = !!meta.isLive;
   updateEpisodeNavVisibility(currentItemIsSeries);
@@ -671,7 +1310,7 @@ function updateEpisodeNavVisibility(isSeries) {
 }
 
 function isCurrentIPTVPlayback() {
-  return currentItemIsLive || !!currentIPTVChannelId;
+  return currentItemIsLive || (currentPlaybackSourceType === 'iptv' && !!currentIPTVChannelId);
 }
 
 function isDLNAPlayback() { return currentPlaybackSourceType === 'dlna'; }
@@ -702,13 +1341,24 @@ function updateLiveControlsVisibility(isLive) {
 }
 
 function updateLibraryEmptyState(isEmpty) {
+  if (isWebsiteWorkspace()) {
+    document.getElementById('lib-empty-state')?.classList.add('hidden');
+    return;
+  }
   document.getElementById('lib-empty-state')?.classList.toggle('hidden', !isEmpty);
-  document.getElementById('lib-home-view')?.classList.toggle('hidden', isEmpty);
+  document.getElementById('lib-home-view')?.classList.toggle(
+    'hidden',
+    isEmpty || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv'
+  );
 }
 
 /* ── View mode ────────────────────────────────────────────────────────────── */
 function _setViewMode(mode) {
   _viewMode = mode;
+  if (isWebsiteWorkspace()) {
+    // Website library owns the Library tab surface; ignore media view modes.
+    return;
+  }
   document.getElementById('lib-home-view')?.classList.toggle('hidden', mode !== 'home');
   document.getElementById('lib-grid-view')?.classList.toggle('hidden', !['browse', 'resume'].includes(mode));
   document.getElementById('lib-search-view')?.classList.toggle('hidden', mode !== 'search');
@@ -716,7 +1366,7 @@ function _setViewMode(mode) {
   document.getElementById('library-toolbar')?.classList.toggle('hidden', mode !== 'browse');
   document.getElementById('lib-files-view')?.classList.toggle('hidden', mode !== 'files');
   document.getElementById('lib-iptv-view')?.classList.toggle('hidden', mode !== 'iptv');
-  document.getElementById('btn-iptv-refresh')?.classList.toggle('hidden', mode !== 'iptv');
+  document.getElementById('btn-iptv-refresh')?.classList.toggle('hidden', mode !== 'iptv' || _activeTab !== 'library');
   document.getElementById('browse-back-btn')?.classList.toggle('hidden', mode !== 'resume');
 }
 
@@ -730,12 +1380,11 @@ function switchTab(tab) {
   document.getElementById('nav-library').classList.toggle('active', tab === 'library');
   document.getElementById('nav-remote').classList.toggle('active', tab === 'remote');
   document.getElementById('nav-settings').classList.toggle('active', tab === 'settings');
-  document.getElementById('search-toggle')?.classList.toggle('hidden', tab !== 'library' || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv' || !_hasAnyServer);
-  document.getElementById('btn-iptv-refresh')?.classList.toggle('hidden', tab !== 'library' || _viewMode !== 'iptv');
-  document.getElementById('btn-exit')?.classList.toggle('hidden', tab !== 'remote');
   if (tab !== 'library' && isSearching) cancelSearch();
   if (tab === 'settings') renderSettingsUi();
   if (tab === 'remote') fetchSystemVolume();
+  // Re-apply workspace chrome so Library/Remote content and topbar stay correct.
+  paintWorkspace();
 }
 
 /* ── Playback info polling ────────────────────────────────────────────────── */
@@ -758,13 +1407,15 @@ function _schedulePropPoll() {
   _propPollTimer = setTimeout(async () => {
     if (!document.hidden) {
       await _fetchAndUpdateProps();
-      // A DLNA sender can replace playback without a phone-originated API
-      // call. Re-read context periodically so an already-open remote switches
-      // from its old library metadata to the receiver-safe DLNA layout.
-      if (++_playerStatePollTicks % 5 === 0) {
-        const state = await api('GET', '/api/player/state').catch(() => null);
-        if (state?.running && state.source_type !== currentPlaybackSourceType) {
-          await restorePlayerContext();
+      // playback_revision changes for every new/cleared PlayContext. Compare
+      // identity, not source_type: A→B can be Emby→Emby.
+      const seq = _playRequestSeq;
+      const state = await api('GET', '/api/player/state').catch(() => null);
+      if (state && seq === _playRequestSeq) {
+        updateLastPlaybackDebugEntry(state);
+        _applyAutoplayStatus(state);
+        if (Number(state.playback_revision) !== _lastPlaybackRevision) {
+          await restorePlayerContext(state);
         }
       }
       // System volume can change outside the app (physical keys, another
@@ -777,8 +1428,10 @@ function _schedulePropPoll() {
 }
 
 async function _fetchAndUpdateProps() {
+  const seq = _playRequestSeq;
   try {
     const props = await api('GET', '/api/player/props');
+    if (seq !== _playRequestSeq) return; // superseded by a newer play request
     _applyProps(props);
   } catch (_) {}
 }
@@ -804,21 +1457,13 @@ function _applyProps(p) {
   const livePlayback = isCurrentIPTVPlayback();
   const hasData = p['time-pos'] != null || p['pause'] != null;
 
-  // Detect unexpected mpv exit (had data before, now empty, still had current item)
+  // Detect unexpected mpv exit (had data before, now empty, still had current item).
+  // A play request that has not reached mpv yet produces the same empty props,
+  // so a title the user just picked would otherwise be torn down on arrival.
   if (!hasData && _hadProps && currentItemId) {
+    if (_playRequestsInFlight > 0) return;
     _hadProps = false;
-    const _id = currentItemId;
-    currentItemId = '';
-    currentItemIsSeries = false;
-    _currentAspect = 'fit';
-    _loopFile = false;
-    setNowPlaying('');
-    resetPosterColor();
-    api('POST', '/api/player/stop').catch(() => {});
-    loadResume().catch(() => {});
-    document.getElementById('player-info')?.classList.add('hidden');
-    document.getElementById('player-info-placeholder')?.classList.add('hidden');
-    document.getElementById('nav-remote-dot')?.classList.add('hidden');
+    _handlePlaybackEnded();
     return;
   }
 
@@ -899,8 +1544,8 @@ function _applyProps(p) {
           : `↓${Math.round(cacheSpeedBps / 1e3)}KB/s`)
       : '';
     const cacheDurText = fmtCacheDur(cacheDur);
-    const inlineParts = [cacheDurText, dlSpeedText].filter(Boolean);
-    _setText('health-cache-speed', inlineParts.join(' '));
+    _setText('health-cache-duration', cacheDurText);
+    _setText('health-download-speed', dlSpeedText);
   }
 
   // Cache buffer overlay on progress bar
@@ -924,9 +1569,13 @@ function _applyProps(p) {
 
   const aspectOpt = ASPECT_OPTIONS.find(o => o.value === _currentAspect);
   _setText('tag-aspect', _currentAspect !== 'fit' && aspectOpt ? aspectDisplay(aspectOpt) : '');
-  _setText('tag-audio', (audioTrack && audioTracks.length > 1) ? _trackLbl(audioTrack) : '');
+  setPlaybackTrackTag('tag-audio', (audioTrack && audioTracks.length > 1) ? _trackLbl(audioTrack) : '');
   const subNoneActive = subTracks.length > 0 && !subTracks.some(t => t.selected);
-  _setText('tag-sub', subNoneActive ? tr('subtitlesOff') : (subTrack && subTracks.length > 1 ? _trackLbl(subTrack) : ''));
+  setPlaybackTrackTag(
+    'tag-sub',
+    subNoneActive ? tr('subtitlesOff') : (subTrack && subTracks.length > 1 ? _trackLbl(subTrack) : ''),
+    subNoneActive ? Infinity : PLAYBACK_TRACK_TAG_MAX_CHARS
+  );
 
   document.getElementById('play-loading-tag')?.classList.add('hidden');
 
@@ -965,7 +1614,8 @@ function _applyProps(p) {
 function setLiveProgressHidden(hidden) {
   document.querySelector('.playback-progress')?.classList.toggle('hidden', hidden);
   if (hidden) {
-    _setText('health-cache-speed', '');
+    _setText('health-cache-duration', '');
+    _setText('health-download-speed', '');
     const cacheFill = document.getElementById('progress-cache-fill');
     if (cacheFill) cacheFill.style.width = '0%';
   }
@@ -1121,6 +1771,24 @@ function fmtCacheDur(secs) {
   return tr('cacheHour', { hours: (secs / 3600).toFixed(1) });
 }
 
+const PLAYBACK_TRACK_TAG_MAX_CHARS = 10;
+
+function setPlaybackTrackTag(id, label, maxChars = PLAYBACK_TRACK_TAG_MAX_CHARS) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const fullLabel = String(label || '');
+  const chars = Array.from(fullLabel);
+  const truncated = Number.isFinite(maxChars) && chars.length > maxChars;
+  el.textContent = truncated ? `${chars.slice(0, maxChars).join('')}...` : fullLabel;
+  if (truncated) {
+    el.title = fullLabel;
+    el.setAttribute('aria-label', fullLabel);
+  } else {
+    el.removeAttribute('title');
+    el.removeAttribute('aria-label');
+  }
+}
+
 function updateSpeedButtons(speed) {
   if (speed == null || !Number.isFinite(speed)) return;
   // Scope to the speed list only — the aspect sheet shares the .speed-row-btn
@@ -1232,8 +1900,10 @@ async function selectIPTVVariant(index) {
   closeIPTVQualitySheet();
   if (!currentIPTVChannelId) return;
   try {
-    await api('POST', '/api/player/play', { server_id: _playbackServerId, channel_id: currentIPTVChannelId, variant_index: index });
-    currentIPTVVariantIndex = index;
+    const result = await api('POST', '/api/player/play', { server_id: _playbackServerId, channel_id: currentIPTVChannelId, variant_index: index });
+    if (result?.ok === false) throw new Error(result.error || 'Playback failed');
+    const variantIndex = Number(result?.variant_index);
+    currentIPTVVariantIndex = Number.isInteger(variantIndex) && variantIndex >= 0 ? variantIndex : index;
     _fetchAndUpdateProps();
   } catch (e) {
     toast(e.message, true);
@@ -1297,8 +1967,11 @@ async function openIPTVProgrammeSheet() {
   const list = document.getElementById('iptv-programme-list');
   if (list) list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvRefreshing'))}</div>`;
   try {
-    const data = await api('GET', `/api/iptv/programme?channel_id=${encodeURIComponent(currentIPTVChannelId)}&count=4`);
+    const data = await api('GET', sourcePath(`/api/iptv/programme?channel_id=${encodeURIComponent(currentIPTVChannelId)}&count=24`, _playbackServerId));
     const rows = [];
+    (data.past || []).forEach(p => {
+      rows.push(_iptvProgrammeRowHtml(p, 'past'));
+    });
     if (data.current) {
       rows.push(`<div class="iptv-programme-row current">
         <div class="iptv-programme-when">${esc(tr('iptvCurrentProgramme'))} · ${esc(_iptvProgrammeTimeLabel(data.current.start))}</div>
@@ -1306,16 +1979,56 @@ async function openIPTVProgrammeSheet() {
       </div>`);
     }
     (data.upcoming || []).forEach(p => {
-      rows.push(`<div class="iptv-programme-row">
-        <div class="iptv-programme-when">${esc(_iptvProgrammeTimeLabel(p.start))}</div>
-        <div class="iptv-programme-title">${esc(p.title || '')}</div>
-      </div>`);
+      rows.push(_iptvProgrammeRowHtml(p, 'upcoming'));
     });
     if (list) {
       list.innerHTML = rows.join('') || `<div class="iptv-empty">${esc(tr('iptvNoProgrammeInfo'))}</div>`;
     }
   } catch (e) {
     if (list) list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvNoProgrammeInfo'))}</div>`;
+  }
+}
+
+function _iptvProgrammeRowHtml(programme, state) {
+  const isPast = state === 'past';
+  const label = isPast ? tr('iptvPastProgramme') : tr('iptvUpcomingProgrammes');
+  const replay = isPast && currentIPTVCanCatchup
+    ? `<button class="iptv-programme-replay" onclick="playIPTVCatchup('${jsStr(programme.start)}', '${jsStr(programme.stop)}', '${jsStr(programme.title || '')}')">${esc(tr('iptvReplay'))}</button>`
+    : '';
+  return `<div class="iptv-programme-row">
+    <div class="iptv-programme-row-head">
+      <div class="iptv-programme-when">${esc(label)} · ${esc(_iptvProgrammeTimeLabel(programme.start))}</div>
+      ${replay}
+    </div>
+    <div class="iptv-programme-title">${esc(programme.title || '')}</div>
+  </div>`;
+}
+
+async function playIPTVCatchup(start, stop, programmeTitle) {
+  if (!currentIPTVChannelId || !currentIPTVCanCatchup) return;
+  const channel = _iptvChannels.find(c => c.id === currentIPTVChannelId);
+  const title = [channel?.name || '', programmeTitle || ''].filter(Boolean).join(' · ');
+  closeIPTVProgrammeSheet();
+  _hadProps = false;
+  currentPlaybackSourceType = 'iptv-catchup';
+  currentIPTVIsCatchup = true;
+  currentItemIsLive = false;
+  currentItemId = currentIPTVChannelId;
+  setNowPlaying(title, { isLive: false });
+  document.getElementById('play-loading-tag')?.classList.remove('hidden');
+  try {
+    await api('POST', '/api/player/play', {
+      server_id: _playbackServerId,
+      channel_id: currentIPTVChannelId,
+      variant_index: currentIPTVVariantIndex,
+      catchup_start: start,
+      catchup_stop: stop,
+      title,
+    });
+    _fetchAndUpdateProps();
+  } catch (e) {
+    toast(e.message, true);
+    setNowPlaying('');
   }
 }
 function closeIPTVProgrammeSheet() {
@@ -1762,10 +2475,11 @@ function isFileSourceType(type) {
 }
 
 function isIPTVSourceType(type) {
-  return _normType(type) === 'iptv';
+  return type === 'iptv-catchup' || _normType(type) === 'iptv';
 }
 
 function sourceTypeLabel(type) {
+  if (type === 'iptv-catchup') return 'IPTV';
   if (_normType(type) === 'dlna') return tr('dlnaReceiver');
   return {
     emby: 'Emby', jellyfin: 'Jellyfin', plex: 'Plex', webdav: 'WebDAV', smb: 'SMB',
@@ -1775,13 +2489,14 @@ function sourceTypeLabel(type) {
 
 function sourceTypeClass(type) { return 'st-' + _normType(type); }
 
-function defaultSourceName(type) {
+function defaultSourceName(type, address = '') {
   const key = {
     emby: 'defaultEmbyName', jellyfin: 'defaultJellyfinName', plex: 'defaultPlexName',
     webdav: 'defaultWebDAVName', smb: 'defaultSMBName', local: 'defaultLocalName',
     nfs: 'defaultNFSName', iptv: 'defaultIPTVName',
   }[_normType(type)];
-  return tr(key);
+  const trimmedAddress = String(address || '').trim();
+  return trimmedAddress ? `${sourceTypeLabel(type)} - ${trimmedAddress}` : tr(key);
 }
 
 function _sourceBadge(type) {
@@ -1799,7 +2514,7 @@ function _sourceAvatarHtml(type) {
 function _sourceMeta(s) {
   if (isFileSourceType(s.type)) {
     const parts = [sourceTypeLabel(s.type)];
-    if (s.type === 'smb' && s.share) parts.push(s.share);
+    if (s.type === 'smb') parts.push(s.share || tr('rootNotSetShort'));
     if (s.root_path) parts.push(_truncate(s.root_path, 24));
     return parts.join(' · ');
   }
@@ -1815,69 +2530,121 @@ function _sourceMeta(s) {
   return `${host}:${s.port}`;
 }
 
-async function refreshServerSwitcher() {
+function storedBrowseSourceId() {
+  try { return localStorage.getItem(_browseSourceStorageKey) || ''; }
+  catch (_) { return ''; }
+}
+
+function selectBrowseSource(serverId, servers = _knownServers) {
+  const server = servers.find(s => s.id === serverId) || servers[0] || null;
+  _activeServerId = server?.id || '';
+  _activeSourceType = _normType(server?.type);
+  try {
+    if (_activeServerId) localStorage.setItem(_browseSourceStorageKey, _activeServerId);
+    else localStorage.removeItem(_browseSourceStorageKey);
+  } catch (_) {}
+  return server;
+}
+
+function browseSourceType(serverId) {
+  return _normType(_knownServers.find(s => s.id === serverId)?.type);
+}
+
+function _sourceMenuCheckHtml() {
+  return `<span class="smi-check" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+  </span>`;
+}
+
+function paintSourceSwitcher() {
+  const active = _knownServers.find(s => s.id === _activeServerId) || null;
+  const website = isWebsiteWorkspace();
+  const label = document.getElementById('active-server-label');
+  const dot = document.getElementById('server-dot');
+  if (website) {
+    if (label) label.textContent = tr('websiteSourceTitle');
+    dot?.classList.add('online');
+  } else if (active) {
+    if (label) label.textContent = active.name || tr('server');
+    dot?.classList.toggle('online', active.logged_in || isFileSourceType(active.type) || isIPTVSourceType(active.type));
+  } else {
+    if (label) label.textContent = tr('notConfigured');
+    dot?.classList.remove('online');
+  }
+  renderSourceDropdown();
+}
+
+// The website entry exists only in this dropdown. renderServerList() continues
+// to receive only backend servers, so management and CRUD never see it.
+function renderSourceDropdown() {
+  const menu = document.getElementById('server-menu');
+  if (!menu) return;
+  const website = isWebsiteWorkspace();
+  let html = _knownServers.map(s => {
+    const isFile = isFileSourceType(s.type);
+    const isActive = !website && s.id === _activeServerId;
+    const hosts = s.hosts || [];
+    const activeHostIndex = s.active_host || 0;
+    const hostButtons = (!isFile && hosts.length > 1)
+      ? `<div class="server-menu-hosts">
+          ${hosts.map((h, i) => `
+            <button class="server-menu-host ${i === activeHostIndex ? 'active' : ''}"
+                    onclick="switchServerHost(event, '${s.id}', ${i}, ${isActive})">
+              <span class="smh-dot"></span>${esc(h)}
+            </button>`).join('')}
+        </div>`
+      : '';
+    return `<div class="server-menu-entry ${isActive ? 'active' : ''}">
+      <button class="server-menu-item" type="button"
+              onclick="switchServer('${s.id}', '${jsStr(s.name || tr('server'))}')">
+        ${_sourceAvatarHtml(s.type)}
+        <span class="smi-body">
+          <span class="smi-name">${esc(s.name || tr('server'))}</span>
+          <span class="smi-host">${esc(_sourceMeta(s))}</span>
+        </span>
+        ${_sourceMenuCheckHtml()}
+      </button>
+      ${hostButtons}
+    </div>`;
+  }).join('');
+
+  if (_websiteAvailable) {
+    html += `<div class="server-menu-entry website-source-entry ${website ? 'active' : ''}">
+      <button class="server-menu-item" type="button" onclick="switchToWebsiteSource()">
+        <span class="smi-avatar st-website">网</span>
+        <span class="smi-body">
+          <span class="smi-name">${esc(tr('websiteSourceTitle'))}</span>
+          <span class="smi-host">${esc(tr('websiteSourceSubtitle'))}</span>
+        </span>
+        ${_sourceMenuCheckHtml()}
+      </button>
+    </div>`;
+  }
+
+  html += `<button class="server-menu-manage" type="button" onclick="openServerManager();closeServerMenu()">
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.15 2.15 0 1 1-3.04 3.04l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65V21.4a2.15 2.15 0 1 1-4.3 0v-.09a1.8 1.8 0 0 0-1.08-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2.15 2.15 0 1 1-3.04-3.04l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.08h-.09a2.15 2.15 0 1 1 0-4.3h.09A1.8 1.8 0 0 0 4.6 8.54a1.8 1.8 0 0 0-.36-1.98l-.04-.04a2.15 2.15 0 1 1 3.04-3.04l.04.04a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.34 2.2v-.09a2.15 2.15 0 1 1 4.3 0v.09a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.15 2.15 0 1 1 3.04 3.04l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.08h.09a2.15 2.15 0 1 1 0 4.3h-.09A1.8 1.8 0 0 0 19.4 15Z"/></svg>
+    <span>${tr('manageServers')}</span>
+  </button>`;
+  menu.innerHTML = html;
+}
+
+async function refreshServerSwitcher(preferredServerId = '') {
+  const refreshSeq = ++_serverListRefreshSeq;
   try {
     const servers = await api('GET', '/api/servers');
-    const active  = servers.find(s => s.active);
-    _activeServerId = active?.id || '';
-    _activeSourceType = _normType(active && active.type);
+    if (refreshSeq !== _serverListRefreshSeq) return null;
+    _knownServers = servers;
+    const active = selectBrowseSource(preferredServerId || storedBrowseSourceId(), servers);
     _hasAnyServer = servers.length > 0;
-    updateLibraryEmptyState(!_hasAnyServer);
-    document.getElementById('search-toggle')?.classList.toggle(
-      'hidden',
-      _activeTab !== 'library' || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv' || !_hasAnyServer
-    );
+    if (!isWebsiteWorkspace()) updateLibraryEmptyState(!_hasAnyServer);
+    paintHeaderActions();
 
-    // Update header button
-    const label = document.getElementById('active-server-label');
-    const dot   = document.getElementById('server-dot');
-    if (active) {
-      label.textContent = active.name || tr('server');
-      dot.classList.toggle('online', active.logged_in || isFileSourceType(active.type) || isIPTVSourceType(active.type));
-    } else {
-      label.textContent = tr('notConfigured');
-      dot.classList.remove('online');
-    }
-
-    // Render menu
-    const menu = document.getElementById('server-menu');
-    let html = servers.map(s => {
-      const isFile = isFileSourceType(s.type);
-      const hosts = s.hosts || [];
-      const activeHostIndex = s.active_host || 0;
-      const hostButtons = (!isFile && hosts.length > 1)
-        ? `<div class="server-menu-hosts">
-            ${hosts.map((h, i) => `
-              <button class="server-menu-host ${i === activeHostIndex ? 'active' : ''}"
-                      onclick="switchServerHost(event, '${s.id}', ${i}, ${s.active})">
-                <span class="smh-dot"></span>${esc(h)}
-              </button>`).join('')}
-          </div>`
-        : '';
-      return `<div class="server-menu-entry ${s.active ? 'active' : ''}">
-        <button class="server-menu-item" type="button"
-                onclick="switchServer('${s.id}', '${jsStr(s.name || tr('server'))}')">
-          ${_sourceAvatarHtml(s.type)}
-          <span class="smi-body">
-            <span class="smi-name">${esc(s.name || tr('server'))}</span>
-            <span class="smi-host">${esc(_sourceMeta(s))}</span>
-          </span>
-          <span class="smi-check" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-          </span>
-        </button>
-        ${hostButtons}
-      </div>`;
-    }).join('');
-    html += `<button class="server-menu-manage" type="button" onclick="openServerManager();closeServerMenu()">
-      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.15 2.15 0 1 1-3.04 3.04l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65V21.4a2.15 2.15 0 1 1-4.3 0v-.09a1.8 1.8 0 0 0-1.08-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2.15 2.15 0 1 1-3.04-3.04l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.08h-.09a2.15 2.15 0 1 1 0-4.3h.09A1.8 1.8 0 0 0 4.6 8.54a1.8 1.8 0 0 0-.36-1.98l-.04-.04a2.15 2.15 0 1 1 3.04-3.04l.04.04a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.34 2.2v-.09a2.15 2.15 0 1 1 4.3 0v.09a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.15 2.15 0 1 1 3.04 3.04l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.08h.09a2.15 2.15 0 1 1 0 4.3h-.09A1.8 1.8 0 0 0 19.4 15Z"/></svg>
-      <span>${tr('manageServers')}</span>
-    </button>`;
-    menu.innerHTML = html || `<div class="server-menu-empty">${tr('noServers')}</div>`;
+    paintSourceSwitcher();
 
     // Render settings list
     renderServerList(servers);
-  } catch (_) {}
+    return active || null;
+  } catch (_) { return null; }
 }
 
 function toggleServerMenu(e) {
@@ -1889,29 +2656,34 @@ function closeServerMenu() {
 }
 function onDocClick() { closeServerMenu(); _closeEpisodePagePicker(); }
 
+function switchToWebsiteSource() {
+  if (!_websiteAvailable) return;
+  closeLibraryPicker();
+  setWorkspace('website');
+}
+
 async function switchServer(serverId, serverName = '') {
+  setWorkspace('media');
   const switchSeq = ++_serverSwitchSeq;
-  beginLibraryLoad(serverId);
+  const libraryLoad = beginLibraryLoad(serverId);
   closeServerMenu();
   closeLibraryPicker();
   // Optimistic label update so header reflects the change immediately
   if (serverName) _setText('active-server-label', serverName);
   _showLibrarySkeletons();
   try {
-    const result = await api('POST', `/api/servers/${serverId}/activate`, {
-      switch_session: _serverSwitchSession, switch_sequence: switchSeq,
-    });
-    if (switchSeq !== _serverSwitchSeq || result.active_server_id !== serverId) return;
-    _activeServerId = serverId;
-    await refreshServerSwitcher();
-    await reloadLibraryForActiveServer();
+    const active = await refreshServerSwitcher(serverId);
+    if (switchSeq !== _serverSwitchSeq || !active || active.id !== serverId) return;
+    await reloadLibraryForActiveServer(tr('loadingLibrary'), libraryLoad);
   } catch (e) {
+    if (e?.name === 'AbortError' || switchSeq !== _serverSwitchSeq) return;
     toast(e.message, true);
     refreshServerSwitcher().catch(() => {});
   }
 }
 
 async function switchHost(serverId, hostIndex) {
+  setWorkspace('media');
   closeServerMenu();
   _showLibrarySkeletons();
   try {
@@ -1922,9 +2694,10 @@ async function switchHost(serverId, hostIndex) {
 }
 
 async function switchServerHost(event, serverId, hostIndex, isActive = false) {
-  const switchSeq = ++_serverSwitchSeq;
-  beginLibraryLoad(serverId);
   event.stopPropagation();
+  setWorkspace('media');
+  const switchSeq = ++_serverSwitchSeq;
+  const libraryLoad = beginLibraryLoad(serverId);
   closeServerMenu();
 
   // Immediate visual feedback on the clicked element
@@ -1940,28 +2713,24 @@ async function switchServerHost(event, serverId, hostIndex, isActive = false) {
 
   try {
     await api('PUT', `/api/servers/${serverId}/host`, { host_index: hostIndex });
-    if (!isActive) {
-      const result = await api('POST', `/api/servers/${serverId}/activate`, {
-        switch_session: _serverSwitchSession, switch_sequence: switchSeq,
-      });
-      if (result.active_server_id !== serverId) return;
-    }
     if (switchSeq !== _serverSwitchSeq) return;
-    _activeServerId = serverId;
+    selectBrowseSource(serverId);
     await refreshServerSwitcher();
     if (!stayOnRemote) {
-      await reloadLibraryForActiveServer();
+      await reloadLibraryForActiveServer(tr('loadingLibrary'), libraryLoad);
     }
-    toast(tr('ipSwitched'));
+    if (switchSeq === _serverSwitchSeq) toast(tr('ipSwitched'));
   } catch (e) {
+    if (e?.name === 'AbortError' || switchSeq !== _serverSwitchSeq) return;
     toast(e.message, true);
     if (clickedEl) { clickedEl.style.opacity = ''; clickedEl.style.pointerEvents = ''; }
   }
 }
 
-async function reloadLibraryForActiveServer(message = tr('loadingLibrary')) {
+async function reloadLibraryForActiveServer(message = tr('loadingLibrary'), libraryLoad = currentLibraryLoad()) {
+  if (!isCurrentLibraryLoad(libraryLoad)) return;
   if (!_hasAnyServer || !_activeServerId) {
-    resetLibraryState();
+    resetLibraryState('idle');
     updateLibraryEmptyState(true);
     return;
   }
@@ -1969,30 +2738,30 @@ async function reloadLibraryForActiveServer(message = tr('loadingLibrary')) {
   resetSearchUi();
   if (isFileSourceType(_activeSourceType)) {
     _enterFileMode();
-    await loadDir('');
+    await loadDir('', libraryLoad);
     return;
   }
   if (_activeSourceType === 'iptv') {
-    await _enterIPTVMode();
+    await _enterIPTVMode(libraryLoad);
     return;
   }
   _exitFileMode();
-  resetLibraryState();
-  browseParentId = '';
-  currentLibraryName = tr('all');
-  _setViewMode('home');
-  await loadLibraryNav();
-  await loadHomeData();
+  _showLibrarySkeletons();
+  await loadLibraryNav(libraryLoad);
+  if (!isCurrentLibraryLoad(libraryLoad)) return;
+  await loadHomeData(libraryLoad);
 }
 
 /* ── Library selector ─────────────────────────────────────────────────────── */
-async function loadLibraryNav() {
+async function loadLibraryNav(libraryLoad = currentLibraryLoad()) {
   const seq = ++libraryLoadSeq;
   libraryLoadError = '';
+  libraryNavState = 'loading';
+  renderCategoryPills();
   setLibraryPickerBusy(true);
   try {
-    const data = await api('GET', '/api/library/libraries');
-    if (seq !== libraryLoadSeq) return;
+    const data = await libraryApi('GET', '/api/library/libraries', undefined, libraryLoad);
+    if (seq !== libraryLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     const items = data.Items || [];
     libraryItems = [{ Id: '', Name: tr('all'), CollectionType: '' }, ...items.map(lib => ({
       Id: lib.Id || '',
@@ -2000,28 +2769,33 @@ async function loadLibraryNav() {
       CollectionType: lib.CollectionType || '',
     }))];
     _homeLibraries = libraryItems.filter(l => l.Id !== '');
+    libraryNavState = _homeLibraries.length ? 'ready' : 'empty';
     if (!libraryItems.some(lib => lib.Id === browseParentId)) browseParentId = '';
     currentLibraryName = libraryItems.find(lib => lib.Id === browseParentId)?.Name || tr('all');
     updateLibraryPickerUi();
     renderLibraryPicker();
     renderCategoryPills();
   } catch (e) {
-    if (seq !== libraryLoadSeq) return;
+    if (e?.name === 'AbortError' || seq !== libraryLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     libraryItems = [{ Id: '', Name: tr('all'), CollectionType: '' }];
     _homeLibraries = [];
     libraryLoadError = e.message || tr('loadingLibraryFailed');
+    libraryNavState = 'error';
     browseParentId = '';
     currentLibraryName = tr('all');
     updateLibraryPickerUi();
     renderLibraryPicker();
+    renderCategoryPills();
     toast(libraryLoadError, true);
   } finally {
-    if (seq === libraryLoadSeq) setLibraryPickerBusy(false);
+    if (seq === libraryLoadSeq && isCurrentLibraryLoad(libraryLoad)) setLibraryPickerBusy(false);
   }
 }
 
 function _showLibrarySkeletons() {
-  resetLibraryState();
+  // Keep nav state as loading across the reset so the category row never
+  // flashes the empty-library message while the skeleton body is on screen.
+  resetLibraryState('loading');
   _setViewMode('home');
   switchTab('library');
   const container = document.getElementById('home-type-sections');
@@ -2038,11 +2812,12 @@ function _showLibrarySkeletons() {
   document.getElementById('section-resume')?.classList.add('hidden');
 }
 
-function resetLibraryState() {
+function resetLibraryState(navState = 'idle') {
   libraryItems = [{ Id: '', Name: tr('all'), CollectionType: '' }];
   _homeLibraries = [];
   currentLibraryName = tr('all');
   libraryLoadError = '';
+  libraryNavState = navState;
   browseMode = 'library';
   browseParentId = '';
   browseStart = 0;
@@ -2084,6 +2859,14 @@ const _COLLECTION_ICONS = {
 function renderCategoryPills() {
   const row = document.getElementById('category-row');
   if (!row) return;
+  if (libraryNavState === 'loading') {
+    row.innerHTML = `<div class="category-row-loading">${tr('loadingLibrary')}</div>`;
+    return;
+  }
+  if (libraryNavState === 'error' || libraryNavState === 'idle') {
+    row.innerHTML = '';
+    return;
+  }
   if (!_homeLibraries.length) {
     row.innerHTML = `<div class="category-row-loading">${tr('noLibrary')}</div>`;
     return;
@@ -2114,16 +2897,32 @@ function _updateCategoryChipActive() {
 }
 
 /* ── Home data ────────────────────────────────────────────────────────────── */
-async function loadHomeData() {
-  await Promise.all([loadResume(), loadHomeTypeSections(), loadAllCategoryChipCounts()]);
+async function loadHomeData(libraryLoad = currentLibraryLoad()) {
+  if (!isCurrentLibraryLoad(libraryLoad)) return;
+  if (libraryLoadError) {
+    const container = document.getElementById('home-type-sections');
+    if (container) container.innerHTML = `<div class="search-state">
+      <div class="search-state-title">${esc(tr('libraryLoadFailed'))}</div>
+      <div class="search-state-subtitle">${esc(libraryLoadError)}</div>
+      <button class="remote-empty-btn" onclick="reloadLibraryForActiveServer()">${esc(tr('retry'))}</button>
+    </div>`;
+    document.getElementById('section-resume')?.classList.add('hidden');
+    return;
+  }
+  await Promise.all([
+    loadResume(libraryLoad),
+    loadHomeTypeSections(libraryLoad),
+    loadAllCategoryChipCounts(libraryLoad),
+  ]);
 }
 
-async function loadAllCategoryChipCounts() {
+async function loadAllCategoryChipCounts(libraryLoad = currentLibraryLoad()) {
   await Promise.all(_homeLibraries.map(async lib => {
-    if (!lib.Id) return;
+    if (!lib.Id || !isCurrentLibraryLoad(libraryLoad)) return;
     try {
       const qs = new URLSearchParams({ start: 0, limit: 1, parent_id: lib.Id });
-      const data = await api('GET', `/api/library/items?${qs}`);
+      const data = await libraryApi('GET', `/api/library/items?${qs}`, undefined, libraryLoad);
+      if (!isCurrentLibraryLoad(libraryLoad)) return;
       _updateCategoryChipCount(lib.Id, data.TotalRecordCount || 0);
     } catch (_) {}
   }));
@@ -2135,9 +2934,9 @@ const _COLLECTION_TYPE_LABEL = {
   playlists: 'playlist', music: 'music', homevideos: 'homeVideos',
 };
 
-async function loadHomeTypeSections() {
+async function loadHomeTypeSections(libraryLoad = currentLibraryLoad()) {
   const container = document.getElementById('home-type-sections');
-  if (!container) return;
+  if (!container || !isCurrentLibraryLoad(libraryLoad)) return;
 
   // Group libraries by CollectionType; keep order from Emby
   const seen = new Set();
@@ -2176,15 +2975,18 @@ async function loadHomeTypeSections() {
       const firstLib = g.libs[0];
       const qs = new URLSearchParams({ start: 0, limit: 8 });
       if (firstLib?.Id) qs.set('parent_id', firstLib.Id);
-      const data = await api('GET', `/api/library/items?${qs}`);
+      const data = await libraryApi('GET', `/api/library/items?${qs}`, undefined, libraryLoad);
+      if (!isCurrentLibraryLoad(libraryLoad)) return;
       const items = (data.Items || []).slice(0, 8);
       if (!items.length) {
         document.getElementById(`home-sec-${g.type}`)?.classList.add('hidden');
         return;
       }
       row.innerHTML = items.map(item => posterCardHtml(item)).join('');
-    } catch (_) {
-      if (row) row.innerHTML = `<div class="row-error">${tr('loadFailed')}</div>`;
+    } catch (e) {
+      if (e?.name !== 'AbortError' && isCurrentLibraryLoad(libraryLoad) && row) {
+        row.innerHTML = `<div class="row-error">${tr('loadFailed')}</div>`;
+      }
     }
   }));
 }
@@ -2275,7 +3077,7 @@ async function browseAll() {
 }
 
 /* ── Browse grid ──────────────────────────────────────────────────────────── */
-async function loadBrowse(append = false, opts = {}) {
+async function loadBrowse(append = false, opts = {}, libraryLoad = currentLibraryLoad()) {
   const requestId = ++browseLoadSeq;
   if (!append) browseStart = 0;
   const btn = document.getElementById('btn-load-more');
@@ -2290,10 +3092,10 @@ async function loadBrowse(append = false, opts = {}) {
     const qs = new URLSearchParams({ start: browseStart, limit: pageSize });
     if (browseMode === 'library' && browseParentId) qs.set('parent_id', browseParentId);
     const endpoint = browseMode === 'resume' ? '/api/library/resume' : '/api/library/items';
-    const data = await api('GET', `${endpoint}?${qs}`);
+    const data = await libraryApi('GET', `${endpoint}?${qs}`, undefined, libraryLoad);
     const items = data.Items || [];
     const totalCount = data.TotalRecordCount || 0;
-    if (requestId !== browseLoadSeq) return;
+    if (requestId !== browseLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     browseHasMore = browseStart + items.length < totalCount;
     browseStart  += items.length;
 
@@ -2303,12 +3105,14 @@ async function loadBrowse(append = false, opts = {}) {
       grid.innerHTML = `<div class="search-state"><div class="search-state-title">${tr('noBrowseContentTitle')}</div><div class="search-state-subtitle">${tr('noBrowseContentSub')}</div></div>`;
     } else {
       const renderCard = browseMode === 'resume' ? resumeGridCardHtml : posterCardHtml;
-      grid.insertAdjacentHTML('beforeend', items.map(renderCard).join(''));
+      // NB: pass an arrow, never `.map(renderCard)` — Array.map hands the index
+      // as the 2nd arg, which would clobber the serverId parameter.
+      grid.insertAdjacentHTML('beforeend', items.map(it => renderCard(it)).join(''));
     }
 
     if (btn) btn.classList.toggle('hidden', !browseHasMore);
   } catch (e) {
-    if (requestId !== browseLoadSeq) return;
+    if (e?.name === 'AbortError' || requestId !== browseLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     renderBrowseError(e.message);
   } finally {
     if (btn) {
@@ -2346,10 +3150,42 @@ function renderBrowseError(message) {
 function markPosterMissing(img) {
   const frame = img.closest('.poster-frame, .resume-poster-frame, .sheet-poster-frame, .remote-poster-card');
   if (frame) frame.classList.add('missing');
-  img.remove();
+  // Keep the element so a reused remote-control card can recover on the next
+  // playback item; CSS hides it while the placeholder is shown.
+  img.removeAttribute('src');
 }
 
-function posterCardHtml(item) {
+// Do not expose the browser's native broken-image glyph. The placeholder stays
+// visible until the image has successfully loaded (including its one retry).
+function preparePoster(img) {
+  const frame = img.closest('.poster-frame, .resume-poster-frame, .sheet-poster-frame, .remote-poster-card');
+  frame?.classList.remove('missing');
+  img.classList.remove('poster-loaded');
+  delete img.dataset.posterRetry;
+}
+
+function showPoster(img) {
+  const frame = img.closest('.poster-frame, .resume-poster-frame, .sheet-poster-frame, .remote-poster-card');
+  frame?.classList.remove('missing');
+  img.classList.add('poster-loaded');
+}
+
+function retryPoster(img) {
+  img.classList.remove('poster-loaded');
+  const attempt = Number(img.dataset.posterRetry || 0);
+  if (attempt >= 1) { markPosterMissing(img); return; }
+  img.dataset.posterRetry = String(attempt + 1);
+  setTimeout(() => {
+    if (!img.isConnected) return;
+    const url = new URL(img.currentSrc || img.src, location.href);
+    // Make a transient proxy failure a new browser request; the server ignores
+    // this cache-busting parameter and successful responses still use its cache.
+    url.searchParams.set('_retry', String(Date.now()));
+    img.src = url.pathname + url.search;
+  }, 350);
+}
+
+function posterCardHtml(item, serverId = _activeServerId) {
   const isSeries = item.Type === 'Series';
   const title    = item.Name || '';
   const year     = item.ProductionYear ? `<div class="poster-year">${item.ProductionYear}</div>` : '';
@@ -2360,8 +3196,8 @@ function posterCardHtml(item) {
     ? `<div class="poster-ep-count">${tr('totalEpisodes', { count: item.RecursiveItemCount })}</div>`
     : '';
   return `
-    <div class="poster-card" onclick="openVideoSheet('${item.Id}')">
-      ${posterFrameHtml(item.Id, title, 'poster-frame', 300, epCount, rating)}
+    <div class="poster-card" onclick="openVideoSheet('${jsStr(item.Id)}', '${jsStr(serverId)}')">
+      ${posterFrameHtml(item.Id, title, 'poster-frame', 300, epCount, rating, serverId)}
       <div class="poster-card-info">
         <div class="poster-title">${esc(title)}</div>
         ${year}
@@ -2369,35 +3205,40 @@ function posterCardHtml(item) {
     </div>`;
 }
 
-function posterFrameHtml(itemId, title, className = 'poster-frame', maxHeight = 300, topOverlay = '', bottomOverlay = '') {
+function posterFrameHtml(itemId, title, className = 'poster-frame', maxHeight = 300, topOverlay = '', bottomOverlay = '', serverId = _activeServerId) {
   return `
     <div class="${className}">
       <div class="poster-placeholder" aria-hidden="true">
         <span class="poster-placeholder-mark"></span>
         <span>${tr('noPoster')}</span>
       </div>
-      <img src="${libraryImageUrl(itemId, maxHeight)}"
-           alt="${esc(title)}" loading="lazy" onerror="markPosterMissing(this)">
+      <img src="${libraryImageUrl(itemId, maxHeight, '', serverId)}"
+           alt="${esc(title)}" loading="lazy" onload="showPoster(this)" onerror="retryPoster(this)">
       ${topOverlay}${bottomOverlay}
     </div>`;
 }
 
 /* ── Recently watched ─────────────────────────────────────────────────────── */
-async function loadResume() {
+async function loadResume(libraryLoad = currentLibraryLoad()) {
   const row = document.getElementById('resume-row');
   const sec = document.getElementById('section-resume');
   if (!row) return;
   sec?.classList.remove('hidden');
   row.innerHTML = Array(3).fill(skeletonResumeCardHtml()).join('');
   try {
-    const data  = await api('GET', '/api/library/resume');
+    const data  = await libraryApi('GET', '/api/library/resume', undefined, libraryLoad);
+    if (!isCurrentLibraryLoad(libraryLoad)) return;
     const items = data.Items || [];
     if (!items.length) { sec?.classList.add('hidden'); row.innerHTML = ''; return; }
-    row.innerHTML = items.map(resumeCardHtml).join('');
-  } catch (_) { sec?.classList.add('hidden'); row.innerHTML = ''; }
+    row.innerHTML = items.map(it => resumeCardHtml(it)).join('');
+  } catch (e) {
+    if (e?.name !== 'AbortError' && isCurrentLibraryLoad(libraryLoad)) {
+      sec?.classList.add('hidden'); row.innerHTML = '';
+    }
+  }
 }
 
-function resumeCardHtml(item) {
+function resumeCardHtml(item, serverId = _activeServerId) {
   const userData    = item.UserData || {};
   const pct         = Math.round(userData.PlayedPercentage || 0);
   const seriesTitle = item.SeriesName || '';
@@ -2415,13 +3256,13 @@ function resumeCardHtml(item) {
   const showProgress = pct > 0 || (derivedPosSecs && derivedPosSecs > 0 && durSecs);
   // Use series poster for episodes; try Backdrop image (falls back to Primary server-side)
   const posterItemId = item.SeriesId || item.Id;
-  const imgSrc = libraryImageUrl(posterItemId, 400, 'Backdrop');
+  const imgSrc = libraryImageUrl(posterItemId, 400, 'Backdrop', serverId);
   return `
-    <div class="resume-card" onclick="openVideoSheet('${item.Id}')">
+    <div class="resume-card" onclick="openVideoSheet('${jsStr(item.Id)}', '${jsStr(serverId)}')">
       <div class="resume-poster-frame" id="rf-${item.Id}">
-        <img src="${imgSrc}" alt="${esc(title)}" loading="lazy" onerror="markPosterMissing(this)">
+        <img src="${imgSrc}" alt="${esc(title)}" loading="lazy" onload="showPoster(this)" onerror="retryPoster(this)">
         <div class="resume-gradient"></div>
-        <button class="resume-play-btn" onclick="event.stopPropagation();openVideoSheet('${item.Id}')" aria-label="${tr('play')}">
+        <button class="resume-play-btn" onclick="event.stopPropagation();openVideoSheet('${jsStr(item.Id)}', '${jsStr(serverId)}')" aria-label="${tr('play')}">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.14v13.72L19 12 8 5.14z"/></svg>
         </button>
         <div class="resume-overlay">
@@ -2441,17 +3282,18 @@ function resumeCardHtml(item) {
     </div>`;
 }
 
-function resumeGridCardHtml(item) {
+function resumeGridCardHtml(item, serverId = _activeServerId) {
   const seriesTitle = item.SeriesName || '';
   const title = seriesTitle || item.Name || '';
   const episodeLabel = episodeLabelForItem(item);
   const subtitle = seriesTitle ? (episodeLabel || item.Name || '') : (item.ProductionYear || '');
   const posterItemId = item.SeriesId || item.Id;
-  const pct = Math.round(item.UserData?.PlayedPercentage || 0);
-  const progress = pct > 0 ? `<div class="resume-progress"><div class="resume-progress-fill" style="width:${Math.min(100, pct)}%"></div></div>` : '';
+  const rating = item.CommunityRating
+    ? `<div class="poster-rating"><svg class="star-icon" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${Number(item.CommunityRating).toFixed(1)}</div>`
+    : '';
   return `
-    <div class="poster-card" onclick="openVideoSheet('${item.Id}')">
-      ${posterFrameHtml(posterItemId, title, 'poster-frame', 300, '', progress)}
+    <div class="poster-card" onclick="openVideoSheet('${jsStr(item.Id)}', '${jsStr(serverId)}')">
+      ${posterFrameHtml(posterItemId, title, 'poster-frame', 300, '', rating, serverId)}
       <div class="poster-card-info">
         <div class="poster-title">${esc(title)}</div>
         ${subtitle ? `<div class="poster-year">${esc(subtitle)}</div>` : ''}
@@ -2476,21 +3318,28 @@ function closeVideoSheet() {
   backdrop.classList.add('hidden');
   document.body.classList.remove('sheet-open');
   sheetSeriesId = '';
+  sheetServerId = '';
   sheetEpisodesTotal = 0;
   sheetEpisodesLoading = false;
   _sheetEpisodePage = 0;
 }
 
-async function openVideoSheet(itemId) {
+function sourcePath(path, serverId) {
+  return `${path}${path.includes('?') ? '&' : '?'}server_id=${encodeURIComponent(serverId)}`;
+}
+
+async function openVideoSheet(itemId, serverId) {
+  if (!serverId) return;
   openSheetShell();
   const content = document.getElementById('video-sheet-content');
   content.innerHTML = sheetLoadingHtml();
   _locateEpisode = null;
+  sheetServerId = serverId;
   try {
-    const item = await api('GET', `/api/library/items/${encodeURIComponent(itemId)}`);
+    const item = await api('GET', sourcePath(`/api/library/items/${encodeURIComponent(itemId)}`, serverId));
     if (item.Type === 'Episode' && item.SeriesId) {
       // Open the parent series sheet and scroll to this episode.
-      const series = await api('GET', `/api/library/items/${encodeURIComponent(item.SeriesId)}`);
+      const series = await api('GET', sourcePath(`/api/library/items/${encodeURIComponent(item.SeriesId)}`, serverId));
       _locateEpisode = { id: item.Id, num: Number(item.IndexNumber) || null, seasonId: item.SeasonId || '' };
       renderSeriesSheet(series);
       await initSheetSeasons(series.Id);
@@ -2519,7 +3368,7 @@ function renderPlayableSheet(item) {
   const posterItemId = seriesId || item.Id;
   const variants = Array.isArray(item.PlaybackVariants) ? item.PlaybackVariants : [];
   _sheetMediaSourceId = variants[0]?.id || '';
-  _sheetPlayableItem = { itemId: item.Id, seriesId, seasonId, title, seriesTitle, episodeLabel, posterItemId };
+  _sheetPlayableItem = { itemId: item.Id, seriesId, seasonId, title, seriesTitle, episodeLabel, posterItemId, serverId: sheetServerId };
   const picker = variants.length > 1 ? `<div class="sheet-variants"><div class="sheet-variants-title">${tr('mediaVersion')}</div>${variants.map((v,i) => `<button class="sheet-variant${i===0?' active':''}" data-source-id="${esc(v.id)}" onclick="selectSheetVariant('${jsStr(v.id)}')"><b>${esc(v.height ? v.height+'p' : (v.name || tr('mediaVersion')))}</b><small>${esc([v.video_codec, v.container].filter(Boolean).join(' · ').toUpperCase())}</small></button>`).join('')}</div>` : '';
   document.getElementById('video-sheet-content').innerHTML = `
     ${sheetHeroHtml(item, subtitle)}
@@ -2535,7 +3384,7 @@ function selectSheetVariant(id) {
 }
 function playSelectedSheetItem() {
   const i = _sheetPlayableItem; if (!i) return;
-  playItem(i.itemId, i.seriesId, i.seasonId, i.title, i.seriesTitle, i.episodeLabel, i.posterItemId, _sheetMediaSourceId);
+  playItem(i.itemId, i.seriesId, i.seasonId, i.title, i.seriesTitle, i.episodeLabel, i.posterItemId, _sheetMediaSourceId, i.serverId);
 }
 
 function _pageForEpisodeNum(num) {
@@ -2589,7 +3438,7 @@ async function initSheetSeasons(seriesId) {
   sheetSeasonId = '';
   _sheetEpisodePage = 0;
   try {
-    const data = await api('GET', `/api/library/seasons?series_id=${encodeURIComponent(seriesId)}`);
+    const data = await api('GET', sourcePath(`/api/library/seasons?series_id=${encodeURIComponent(seriesId)}`, sheetServerId));
     const seasons = (data.Items || []).filter(s => s && s.Id);
     if (seasons.length > 1) {
       sheetSeasons = seasons;
@@ -2703,14 +3552,14 @@ async function loadBoxSetItems(boxSetId) {
   grid.innerHTML = Array(4).fill(skeletonPosterCardHtml()).join('');
   try {
     const qs = new URLSearchParams({ parent_id: boxSetId, start: 0, limit: 60 });
-    const data = await api('GET', `/api/library/items?${qs}`);
+    const data = await api('GET', sourcePath(`/api/library/items?${qs}`, sheetServerId));
     const items = (data.Items || []);
     if (title) title.textContent = tr('includeCount', { count: items.length });
     if (!items.length) {
       grid.innerHTML = `<div class="row-error" style="grid-column:1/-1;padding:12px;text-align:center;color:rgba(255,255,255,.4);font-size:13px">${tr('noContent')}</div>`;
       return;
     }
-    grid.innerHTML = items.map(posterCardHtml).join('');
+    grid.innerHTML = items.map(item => posterCardHtml(item, sheetServerId)).join('');
   } catch (e) {
     if (grid) grid.innerHTML = `<div class="row-error" style="grid-column:1/-1;padding:12px;text-align:center;color:rgba(255,255,255,.4);font-size:13px">${tr('loadFailed')}: ${esc(e.message)}</div>`;
   }
@@ -2734,7 +3583,7 @@ async function loadSheetEpisodes(seriesId) {
       limit: EPISODE_PAGE_SIZE,
       sort: _sheetEpisodeSort,
     });
-    const data = await api('GET', `/api/library/episodes?${qs}`);
+    const data = await api('GET', sourcePath(`/api/library/episodes?${qs}`, sheetServerId));
     const items = data.Items || [];
     sheetEpisodesTotal = data.TotalRecordCount || items.length;
     list.innerHTML = '';
@@ -2846,7 +3695,7 @@ function sheetEpisodeHtml(ep, absoluteIndex) {
     <button class="sheet-episode ${isPlaying ? 'playing' : ''}"
             data-item-id="${ep.Id}"
             data-episode-num="${num}"
-            onclick="playItem('${ep.Id}', '${sId}', '${snId}', '${jsStr(title)}', '${jsStr(seriesTitle)}', '${jsStr(episodeLabel)}', '${jsStr(posterItemId)}')">
+            onclick="playItem('${jsStr(ep.Id)}', '${jsStr(sId)}', '${jsStr(snId)}', '${jsStr(title)}', '${jsStr(seriesTitle)}', '${jsStr(episodeLabel)}', '${jsStr(posterItemId)}', '', '${jsStr(sheetServerId)}')">
       <span class="sheet-episode-num">${tr('episodeCompact', { num })}</span>
       <span class="sheet-episode-body">
         <span class="sheet-episode-title">${esc(title)}</span>
@@ -2878,6 +3727,7 @@ function isMobileSafari() {
 function activateSearch() {
   if (_activeTab !== 'library') return;
   isSearching = true;
+  updateSearchToggleState();
   _setViewMode('search');
   renderSearchPrompt();
   if (!isMobileSafari()) {
@@ -2885,9 +3735,33 @@ function activateSearch() {
   }
 }
 
+function onSearchToggleClick() {
+  if (isSearching) cancelSearch();
+  else activateSearch();
+}
+
+function updateSearchToggleState() {
+  const btn = document.getElementById('search-toggle');
+  if (!btn) return;
+  btn.classList.toggle('is-active', isSearching);
+  btn.setAttribute('aria-label', isSearching ? 'Close search' : 'Search');
+}
+
+function updateSearchClearButton() {
+  document.getElementById('search-clear')?.classList.toggle('hidden', !getSearchValue());
+}
+
+function clearSearchText() {
+  setSearchValue('');
+  onSearchInput('');
+  updateSearchClearButton();
+  if (!isMobileSafari()) getSearchInput()?.focus();
+}
+
 function onSearchInput(value) {
   if (searchInFlight) searchRequestSeq++;
   searchInFlight = false;
+  updateSearchClearButton();
   if (!value.trim()) {
     renderSearchPrompt();
     return;
@@ -2907,6 +3781,7 @@ function onSearchKeydown(event) {
 
 function enterSearchMode(opts = {}) {
   isSearching = true;
+  updateSearchToggleState();
   if (_viewMode !== 'search') _setViewMode('search');
   if (opts.focus && !isMobileSafari()) {
     requestAnimationFrame(() => getSearchInput()?.focus());
@@ -2958,6 +3833,8 @@ function resetSearchUi() {
   _lastSearchQuery = '';
   _searchFilter = 'all';
   updateSearchFilterPills();
+  updateSearchToggleState();
+  updateSearchClearButton();
 }
 
 function setSearchFilter(filter) {
@@ -3028,7 +3905,7 @@ function renderSearchResultsGrouped() {
           <h2 class="section-title-h">${esc(g.label)}</h2>
         </div>
         <div class="poster-row-4">
-          ${g.items.slice(0, 8).map(posterCardHtml).join('')}
+          ${g.items.slice(0, 8).map(it => posterCardHtml(it)).join('')}
         </div>
       </section>`;
   }).join('');
@@ -3060,34 +3937,62 @@ async function loadSettings() {
       seek_backward_secs: Number(settings.seek_backward_secs) || 5,
       seek_forward_secs: Number(settings.seek_forward_secs) || 30,
       dlna_receiver_enabled: settings.dlna_receiver_enabled !== false,
+      mpv_available: settings.mpv_available !== false,
+      language: settings.language || 'auto',
+      autoplay_next_episode: settings.autoplay_next_episode !== false,
     };
     _supportedFileProtocols = Array.isArray(settings.supported_file_protocols)
       ? settings.supported_file_protocols
       : null;
+    _platform = String(settings.platform || '');
+    // Language is a server-owned setting; "auto" only resolves to an actual
+    // dictionary through resolved_language. Live-correct the already-painted
+    // page in place (no reload) if our paint-cache guess didn't match.
+    const resolved = settings.resolved_language || 'en';
+    if (window.I18N && window.I18N.lang !== resolved) window.I18N.setLang(resolved);
     renderSettingsUi();
+    // Website is zh-CN-only based on the *resolved* language (including
+    // auto → zh-CN). Force Media when unavailable.
+    applyWebsiteLanguageGate();
+    updateNavLabels();
+    paintWebsiteCatalog();
+    paintWebsiteRemote();
   } catch (_) {}
 }
 
 function renderSettingsUi() {
-  document.querySelectorAll('#language-segments .segment-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.lang === (window.I18N?.lang || 'zh-CN'));
-  });
-  const minutes = Math.round((_settings.mpv_cache_secs || 300) / 60);
-  const input = document.getElementById('cache-minutes-input');
-  if (input && document.activeElement !== input) input.value = String(minutes);
-  document.querySelectorAll('#cache-preset-row .cache-preset-btn').forEach(btn => {
-    btn.classList.toggle('active', Number(btn.dataset.minutes) === minutes);
-    btn.textContent = tr('cacheMinutes', { minutes: btn.dataset.minutes });
-  });
+  const langSelect = document.getElementById('language-select');
+  if (langSelect) langSelect.value = _settings.language || 'auto';
+  const cacheSelect = document.getElementById('cache-duration-select');
+  if (cacheSelect) {
+    for (const option of cacheSelect.options) {
+      option.textContent = tr('cacheMinutes', { minutes: Number(option.value) / 60 });
+    }
+    cacheSelect.value = String(_settings.mpv_cache_secs || 300);
+  }
   const saveBtn = document.getElementById('settings-save-btn');
   if (saveBtn) saveBtn.textContent = tr('saveSettings');
-  _setText('cache-minutes-unit', tr('minutesUnit'));
-  _setText('cache-minutes-range-hint', tr('cacheMinutesRangeHint'));
   _setText('dlna-receiver-title', tr('dlnaReceiverTitle'));
   _setText('dlna-receiver-hint', tr('dlnaReceiverHint'));
-  const dlnaToggle = document.getElementById('dlna-receiver-toggle');
-  if (dlnaToggle) dlnaToggle.checked = _settings.dlna_receiver_enabled !== false;
-  _setText('dlna-receiver-status', tr(_settings.dlna_receiver_enabled !== false ? 'dlnaReceiverOn' : 'dlnaReceiverOff'));
+  const dlnaEnabled = _settings.dlna_receiver_enabled !== false;
+  _setText('dlna-receiver-on-btn', tr('dlnaReceiverOn'));
+  _setText('dlna-receiver-off-btn', tr('dlnaReceiverOff'));
+  document.getElementById('dlna-receiver-on-btn')?.classList.toggle('active', dlnaEnabled);
+  document.getElementById('dlna-receiver-off-btn')?.classList.toggle('active', !dlnaEnabled);
+  const dlnaStatus = document.getElementById('dlna-receiver-status');
+  const dlnaCannotPlay = dlnaEnabled && _settings.mpv_available === false;
+  if (dlnaStatus) {
+    dlnaStatus.textContent = dlnaCannotPlay ? tr('dlnaReceiverMpvMissing') : '';
+    dlnaStatus.classList.toggle('hidden', !dlnaCannotPlay);
+  }
+
+  _setText('autoplay-next-episode-title', tr('autoplayNextEpisodeTitle'));
+  _setText('autoplay-next-episode-hint', tr('autoplayNextEpisodeHint'));
+  const autoplayEnabled = _settings.autoplay_next_episode !== false;
+  _setText('autoplay-next-episode-on-btn', tr('autoplayNextEpisodeOn'));
+  _setText('autoplay-next-episode-off-btn', tr('autoplayNextEpisodeOff'));
+  document.getElementById('autoplay-next-episode-on-btn')?.classList.toggle('active', autoplayEnabled);
+  document.getElementById('autoplay-next-episode-off-btn')?.classList.toggle('active', !autoplayEnabled);
 
   // Seek settings
   _renderSeekSelect('seek-backward-select', _settings.seek_backward_secs || 5);
@@ -3101,23 +4006,26 @@ function renderSettingsUi() {
   if (fwdLabel) fwdLabel.textContent = String(_settings.seek_forward_secs || 30);
 }
 
-async function toggleDLNAReceiver() {
-  const enabled = document.getElementById('dlna-receiver-toggle')?.checked !== false;
+async function setDLNAReceiverEnabled(enabled) {
   try {
     const saved = await api('PUT', '/api/settings', { dlna_receiver_enabled: enabled });
     _settings.dlna_receiver_enabled = saved.dlna_receiver_enabled !== false;
-    _setDLNAReceiverStatus(tr('settingsSaved'));
+    toast(tr(enabled ? 'dlnaReceiverEnabled' : 'dlnaReceiverDisabled'), 'success');
   } catch (e) {
-    _setDLNAReceiverStatus(e.message || tr('settingsSaveFailed'), true);
+    toast(tr(enabled ? 'dlnaReceiverEnableFailed' : 'dlnaReceiverDisableFailed'), 'error');
   }
   renderSettingsUi();
 }
 
-function _setDLNAReceiverStatus(message, isError = false) {
-  const el = document.getElementById('dlna-receiver-settings-status');
-  if (!el) return;
-  el.textContent = message || '';
-  el.className = 'settings-status' + (message ? (isError ? ' err' : ' ok') : '');
+async function setAutoplayNextEpisode(enabled) {
+  try {
+    const saved = await api('PUT', '/api/settings', { autoplay_next_episode: enabled });
+    _settings.autoplay_next_episode = saved.autoplay_next_episode !== false;
+    toast(tr(enabled ? 'autoplayNextEpisodeEnabled' : 'autoplayNextEpisodeDisabled'), 'success');
+  } catch (e) {
+    toast(tr('settingsSaveFailed'), 'error');
+  }
+  renderSettingsUi();
 }
 
 function _renderSeekSelect(id, selectedValue) {
@@ -3134,34 +4042,24 @@ function _renderSeekSelect(id, selectedValue) {
   sel.value = String(selectedValue);
 }
 
-function setAppLanguage(lang) {
-  window.I18N?.setLang(lang);
-  window.location.reload();
+async function setAppLanguage(pref) {
+  try {
+    const saved = await api('PUT', '/api/settings', { language: pref });
+    // Cache the resolved language so the reload paints instantly in the
+    // right language instead of guessing — see the i18n.js bootstrap comment.
+    window.I18N?.setLang(saved.resolved_language || 'en');
+    window.location.reload();
+  } catch (e) {
+    toast(e.message || tr('settingsSaveFailed'), 'error');
+    renderSettingsUi();
+  }
 }
 
 let _settingsSaveTimer = null;
 
-function setCacheMinutes(minutes) {
-  const safe = Math.max(1, Math.min(120, Math.round(Number(minutes) || 30)));
-  _settings.mpv_cache_secs = safe * 60;
-  _setSettingsStatus('');
-  renderSettingsUi();
-  clearTimeout(_settingsSaveTimer);
-  _settingsSaveTimer = setTimeout(saveSettings, 200);
-}
-
-function onCacheMinutesInput() {
-  const input = document.getElementById('cache-minutes-input');
-  const raw = Number(input?.value);
-  const minutes = Math.max(1, Math.min(120, Math.round(raw) || 30));
-  // Clamp the visible value immediately when it's out of range, instead of
-  // only clamping the saved value — otherwise the box can show e.g. 9999
-  // until the field loses focus, which looks like there's no real cap.
-  if (input && (Number.isNaN(raw) || raw > 120 || raw < 1)) {
-    input.value = String(minutes);
-  }
-  _settings.mpv_cache_secs = minutes * 60;
-  _setSettingsStatus('');
+function onCacheDurationChange() {
+  const value = Number(document.getElementById('cache-duration-select')?.value);
+  _settings.mpv_cache_secs = [300, 900, 1800, 3600].includes(value) ? value : 300;
   renderSettingsUi();
   clearTimeout(_settingsSaveTimer);
   _settingsSaveTimer = setTimeout(saveSettings, 200);
@@ -3170,21 +4068,14 @@ function onCacheMinutesInput() {
 async function saveSettings() {
   try {
     const saved = await api('PUT', '/api/settings', {
-      mpv_cache_secs: Math.max(60, Math.min(7200, Math.round(Number(_settings.mpv_cache_secs) || 300))),
+      mpv_cache_secs: [300, 900, 1800, 3600].includes(Number(_settings.mpv_cache_secs)) ? Number(_settings.mpv_cache_secs) : 300,
     });
     _settings = { ..._settings, mpv_cache_secs: Number(saved.mpv_cache_secs) || _settings.mpv_cache_secs };
     renderSettingsUi();
-    _setSettingsStatus(tr('settingsSaved'), false);
+    toast(tr('settingsSaved'), 'success');
   } catch (e) {
-    _setSettingsStatus(e.message || tr('settingsSaveFailed'), true);
+    toast(e.message || tr('settingsSaveFailed'), 'error');
   }
-}
-
-function _setSettingsStatus(message, isError = false) {
-  const el = document.getElementById('settings-status');
-  if (!el) return;
-  el.textContent = message || '';
-  el.className = 'settings-status' + (message ? (isError ? ' err' : ' ok') : '');
 }
 
 let _seekSettingsSaveTimer = null;
@@ -3194,7 +4085,6 @@ function onSeekSettingChange() {
   const fwd = Number(document.getElementById('seek-forward-select')?.value) || 30;
   _settings.seek_backward_secs = back;
   _settings.seek_forward_secs = fwd;
-  _setSeekSettingsStatus('');
   renderSettingsUi();
   clearTimeout(_seekSettingsSaveTimer);
   _seekSettingsSaveTimer = setTimeout(saveSeekSettings, 200);
@@ -3209,17 +4099,10 @@ async function saveSeekSettings() {
     _settings.seek_backward_secs = Number(saved.seek_backward_secs) || _settings.seek_backward_secs;
     _settings.seek_forward_secs = Number(saved.seek_forward_secs) || _settings.seek_forward_secs;
     renderSettingsUi();
-    _setSeekSettingsStatus(tr('settingsSaved'), false);
+    toast(tr('settingsSaved'), 'success');
   } catch (e) {
-    _setSeekSettingsStatus(e.message || tr('settingsSaveFailed'), true);
+    toast(e.message || tr('settingsSaveFailed'), 'error');
   }
-}
-
-function _setSeekSettingsStatus(message, isError = false) {
-  const el = document.getElementById('seek-settings-status');
-  if (!el) return;
-  el.textContent = message || '';
-  el.className = 'settings-status' + (message ? (isError ? ' err' : ' ok') : '');
 }
 
 /* ── Settings: server CRUD ────────────────────────────────────────────────── */
@@ -3255,16 +4138,19 @@ function renderServerList(servers) {
     const hostLine = host ? `${host}:${s.port}${type === 'smb' && s.share ? '/' + s.share : ''}` : '';
     const extra = hosts.length > 1 ? ` · +${hosts.length - 1}` : '';
     const needsLogin = !fileSource && !iptvSource && !s.logged_in;
-    return `<div class="server-card ${s.active ? 'active-server' : ''}" onclick="openServerForm('${s.id}')">
+    const rootNotSet = type === 'smb' && !s.share;
+    const deleting = _serverDeleteInFlight.has(s.id);
+    return `<div class="server-card ${s.id === _activeServerId ? 'active-server' : ''}${deleting ? ' is-busy' : ''}" ${deleting ? 'aria-busy="true"' : ''} onclick="${deleting ? '' : `openServerForm('${s.id}')`}">
       <span class="server-card-avatar ${sourceTypeClass(type)}">${esc(sourceTypeLabel(type)[0])}</span>
       <div class="server-card-body">
         <div class="server-card-name">${esc(s.name || tr('server'))}<span class="source-type-badge ${sourceTypeClass(type)}">${esc(sourceTypeLabel(type))}</span></div>
         ${hostLine ? `<div class="server-card-meta">${esc(hostLine + extra)}</div>` : ''}
         ${fileSource && s.root_path ? `<div class="server-card-meta">${esc(s.root_path)}</div>` : ''}
+        ${rootNotSet ? `<div class="server-card-warn">${tr('rootNotSet')}</div>` : ''}
         ${iptvSource ? `<div class="server-card-meta" id="iptv-summary-${s.id}">${esc(_sourceMeta(s))}</div>` : ''}
         ${needsLogin ? `<div class="server-card-warn">${tr('notLoggedIn')}</div>` : ''}
       </div>
-      <button class="server-card-delete" type="button" aria-label="${tr('delete')}" onclick="event.stopPropagation();confirmDeleteServer('${s.id}', '${jsStr(s.name || tr('server'))}')">×</button>
+      <button class="server-card-delete" type="button" aria-label="${tr('delete')}" ${deleting ? 'disabled' : ''} onclick="event.stopPropagation();confirmDeleteServer('${s.id}', '${jsStr(s.name || tr('server'))}')">${deleting ? '…' : '×'}</button>
     </div>`;
   }).join('');
   servers.filter(s => _normType(s.type) === 'iptv').forEach(refreshIPTVServerCardStatus);
@@ -3276,6 +4162,8 @@ function renderServerList(servers) {
 function _iptvCountParts(summary) {
   const parts = [tr('iptvChannelsCount', { count: summary.channel_count || 0 })];
   if (summary.epg_matched_count) parts.push(tr('iptvEpgMatched', { count: summary.epg_matched_count }));
+  if (summary.epg_status === 'stale') parts.push(tr('iptvGuideStale'));
+  if (summary.epg_status === 'error') parts.push(tr('iptvGuideError'));
   return parts;
 }
 
@@ -3291,7 +4179,7 @@ async function refreshIPTVServerCardStatus(s) {
       parts.push(tr(summary.refresh_status === 'error' ? 'iptvSourceStatusError' : 'iptvSourceStatusPending'));
     }
     el.textContent = parts.join(' · ');
-    el.classList.toggle('iptv-status-error', summary.refresh_status === 'error');
+    el.classList.toggle('iptv-status-error', summary.refresh_status === 'error' || summary.epg_status === 'error');
   } catch (_) {}
 }
 
@@ -3328,31 +4216,97 @@ function onSourceTypeBackdropClick(event) {
 }
 
 function chooseSourceType(type) {
-  openServerForm('', type || 'emby');
+  const selected = type || 'emby';
+  // Local and already-mounted NFS sources need no address or credentials.
+  // Start with the host folder browser directly instead of showing an empty
+  // connection form that looks like it expects a manually typed path.
+  if (selected === 'local' || selected === 'nfs') {
+    closeSourceTypePickerOnly();
+    openFolderPicker('', selected, '', true);
+    return;
+  }
+  openServerForm('', selected);
 }
 
 function updateSourceTypeReadout(type) {
   const value = type || 'emby';
   const input = document.getElementById('form-type');
-  const label = document.getElementById('form-type-label');
   if (input) input.value = value;
-  if (label) label.textContent = sourceTypeLabel(value);
   const name = document.getElementById('form-name');
   if (name) name.placeholder = defaultSourceName(value);
 }
 
+function updateServerFormTitle(serverId, type) {
+  const title = document.getElementById('server-form-title');
+  if (!title) return;
+  const label = sourceTypeLabel(type || 'emby');
+  title.textContent = serverId ? tr('editServerTitle', { type: label }) : tr('addServerTitle', { type: label });
+}
+
+// Backup addresses (Address 2/3) start collapsed behind a ghost button on
+// the Address 1 row; the button hides once they're revealed so there's no
+// "un-reveal" affordance, matching a one-way "add another" pattern.
+function setBackupAddressesVisible(visible) {
+  const container = document.getElementById('form-backup-addresses');
+  const btn = document.getElementById('form-add-backup-btn');
+  if (container) container.classList.toggle('hidden', !visible);
+  if (btn) btn.classList.toggle('hidden', visible);
+}
+
+function revealBackupAddresses() {
+  setBackupAddressesVisible(true);
+}
+
 /* ── Add / edit server form ───────────────────────────────────────────────── */
 let _serverFormGeneration = 0;
+let _serverFormOperation = null;
+
+function beginServerFormOperation(timeoutMs = 30000) {
+  cancelServerFormOperation();
+  const controller = new AbortController();
+  const operation = { controller, timedOut: false, done: false };
+  operation.timeoutId = setTimeout(() => {
+    operation.timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  _serverFormOperation = operation;
+  return operation;
+}
+
+function isCurrentServerFormOperation(operation) {
+  return _serverFormOperation === operation && !operation.done && !operation.controller.signal.aborted;
+}
+
+function finishServerFormOperation(operation) {
+  if (_serverFormOperation !== operation) return;
+  clearTimeout(operation.timeoutId);
+  operation.done = true;
+  _serverFormOperation = null;
+}
+
+function cancelServerFormOperation() {
+  const operation = _serverFormOperation;
+  if (!operation) return;
+  clearTimeout(operation.timeoutId);
+  operation.done = true;
+  operation.controller.abort();
+  _serverFormOperation = null;
+}
+
+function serverFormErrorMessage(error, operation) {
+  if (operation?.timedOut) return tr('requestTimedOut');
+  return error?.message || tr('retryLater');
+}
 
 function openServerForm(serverId, sourceType = 'emby') {
   const formGeneration = ++_serverFormGeneration;
+  cancelServerFormOperation();
   hideServerManagerSheet();
   closeSourceTypePickerOnly();
   document.getElementById('server-form-backdrop').classList.remove('hidden');
   document.body.classList.add('sheet-open');
   const form = document.getElementById('server-form');
-  const title = document.getElementById('server-form-title');
-  if (title) title.textContent = serverId ? tr('editServer') : tr('addServer');
+  updateServerFormTitle(serverId, sourceType);
 
   document.getElementById('form-server-id').value = serverId || '';
   document.getElementById('form-status').textContent = '';
@@ -3372,13 +4326,15 @@ function openServerForm(serverId, sourceType = 'emby') {
     document.getElementById('form-password').value = '';
     document.getElementById('form-iptv-playlist').value = '';
     document.getElementById('form-iptv-epg').value = '';
-    const advanced = document.getElementById('form-advanced-options');
-    if (advanced) advanced.open = false;
+    setBackupAddressesVisible(false);
     resetPasswordReveal();
   };
 
   clearForm();
   if (serverId) {
+    const saveButton = document.getElementById('form-save-btn');
+    if (saveButton) saveButton.disabled = true;
+    document.getElementById('form-status').textContent = tr('loadingSource');
     // Populate from existing server
     api('GET', '/api/servers').then(servers => {
       if (formGeneration !== _serverFormGeneration
@@ -3386,12 +4342,12 @@ function openServerForm(serverId, sourceType = 'emby') {
       const s = servers.find(x => x.id === serverId);
       if (!s) return;
       updateSourceTypeReadout(s.type || 'emby');
+      updateServerFormTitle(serverId, s.type);
       document.getElementById('form-name').value     = s.name || '';
       document.querySelectorAll('input[name="proto"]').forEach(r => { r.checked = r.value === (s.protocol || 'http'); });
       const hosts = s.hosts || [];
       hostIds.forEach((id, i) => { document.getElementById(id).value = hosts[i] || ''; });
-      const advanced = document.getElementById('form-advanced-options');
-      if (advanced) advanced.open = hosts.length > 1;
+      setBackupAddressesVisible(hosts.length > 1);
       document.getElementById('form-port').value     = s.port || 8096;
       document.getElementById('form-share').value    = s.share || '';
       document.getElementById('form-root-path').value = s.root_path || '';
@@ -3402,6 +4358,17 @@ function openServerForm(serverId, sourceType = 'emby') {
       document.getElementById('form-iptv-epg').value = s.epg_url || '';
       resetPasswordReveal();
       onSourceTypeChange(false);
+      const status = document.getElementById('form-status');
+      if (status) { status.textContent = ''; status.className = 'form-status'; }
+    }).catch(error => {
+      if (formGeneration !== _serverFormGeneration) return;
+      const status = document.getElementById('form-status');
+      if (status) { status.textContent = error.message || tr('loadFailed'); status.className = 'form-status err'; }
+    }).finally(() => {
+      if (formGeneration === _serverFormGeneration) {
+        const button = document.getElementById('form-save-btn');
+        if (button) button.disabled = false;
+      }
     });
   } else {
     onSourceTypeChange(false);
@@ -3435,29 +4402,35 @@ function resetPasswordReveal() {
 }
 
 function closeServerForm() {
+  cancelServerFormOperation();
   _serverFormGeneration++;
   document.getElementById('server-form-backdrop').classList.add('hidden');
   document.body.classList.remove('sheet-open');
   openServerManager();
 }
 
-function closeServerFormOnly() {
+function closeServerFormOnly(cancelOperation = true) {
+  if (cancelOperation) cancelServerFormOperation();
   _serverFormGeneration++;
   document.getElementById('server-form-backdrop').classList.add('hidden');
   document.body.classList.remove('sheet-open');
 }
 
-async function _onSaveSuccess(id) {
-  // Finishing add/edit (or, for file sources, picking the folder) is a
-  // deliberate "use this now" signal — always activate it, regardless of
-  // whether another source was already active.
-  if (id) await api('POST', `/api/servers/${id}/activate`);
-  await refreshServerSwitcher();
+async function _onSaveSuccess(id, operation = null) {
+  if (operation && !isCurrentServerFormOperation(operation)) return;
+  if (operation) finishServerFormOperation(operation);
+  setWorkspace('media');
+  // Fetch first, then select by the newly-created id. The in-memory list is
+  // still stale immediately after POST /api/servers, so selecting before this
+  // refresh would silently fall back to the previously active source.
+  const libraryLoad = beginLibraryLoad(id);
+  const active = await refreshServerSwitcher(id);
   // Close the form (without reopening the server manager) and go straight
   // to the library so the user immediately sees their content.
-  closeServerFormOnly();
+  closeServerFormOnly(false);
   switchTab('library');
-  await reloadLibraryForActiveServer();
+  if (id && (!active || active.id !== id)) return;
+  await reloadLibraryForActiveServer(tr('loadingLibrary'), libraryLoad);
 }
 
 function onServerFormBackdropClick(event) {
@@ -3485,7 +4458,7 @@ async function saveAndLogin() {
   const statusEl  = document.getElementById('form-status');
   const serverId  = document.getElementById('form-server-id').value;
   const type      = document.getElementById('form-type').value || 'emby';
-  const name      = document.getElementById('form-name').value.trim() || defaultSourceName(type);
+  let name        = document.getElementById('form-name').value.trim();
   const saveButton = document.getElementById('form-save-btn');
   const setStatus = (msg, cls = '') => { statusEl.textContent = msg; statusEl.className = 'form-status' + (cls ? ' ' + cls : ''); };
 
@@ -3494,23 +4467,32 @@ async function saveAndLogin() {
     const playlistUrl = document.getElementById('form-iptv-playlist').value.trim();
     const epgUrl = document.getElementById('form-iptv-epg').value.trim();
     if (!playlistUrl) { setStatus(tr('needPlaylistUrl'), 'err'); return; }
+    if (!name) {
+      try { name = defaultSourceName(type, new URL(playlistUrl).hostname); }
+      catch (_) { name = defaultSourceName(type); }
+    }
+    const operation = beginServerFormOperation(100000);
     setStatus(tr('iptvRefreshing'));
     if (saveButton) saveButton.disabled = true;
     try {
       let id = serverId;
       if (serverId) {
-        await api('PUT', `/api/servers/${serverId}`, { name, type, playlist_url: playlistUrl, epg_url: epgUrl });
-        // PUT only patches config; unlike add, it doesn't refresh the parsed
-        // channel/EPG cache, so a changed URL needs an explicit refresh here.
-        await api('POST', `/api/iptv/refresh?server_id=${encodeURIComponent(serverId)}`);
+        // Validate and refresh the candidate before the server commits it, so
+        // a bad playlist URL cannot replace the last known-good source.
+        await api('PUT', `/api/servers/${serverId}`, { name, type, playlist_url: playlistUrl, epg_url: epgUrl, validate: true }, { signal: operation.controller.signal });
       } else {
-        const srv = await api('POST', '/api/servers', { name, type, playlist_url: playlistUrl, epg_url: epgUrl });
+        const srv = await api('POST', '/api/servers', { name, type, playlist_url: playlistUrl, epg_url: epgUrl }, { signal: operation.controller.signal });
         id = srv.id;
       }
+      if (!isCurrentServerFormOperation(operation)) return;
       setStatus(tr('saved'), 'ok');
-      await _onSaveSuccess(id);
-    } catch (e) { setStatus(e.message, 'err'); }
-    finally { if (saveButton) saveButton.disabled = false; }
+      await _onSaveSuccess(id, operation);
+    } catch (e) {
+      if (isCurrentServerFormOperation(operation)) setStatus(serverFormErrorMessage(e, operation), 'err');
+    } finally {
+      if (isCurrentServerFormOperation(operation) && saveButton) saveButton.disabled = false;
+      finishServerFormOperation(operation);
+    }
     return;
   }
 
@@ -3536,7 +4518,9 @@ async function saveAndLogin() {
     ({ protocol, hosts, port, rootPath, share } = normalizeSourceInput(type, protocol, hosts, port, rootPath, share));
 
     if (networked && !hosts.length) { setStatus(tr('needOneHost'), 'err'); return; }
+    if (!name) name = defaultSourceName(type, hosts[0] || rootPath.split('/').filter(Boolean).pop());
 
+    const operation = beginServerFormOperation();
     setStatus(tr('connecting'));
     if (saveButton) saveButton.disabled = true;
     const payload = { name, type, protocol, hosts, port, username, share, domain };
@@ -3544,20 +4528,22 @@ async function saveAndLogin() {
       let id = serverId;
       if (serverId) {
         if (password) payload.password = password;   // blank → keep existing
-        await api('PUT', `/api/servers/${serverId}`, payload);
-        await api('POST', `/api/servers/${serverId}/connect`, {});
+        await api('PUT', `/api/servers/${serverId}`, { ...payload, validate: true }, { signal: operation.controller.signal });
       } else {
-        const srv = await api('POST', '/api/servers', { ...payload, password });
+        const srv = await api('POST', '/api/servers', { ...payload, password }, { signal: operation.controller.signal });
         id = srv.id;
       }
+      if (!isCurrentServerFormOperation(operation)) return;
       setStatus(tr('connected'), 'ok');
-      closeServerFormOnly();
+      finishServerFormOperation(operation);
+      closeServerFormOnly(false);
       const baseRootPath = type === 'smb' && share ? [share, rootPath].filter(Boolean).join('/') : rootPath;
       openFolderPicker(id, type, baseRootPath);
     } catch (e) {
-      setStatus(e.message, 'err');
+      if (isCurrentServerFormOperation(operation)) setStatus(serverFormErrorMessage(e, operation), 'err');
     } finally {
-      if (saveButton) saveButton.disabled = false;
+      if (isCurrentServerFormOperation(operation) && saveButton) saveButton.disabled = false;
+      finishServerFormOperation(operation);
     }
     return;
   }
@@ -3574,17 +4560,21 @@ async function saveAndLogin() {
   const hasCreds = (username && password) || (type === 'plex' && token);
 
   if (!hosts.length){ setStatus(tr('needOneHost'), 'err'); return; }
+  if (!name) name = defaultSourceName(type, hosts[0]);
+  const operation = beginServerFormOperation();
   setStatus(tr('saving'));
   if (saveButton) saveButton.disabled = true;
 
   try {
     let id = serverId;
     if (serverId) {
-      // Editing an existing (already-saved) server: update fields, then log in.
-      await api('PUT', `/api/servers/${serverId}`, { name, type, protocol, hosts, port, username });
+      // Validate the candidate (using the supplied credential or existing
+      // token) before replacing the saved source.
+      const payload = { name, type, protocol, hosts, port, username, validate: true };
+      if (password) payload.password = password;
+      if (token) payload.token = token;
+      await api('PUT', `/api/servers/${serverId}`, payload, { signal: operation.controller.signal });
       if (hasCreds) {
-        setStatus(tr('loggingIn'));
-        await api('POST', `/api/servers/${serverId}/login`, { username, password, token });
         setStatus(tr('loginSuccess'), 'ok');
       } else {
         setStatus(tr('savedNotLoggedIn'), 'ok');
@@ -3593,24 +4583,45 @@ async function saveAndLogin() {
       // Adding a new server: the backend only persists it if the login
       // succeeds, so a wrong address/password leaves nothing behind.
       if (hasCreds) setStatus(tr('connectingAndLoggingIn'));
-      const srv = await api('POST', '/api/servers', { name, type, protocol, hosts, port, username, password, token });
+      const srv = await api('POST', '/api/servers', { name, type, protocol, hosts, port, username, password, token }, { signal: operation.controller.signal });
       id = srv.id;
       setStatus(hasCreds ? tr('loginSuccess') : tr('savedNotLoggedIn'), 'ok');
     }
-    await _onSaveSuccess(id);
+    if (!isCurrentServerFormOperation(operation)) return;
+    await _onSaveSuccess(id, operation);
   } catch (e) {
-    setStatus(e.message, 'err');
+    if (isCurrentServerFormOperation(operation)) setStatus(serverFormErrorMessage(e, operation), 'err');
   } finally {
-    if (saveButton) saveButton.disabled = false;
+    if (isCurrentServerFormOperation(operation) && saveButton) saveButton.disabled = false;
+    finishServerFormOperation(operation);
   }
 }
 
 async function confirmDeleteServer(serverId, name) {
+  if (_serverDeleteInFlight.has(serverId)) return;
   if (!confirm(tr('confirmDeleteServer', { name }))) return;
+  const wasActive = !isWebsiteWorkspace() && serverId === _activeServerId;
+  _serverDeleteInFlight.add(serverId);
+  renderServerList(_knownServers);
   try {
     await api('DELETE', `/api/servers/${serverId}`);
     await refreshServerSwitcher();
-  } catch (e) { toast(e.message, true); }
+    if (wasActive) {
+      // The active source was just removed; selectBrowseSource() already
+      // fell back to the next available server (or none), but the library
+      // view itself was never re-rendered for that new source — do a full
+      // reload so stale view containers (e.g. the IPTV browser) don't stay
+      // visible underneath the new source's content.
+      _showLibrarySkeletons();
+      await reloadLibraryForActiveServer();
+    }
+  } catch (e) {
+    await refreshServerSwitcher();
+    toast(e.message, true);
+  } finally {
+    _serverDeleteInFlight.delete(serverId);
+    renderServerList(_knownServers);
+  }
 }
 
 /* ── Server form: type & file fields ──────────────────────────────────────── */
@@ -3638,11 +4649,14 @@ function onSourceTypeChange(updatePort = true) {
   document.getElementById('form-host0-row')?.classList.toggle('hidden', networkless || iptvSource);
   document.getElementById('form-port-row')?.classList.toggle('hidden', networkless || iptvSource);
   document.getElementById('form-domain-row')?.classList.toggle('hidden', type !== 'smb');
-  const advanced = document.getElementById('form-advanced-options');
-  if (advanced) {
-    advanced.classList.toggle('hidden', networkless || iptvSource);
-    if (networkless || iptvSource) advanced.open = false;
-  }
+  // local/nfs/iptv don't support backup addresses; force-collapse and hide
+  // the "Add backup address" entry point for those types.
+  const backupSupported = !networkless && !iptvSource;
+  const backupContainer = document.getElementById('form-backup-addresses');
+  const backupBtn = document.getElementById('form-add-backup-btn');
+  const backupRevealed = backupSupported && !!backupContainer && !backupContainer.classList.contains('hidden');
+  if (backupContainer) backupContainer.classList.toggle('hidden', !backupRevealed);
+  if (backupBtn) backupBtn.classList.toggle('hidden', !backupSupported || backupRevealed);
   const localHintRow = document.getElementById('form-local-hint-row');
   localHintRow?.classList.toggle('hidden', !networkless);
   if (networkless) _setText('form-local-hint', type === 'nfs' ? tr('nfsHint') : tr('localHint'));
@@ -3681,14 +4695,62 @@ let _fpServerId = '';
 let _fpType = '';
 let _fpPath = '';
 let _fpBaseRootPath = ''; // root_path (± share, for smb) already on the server, if any
+let _fpRequestSeq = 0;
+let _fpController = null;
+let _fpCommitInFlight = false;
+let _fpCreating = false;
 
-function openFolderPicker(serverId, type, baseRootPath = '') {
+function cancelFolderPickerRequest() {
+  _fpRequestSeq++;
+  _fpController?.abort();
+  _fpController = null;
+  _fpCommitInFlight = false;
+}
+
+function setFolderPickerActionsDisabled(disabled) {
+  document.getElementById('folder-picker-confirm-btn')?.toggleAttribute('disabled', disabled);
+  document.getElementById('folder-picker-skip-btn')?.toggleAttribute('disabled', disabled);
+}
+
+function folderPickerNeedsSelection(path = _fpPath) {
+  return _fpCreating && (_fpType === 'local' || _fpType === 'nfs') && !path;
+}
+
+function folderPickerRootLabel() {
+  if (_platform === 'windows') return tr('folderPickerThisPC');
+  if (_platform === 'darwin') return tr('folderPickerSystemRoot');
+  return tr('rootDirectory');
+}
+
+function openFolderPicker(serverId, type, baseRootPath = '', creating = false) {
+  cancelFolderPickerRequest();
   _fpServerId = serverId;
   _fpType = type || '';
   _fpPath = '';
   _fpBaseRootPath = baseRootPath || '';
+  _fpCreating = creating === true;
+  const title = document.getElementById('folder-picker-title');
   const hint = document.getElementById('folder-picker-hint');
-  if (hint) hint.textContent = tr('folderPickerHint');
+  const nameRow = document.getElementById('folder-picker-name-row');
+  const nameInput = document.getElementById('folder-picker-name');
+  if (title) {
+    title.textContent = _fpCreating
+      ? tr(_fpType === 'nfs' ? 'folderPickerNFSTitle' : 'folderPickerLocalTitle')
+      : tr('folderPickerTitle');
+  }
+  if (hint) {
+    if (_fpCreating) {
+      const os = _platform === 'windows' ? 'Windows' : 'Mac';
+      hint.textContent = tr(`folderPicker${_fpType === 'nfs' ? 'NFS' : 'Local'}Hint${os}`);
+    } else {
+      hint.textContent = tr('folderPickerHint');
+    }
+  }
+  nameRow?.classList.toggle('hidden', !_fpCreating);
+  if (nameInput) {
+    nameInput.value = '';
+    nameInput.placeholder = defaultSourceName(_fpType);
+  }
   document.getElementById('folder-picker-backdrop').classList.remove('hidden');
   document.body.classList.add('sheet-open');
   _fpNavigate('');
@@ -3696,9 +4758,13 @@ function openFolderPicker(serverId, type, baseRootPath = '') {
 
 // Cancel or backdrop: close without committing anything.
 function closeFolderPickerCancel() {
+  const returnToTypePicker = _fpCreating;
+  cancelFolderPickerRequest();
   document.getElementById('folder-picker-backdrop').classList.add('hidden');
   document.body.classList.remove('sheet-open');
-  openServerManager();
+  _fpCreating = false;
+  if (returnToTypePicker) openSourceTypePicker();
+  else openServerManager();
 }
 
 function onFolderPickerBackdropClick(event) {
@@ -3707,6 +4773,10 @@ function onFolderPickerBackdropClick(event) {
 
 // Left action button: use the root while in a subfolder, or cancel at the root.
 async function closeFolderPickerSkip() {
+  if (_fpCreating) {
+    closeFolderPickerCancel();
+    return;
+  }
   if (_fpPath) {
     // For SMB, "root" means the selected share's root, not the host's share list.
     _fpPath = _fpType === 'smb' ? (_fpPath.split('/').filter(Boolean)[0] || '') : '';
@@ -3717,15 +4787,13 @@ async function closeFolderPickerSkip() {
 }
 
 async function confirmFolderPicker() {
+  if (_fpCommitInFlight) return;
   const path = _fpPath;
-  document.getElementById('folder-picker-backdrop').classList.add('hidden');
-  document.body.classList.remove('sheet-open');
+  if (folderPickerNeedsSelection(path)) return;
 
   // Effective root_path = base (already on the server, for a re-browse) + the
   // newly-picked sub-path.
   const effectivePath = [_fpBaseRootPath, path].filter(Boolean).join('/');
-  if (!_fpServerId) return;
-
   const payload = {};
   if (_fpType === 'smb') {
     const parts = effectivePath.split('/').filter(Boolean);
@@ -3734,16 +4802,47 @@ async function confirmFolderPicker() {
   } else {
     payload.root_path = effectivePath;
   }
+  const requestId = ++_fpRequestSeq;
+  const controller = new AbortController();
+  _fpController?.abort();
+  _fpController = controller;
+  _fpCommitInFlight = true;
+  setFolderPickerActionsDisabled(true);
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
   try {
-    await api('PUT', `/api/servers/${_fpServerId}`, payload);
-    await _onSaveSuccess(_fpServerId);
+    let savedServerId = _fpServerId;
+    if (_fpCreating) {
+      const name = document.getElementById('folder-picker-name')?.value.trim() || '';
+      const created = await api('POST', '/api/servers', { ...payload, name, type: _fpType }, { signal: controller.signal });
+      savedServerId = created.id;
+    } else {
+      await api('PUT', `/api/servers/${_fpServerId}`, payload, { signal: controller.signal });
+    }
+    if (requestId !== _fpRequestSeq || controller.signal.aborted) return;
+    document.getElementById('folder-picker-backdrop').classList.add('hidden');
+    document.body.classList.remove('sheet-open');
+    _fpCreating = false;
+    await _onSaveSuccess(savedServerId);
   } catch (e) {
-    toast(e.message, true);
-    await refreshServerSwitcher();
+    if (requestId !== _fpRequestSeq) return;
+    const listEl = document.getElementById('folder-picker-list');
+    const message = controller.signal.aborted ? tr('requestTimedOut') : (e.message || tr('retryLater'));
+    if (listEl) listEl.innerHTML = `<div class="fp-error">${esc(message)}<button class="btn-secondary" onclick="_fpNavigate(_fpPath)">${tr('retry')}</button></div>`;
+  } finally {
+    clearTimeout(timeoutId);
+    if (requestId === _fpRequestSeq) {
+      _fpCommitInFlight = false;
+      _fpController = null;
+      setFolderPickerActionsDisabled(false);
+    }
   }
 }
 
 async function _fpNavigate(path) {
+  const requestId = ++_fpRequestSeq;
+  _fpController?.abort();
+  const controller = new AbortController();
+  _fpController = controller;
   _fpPath = path;
   _fpRenderBreadcrumb(path);
   const listEl = document.getElementById('folder-picker-list');
@@ -3751,14 +4850,20 @@ async function _fpNavigate(path) {
   const skipBtn = document.getElementById('folder-picker-skip-btn');
   if (confirmBtn) {
     confirmBtn.textContent = _fpType === 'smb' && !path ? tr('folderPickerChooseShare') : ((path || _fpBaseRootPath) ? tr('folderPickerUseThis') : tr('folderPickerUseRoot'));
-    confirmBtn.disabled = _fpType === 'smb' && !path;
+    if (folderPickerNeedsSelection(path)) confirmBtn.textContent = tr('folderPickerChooseFolder');
+    confirmBtn.disabled = (_fpType === 'smb' && !path) || folderPickerNeedsSelection(path);
   }
-  if (skipBtn) skipBtn.textContent = path ? tr('folderPickerUseRoot') : tr('cancel');
+  if (skipBtn) skipBtn.textContent = _fpCreating ? tr('cancel') : (path ? tr('folderPickerUseRoot') : tr('cancel'));
+  setFolderPickerActionsDisabled(true);
   if (listEl) listEl.innerHTML = `<div class="fp-loading">${tr('folderPickerLoadingFolders')}</div>`;
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
   try {
-    const qs = new URLSearchParams({ server_id: _fpServerId });
+    const qs = new URLSearchParams();
+    if (_fpServerId) qs.set('server_id', _fpServerId);
+    else qs.set('source_type', _fpType);
     if (path) qs.set('path', path);
-    const data = await api('GET', `/api/files/list?${qs}`);
+    const data = await api('GET', `/api/files/list?${qs}`, undefined, { signal: controller.signal });
+    if (requestId !== _fpRequestSeq || controller.signal.aborted) return;
     const dirs = (data.entries || []).filter(item => item.is_dir);
     if (!listEl) return;
     if (!dirs.length) {
@@ -3766,15 +4871,24 @@ async function _fpNavigate(path) {
       return;
     }
     listEl.innerHTML = dirs.map(item => `
-      <div class="fp-folder-row" onclick="_fpNavigate('${jsStr(item.path)}')">
+      <button class="fp-folder-row" type="button" onclick="_fpNavigate('${jsStr(item.path)}')">
         <svg class="fp-folder-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/>
         </svg>
         <span>${esc(item.name)}</span>
         <svg class="fp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-      </div>`).join('');
+      </button>`).join('');
   } catch (e) {
-    if (listEl) listEl.innerHTML = `<div class="fp-error">${esc(e.message)}</div>`;
+    if (requestId !== _fpRequestSeq) return;
+    const message = controller.signal.aborted ? tr('requestTimedOut') : (e.message || tr('retryLater'));
+    if (listEl) listEl.innerHTML = `<div class="fp-error">${esc(message)}<button class="btn-secondary" onclick="_fpNavigate(_fpPath)">${tr('retry')}</button></div>`;
+  } finally {
+    clearTimeout(timeoutId);
+    if (requestId === _fpRequestSeq) {
+      _fpController = null;
+      if (confirmBtn) confirmBtn.disabled = (_fpType === 'smb' && !path) || folderPickerNeedsSelection(path);
+      if (skipBtn) skipBtn.disabled = false;
+    }
   }
 }
 
@@ -3782,9 +4896,10 @@ function _fpRenderBreadcrumb(path) {
   const el = document.getElementById('folder-picker-breadcrumb');
   if (!el) return;
   const parts = path ? path.split('/').filter(Boolean) : [];
-  let html = `<button class="fp-crumb" onclick="_fpNavigate('')">${tr('rootDirectory')}</button>`;
+  let html = `<button class="fp-crumb" onclick="_fpNavigate('')">${folderPickerRootLabel()}</button>`;
   parts.forEach((p, i) => {
-    const pathTo = parts.slice(0, i + 1).join('/');
+    let pathTo = parts.slice(0, i + 1).join('/');
+    if (_platform === 'windows' && i === 0 && /^[A-Za-z]:$/.test(pathTo)) pathTo += '/';
     html += `<span class="fp-crumb-sep">›</span><button class="fp-crumb" onclick="_fpNavigate('${jsStr(pathTo)}')">${esc(p)}</button>`;
   });
   el.innerHTML = html;
@@ -3826,28 +4941,35 @@ function _exitFileMode() {
 }
 
 /* ── IPTV channel browser ─────────────────────────────────────────────────── */
-function _enterIPTVMode() {
+function _enterIPTVMode(libraryLoad = currentLibraryLoad()) {
   switchTab('library');
   document.getElementById('search-toggle')?.classList.add('hidden');
   _setViewMode('iptv');
   _iptvCategory = 'all';
   _iptvSearch = '';
-  return Promise.all([loadIPTVSourceStatus(), loadIPTVCategories(), loadIPTVChannels()]);
+  return Promise.all([
+    loadIPTVSourceStatus(libraryLoad),
+    loadIPTVCategories(libraryLoad),
+    loadIPTVChannels(libraryLoad),
+  ]);
 }
 
 function _exitIPTVMode() {
   document.getElementById('search-toggle')?.classList.toggle('hidden', _activeTab !== 'library');
 }
 
-async function loadIPTVSourceStatus() {
+async function loadIPTVSourceStatus(libraryLoad = currentLibraryLoad()) {
   const el = document.getElementById('iptv-source-status');
   if (!el) return;
   el.innerHTML = `<span>${esc(tr('iptvRefreshing'))}</span>`;
   try {
-    const s = await api('GET', '/api/iptv/summary');
+    const s = await api('GET', sourcePath('/api/iptv/summary', libraryLoad.serverId), undefined, { signal: libraryLoad.signal });
+    if (!isCurrentLibraryLoad(libraryLoad)) return;
     renderIPTVSourceStatus(s);
   } catch (e) {
-    el.innerHTML = `<span class="iptv-status-error">${esc(e.message)}</span>`;
+    if (e?.name !== 'AbortError' && isCurrentLibraryLoad(libraryLoad)) {
+      el.innerHTML = `<span class="iptv-status-error">${esc(e.message)}</span>`;
+    }
   }
 }
 
@@ -3872,7 +4994,7 @@ async function refreshIPTVSource() {
   const button = document.getElementById('btn-iptv-refresh');
   if (button) { button.disabled = true; button.classList.add('spinning'); }
   try {
-    const s = await api('POST', '/api/iptv/refresh');
+    const s = await api('POST', sourcePath('/api/iptv/refresh', _activeServerId));
     renderIPTVSourceStatus(s);
     await Promise.all([loadIPTVCategories(), loadIPTVChannels()]);
     toast(tr('iptvRefreshed'));
@@ -3887,11 +5009,13 @@ async function refreshIPTVSource() {
   }
 }
 
-async function loadIPTVCategories() {
+async function loadIPTVCategories(libraryLoad = currentLibraryLoad()) {
   try {
-    const categories = await api('GET', '/api/iptv/categories');
+    const categories = await api('GET', sourcePath('/api/iptv/categories', libraryLoad.serverId), undefined, { signal: libraryLoad.signal });
+    if (!isCurrentLibraryLoad(libraryLoad)) return;
     renderIPTVCategoryPills(categories);
-  } catch (_) {
+  } catch (e) {
+    if (e?.name === 'AbortError' || !isCurrentLibraryLoad(libraryLoad)) return;
     renderIPTVCategoryPills(['all', 'favorites', 'recent']);
   }
 }
@@ -3918,21 +5042,26 @@ function selectIPTVCategory(cat) {
   document.querySelectorAll('#iptv-category-row .iptv-category-pill').forEach(btn => {
     btn.classList.toggle('active', btn.textContent === _iptvCategoryLabel(cat));
   });
-  loadIPTVChannels();
+  loadIPTVChannels(currentLibraryLoad());
 }
 
-async function loadIPTVChannels() {
+async function loadIPTVChannels(libraryLoad = currentLibraryLoad()) {
+  const requestId = ++_iptvLoadSeq;
   const list = document.getElementById('iptv-channel-list');
   if (list) list.innerHTML = `<div class="iptv-empty">${esc(tr('iptvRefreshing'))}</div>`;
   try {
     const params = new URLSearchParams();
+    if (libraryLoad.serverId) params.set('server_id', libraryLoad.serverId);
     if (_iptvCategory && _iptvCategory !== 'all') params.set('category', _iptvCategory);
     if (_iptvSearch) params.set('search', _iptvSearch);
-    const channels = await api('GET', `/api/iptv/channels?${params.toString()}`);
+    const channels = await api('GET', `/api/iptv/channels?${params.toString()}`, undefined, { signal: libraryLoad.signal });
+    if (requestId !== _iptvLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     _iptvChannels = channels;
     renderIPTVChannelList(channels);
   } catch (e) {
-    if (list) list.innerHTML = `<div class="iptv-empty">${esc(e.message || tr('iptvLoadChannelsFailed'))}</div>`;
+    if (e?.name !== 'AbortError' && requestId === _iptvLoadSeq && isCurrentLibraryLoad(libraryLoad) && list) {
+      list.innerHTML = `<div class="iptv-empty">${esc(e.message || tr('iptvLoadChannelsFailed'))}<button onclick="loadIPTVChannels(currentLibraryLoad())">${tr('retry')}</button></div>`;
+    }
   }
 }
 
@@ -3947,14 +5076,15 @@ function _iptvChannelLogoHtml(channel) {
 }
 
 function _iptvChannelRowHtml(ch) {
+  const serverId = _activeServerId;
   const metaParts = [ch.group_title].filter(Boolean);
   // Graceful no-EPG fallback: current_programme is simply absent, no
   // separate "no guide" row layout — just one less piece of meta text.
   if (ch.current_programme && ch.current_programme.title) metaParts.push(ch.current_programme.title);
   return `
     <div class="iptv-channel-row" role="button" tabindex="0"
-         onclick="playIPTVChannel('${jsStr(ch.id)}', ${ch.variant_count || 1})"
-         onkeydown="if(event.key==='Enter')playIPTVChannel('${jsStr(ch.id)}', ${ch.variant_count || 1})">
+         onclick="playIPTVChannel('${jsStr(ch.id)}', ${ch.variant_count || 1}, '${jsStr(serverId)}')"
+         onkeydown="if(event.key==='Enter')playIPTVChannel('${jsStr(ch.id)}', ${ch.variant_count || 1}, '${jsStr(serverId)}')">
       ${_iptvChannelLogoHtml(ch)}
       <div class="iptv-channel-body">
         <div class="iptv-channel-name-row">
@@ -3965,7 +5095,7 @@ function _iptvChannelRowHtml(ch) {
       </div>
       <button class="iptv-channel-favorite${ch.is_favorite ? ' active' : ''}"
               aria-label="${ch.is_favorite ? esc(tr('iptvRemoveFromFavorites')) : esc(tr('iptvAddToFavorites'))}"
-              onclick="toggleIPTVChannelFavorite(event, '${jsStr(ch.id)}')">${ch.is_favorite ? '★' : '☆'}</button>
+              onclick="toggleIPTVChannelFavorite(event, '${jsStr(ch.id)}', '${jsStr(serverId)}')">${ch.is_favorite ? '★' : '☆'}</button>
     </div>`;
 }
 
@@ -4011,17 +5141,18 @@ function _appendIPTVChannelBatch(list) {
   _iptvRenderObserver.observe(sentinel);
 }
 
-async function toggleIPTVChannelFavorite(event, channelId) {
+async function toggleIPTVChannelFavorite(event, channelId, serverId) {
   event.stopPropagation();
   try {
-    await api('POST', '/api/iptv/favorite', { channel_id: channelId });
+    await api('POST', '/api/iptv/favorite', { server_id: serverId, channel_id: channelId });
     await loadIPTVChannels();
   } catch (e) {
     toast(e.message, true);
   }
 }
 
-async function playIPTVChannel(channelId, variantCount = 1) {
+async function playIPTVChannel(channelId, variantCount = 1, serverId) {
+  if (!serverId) return;
   _hadProps = false;
   _currentAspect = 'fit';
   _loopFile = false;
@@ -4032,12 +5163,15 @@ async function playIPTVChannel(channelId, variantCount = 1) {
   currentEpisodeLabel = '';
   currentPosterItemId = '';
   currentItemIsSeries = false;
-  _playbackServerId = _activeServerId;
+  _playbackServerId = serverId;
+  currentPlaybackSourceType = 'iptv';
   currentIPTVChannelId = channelId;
   currentIPTVVariantIndex = 0;
   currentIPTVVariantCount = variantCount;
   const channel = _iptvChannels.find(c => c.id === channelId);
   currentIPTVHasProgramme = iptvChannelHasProgramme(channel);
+  currentIPTVCanCatchup = channel?.can_catchup === true;
+  currentIPTVIsCatchup = false;
   setNowPlaying(channel ? channel.name : '', { isLive: true });
   switchTab('remote');
   document.getElementById('play-loading-tag')?.classList.remove('hidden');
@@ -4049,20 +5183,23 @@ async function playIPTVChannel(channelId, variantCount = 1) {
   } catch (e) {
     toast(e.message, true);
     setNowPlaying('');
-  } finally {
-    document.getElementById('play-loading-tag')?.classList.add('hidden');
   }
 }
 
-async function loadDir(path = '') {
+async function loadDir(path = '', libraryLoad = currentLibraryLoad()) {
+  const requestId = ++_fileLoadSeq;
   _filesPath = path;
   _enterFileMode();
   const list = document.getElementById('files-list');
   if (list) list.innerHTML = `<div class="files-loading">${tr('loadingFolder')}</div>`;
   try {
-    const data = await api('GET', `/api/files/list?path=${encodeURIComponent(path)}`);
+    const qs = new URLSearchParams({ path });
+    if (libraryLoad.serverId) qs.set('server_id', libraryLoad.serverId);
+    const data = await api('GET', `/api/files/list?${qs}`, undefined, { signal: libraryLoad.signal });
+    if (requestId !== _fileLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     renderFileBrowser(data);
   } catch (e) {
+    if (e?.name === 'AbortError' || requestId !== _fileLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     document.getElementById('files-breadcrumb').innerHTML = '';
     if (list) list.innerHTML = `
       <div class="files-error">
@@ -4101,6 +5238,7 @@ const _VIDEO_ICON = '<svg class="file-icon" viewBox="0 0 24 24" fill="none" stro
 const _CHEVRON_ICON = '<svg class="file-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
 
 function fileRowHtml(e) {
+  const serverId = _activeServerId;
   if (e.is_dir) {
     return `<button class="file-row file-dir" onclick="loadDir('${jsStr(e.path)}')">
       ${_FOLDER_ICON}
@@ -4108,7 +5246,7 @@ function fileRowHtml(e) {
       ${_CHEVRON_ICON}
     </button>`;
   }
-  return `<button class="file-row file-video" onclick="playFile('${jsStr(e.path)}', '${jsStr(e.name)}')">
+  return `<button class="file-row file-video" onclick="playFile('${jsStr(e.path)}', '${jsStr(e.name)}', '${jsStr(serverId)}')">
     ${_VIDEO_ICON}
     <span class="file-name">${esc(e.name)}</span>
     <span class="file-size">${fmtSize(e.size)}</span>
@@ -4124,7 +5262,8 @@ function fmtSize(n) {
   return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
 }
 
-async function playFile(path, name) {
+async function playFile(path, name, serverId) {
+  if (!serverId) return;
   _hadProps = false;
   _currentAspect = 'fit';
   _loopFile = false;
@@ -4135,7 +5274,7 @@ async function playFile(path, name) {
   currentEpisodeLabel = '';
   currentPosterItemId = '';
   currentItemIsSeries = false;
-  _playbackServerId = _activeServerId;
+  _playbackServerId = serverId;
   setNowPlaying(name, {});
   switchTab('remote');
   document.getElementById('play-loading-tag')?.classList.remove('hidden');
@@ -4147,8 +5286,6 @@ async function playFile(path, name) {
   } catch (e) {
     toast(e.message, true);
     setNowPlaying('');
-  } finally {
-    document.getElementById('play-loading-tag')?.classList.add('hidden');
   }
 }
 
@@ -4224,6 +5361,10 @@ async function _loadPlaybackDebugReport() {
   try {
     const data = await api('GET', '/api/player/debug-report');
     if (!_playbackDebugOpen) return;
+    _lastPlaybackDebugScope = String(data.diagnostics?.report_scope || _lastPlaybackDebugScope);
+    const subtitle = document.getElementById('playback-debug-subtitle');
+    if (subtitle) subtitle.textContent = _lastPlaybackDebugScope === 'last'
+      ? tr('lastPlaybackDebugSubtitle') : tr('playbackDebugSubtitle');
     _playbackDebugReportText = _formatPlaybackDebugReport(data);
     if (preview) preview.textContent = _playbackDebugReportText;
     if (button) button.disabled = false;
@@ -4330,7 +5471,13 @@ function _copyTextWithTemporaryTextarea(text) {
   if (!copied) throw new Error('copy failed');
 }
 
-function toast(msg, isError = false) {
+function toast(msg, level = false) {
+  // level accepts the legacy boolean (false = info, true = error) or the
+  // strings 'success' / 'error' / 'info' for callers that want a color
+  // matching the semantics of the message (e.g. settings save feedback).
+  const isError = level === true || level === 'error';
+  const isSuccess = level === 'success';
+  const color = isError ? 'var(--danger)' : isSuccess ? 'var(--success)' : 'var(--accent)';
   // Backend error text can be arbitrarily long (e.g. a raw network error);
   // cap it so one bad message can't blow the toast past the viewport.
   const text = String(msg).length > 200 ? `${String(msg).slice(0, 200)}…` : msg;
@@ -4338,8 +5485,8 @@ function toast(msg, isError = false) {
     textContent: text,
     style: `
       position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
-      max-width:min(85vw,420px);
-      background:${isError ? 'var(--danger)' : 'var(--accent)'};
+      width:fit-content;max-width:min(calc(100vw - 24px),520px);
+      background:${color};
       color:#fff;padding:10px 18px;border-radius:20px;font-size:13px;
       z-index:999;white-space:normal;word-break:break-word;text-align:center;
       pointer-events:none;

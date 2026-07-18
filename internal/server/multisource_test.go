@@ -27,7 +27,7 @@ func TestFileSourceCRUDAndBrowseContract(t *testing.T) {
 	}
 	h := New(player.New()).Handler()
 	body := `{"name":"Local","type":"local","root_path":` + jsonString(media) + `}`
-	req := httptest.NewRequest(http.MethodPost, "/api/servers", strings.NewReader(body))
+	req := jsonReq(http.MethodPost, "/api/servers", body)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -44,6 +44,78 @@ func TestFileSourceCRUDAndBrowseContract(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"demo.mkv"`) || !strings.Contains(rec.Body.String(), `"is_video":true`) {
 		t.Fatalf("list: %s", rec.Body.String())
+	}
+}
+
+func TestLocalFolderPickerCanBrowseBeforeSourceExists(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("TVREMOTE_DATA_DIR", data)
+	h := New(player.New()).Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/list?source_type=local", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview browse %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"breadcrumb"`) || !strings.Contains(rec.Body.String(), `"entries"`) {
+		t.Fatalf("unexpected preview listing: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/servers", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("preview browsing must not create a source: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestIPTVChannelAPIDoesNotExposeStreamCredentials(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("TVREMOTE_DATA_DIR", data)
+	playlist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-mpegurl")
+		fmt.Fprint(w, `#EXTM3U
+#EXTINF:-1 tvg-id="news" tvg-name="News",News
+https://stream.example/live.m3u8?token=stream-secret|User-Agent=PrivateAgent&Cookie=session%3Dprivate-cookie
+`)
+	}))
+	defer playlist.Close()
+
+	h := New(player.New()).Handler()
+	body, err := json.Marshal(map[string]any{
+		"name": "Private playlist", "type": "iptv", "playlist_url": playlist.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := jsonReq(http.MethodPost, "/api/servers", string(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d: %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := created["id"].(string)
+	for _, path := range []string{
+		"/api/iptv/channels?server_id=" + url.QueryEscape(id),
+		"/api/iptv/channel/tvg:news?server_id=" + url.QueryEscape(id),
+	} {
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d %s", path, rec.Code, rec.Body.String())
+		}
+		response := rec.Body.String()
+		for _, secret := range []string{"stream-secret", "PrivateAgent", "private-cookie", "stream.example"} {
+			if strings.Contains(response, secret) {
+				t.Fatalf("GET %s leaked %q: %s", path, secret, response)
+			}
+		}
 	}
 }
 
@@ -78,7 +150,7 @@ func TestFileSourceCreateThenBrowseByServerIDThenFinalize(t *testing.T) {
 		"hosts": []string{tsURL.Hostname()}, "port": port,
 		"username": "alice", "password": "secret",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/servers", strings.NewReader(string(createBody)))
+	req := jsonReq(http.MethodPost, "/api/servers", string(createBody))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -105,7 +177,7 @@ func TestFileSourceCreateThenBrowseByServerIDThenFinalize(t *testing.T) {
 	}
 
 	// Reconnect (e.g. after editing credentials in the UI) without persisting.
-	req = httptest.NewRequest(http.MethodPost, "/api/servers/"+id+"/connect", strings.NewReader(`{}`))
+	req = jsonReq(http.MethodPost, "/api/servers/"+id+"/connect", `{}`)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -113,11 +185,90 @@ func TestFileSourceCreateThenBrowseByServerIDThenFinalize(t *testing.T) {
 	}
 
 	// Finalize: PUT the chosen sub-path.
-	req = httptest.NewRequest(http.MethodPut, "/api/servers/"+id, strings.NewReader(`{"root_path":"Movies"}`))
+	req = jsonReq(http.MethodPut, "/api/servers/"+id, `{"root_path":"Movies"}`)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"root_path":"Movies"`) {
 		t.Fatalf("finalize PUT: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestValidatedEditKeepsWorkingFileSourceOnFailure(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("TVREMOTE_DATA_DIR", data)
+	media := filepath.Join(data, "media")
+	if err := os.Mkdir(media, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := New(player.New()).Handler()
+
+	req := jsonReq(http.MethodPost, "/api/servers", `{"name":"Local","type":"local","root_path":`+jsonString(media)+`}`)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d: %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := created["id"].(string)
+
+	missing := filepath.Join(data, "does-not-exist")
+	req = jsonReq(http.MethodPut, "/api/servers/"+id, `{"root_path":`+jsonString(missing)+`,"validate":true}`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code < 400 {
+		t.Fatalf("invalid validated edit unexpectedly succeeded: %d %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/servers", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), jsonString(media)) || strings.Contains(rec.Body.String(), jsonString(missing)) {
+		t.Fatalf("failed edit should preserve original source: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFileListHonorsExplicitServerID(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("TVREMOTE_DATA_DIR", data)
+	first := filepath.Join(data, "first")
+	second := filepath.Join(data, "second")
+	for _, dir := range []string{first, second} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(first, "first.mkv"), []byte("first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(second, "second.mkv"), []byte("second"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := New(player.New()).Handler()
+
+	create := func(name, root string) string {
+		req := jsonReq(http.MethodPost, "/api/servers", `{"name":`+jsonString(name)+`,"type":"local","root_path":`+jsonString(root)+`}`)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", name, rec.Code, rec.Body.String())
+		}
+		var server map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &server); err != nil {
+			t.Fatal(err)
+		}
+		return server["id"].(string)
+	}
+	_ = create("first", first) // stays process-active
+	secondID := create("second", second)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/list?server_id="+url.QueryEscape(secondID), nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"name":"second.mkv"`) || strings.Contains(rec.Body.String(), `"name":"first.mkv"`) {
+		t.Fatalf("explicit source list: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -127,14 +278,14 @@ func TestSettingsReset(t *testing.T) {
 	h := New(player.New()).Handler()
 
 	body := `{"name":"Home","type":"emby","hosts":["nas.local"]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/servers", strings.NewReader(body))
+	req := jsonReq(http.MethodPost, "/api/servers", body)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create %d: %s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/settings/reset", strings.NewReader(`{}`))
+	req = jsonReq(http.MethodPost, "/api/settings/reset", `{}`)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {

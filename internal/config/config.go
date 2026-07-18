@@ -2,6 +2,10 @@
 // same data/config.json schema as the Python branch, so the two are
 // interchangeable. It must stay free of any dependency on the HTTP server or
 // the mpv player.
+//
+// This file holds the schema types plus the load/save/migrate core; the
+// user-facing accessors are split by domain into config_servers.go,
+// config_settings.go, and config_iptv.go.
 package config
 
 import (
@@ -20,62 +24,6 @@ import (
 )
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
-
-// ServerPatch holds the editable fields of a server; nil means "leave as-is".
-// Mirrors UpdateServerRequest in schemas.py.
-type ServerPatch struct {
-	Name        *string   `json:"name"`
-	Type        *string   `json:"type"`
-	Protocol    *string   `json:"protocol"`
-	Hosts       *[]string `json:"hosts"`
-	Port        *int      `json:"port"`
-	Share       *string   `json:"share"`
-	Domain      *string   `json:"domain"`
-	RootPath    *string   `json:"root_path"`
-	Username    *string   `json:"username"`
-	Password    *string   `json:"password"`
-	PlaylistURL *string   `json:"playlist_url"`
-	EPGURL      *string   `json:"epg_url"`
-}
-
-func (p ServerPatch) apply(s *Server) {
-	if p.Name != nil {
-		s.Name = *p.Name
-	}
-	if p.Type != nil {
-		s.Type = NormalizeServerType(*p.Type)
-	}
-	if p.Protocol != nil {
-		s.Protocol = *p.Protocol
-	}
-	if p.Hosts != nil {
-		s.Hosts = normalizeHosts(*p.Hosts)
-	}
-	if p.Port != nil {
-		s.Port = *p.Port
-	}
-	if p.Share != nil {
-		s.Share = strings.TrimSpace(*p.Share)
-	}
-	if p.Domain != nil {
-		s.Domain = strings.TrimSpace(*p.Domain)
-	}
-	if p.RootPath != nil {
-		s.RootPath = strings.TrimSpace(*p.RootPath)
-	}
-	if p.Username != nil {
-		s.Username = *p.Username
-	}
-	if p.Password != nil {
-		s.Password = *p.Password
-	}
-	if p.PlaylistURL != nil {
-		s.PlaylistURL = strings.TrimSpace(*p.PlaylistURL)
-	}
-	if p.EPGURL != nil {
-		s.EPGURL = strings.TrimSpace(*p.EPGURL)
-	}
-}
 
 // newID returns a random uuid-ish hex string (no external dependency).
 func newID() string {
@@ -143,6 +91,7 @@ type Config struct {
 	DLNAReceiverEnabled  bool                 `json:"dlna_receiver_enabled"`
 	DLNAReceiverID       string               `json:"dlna_receiver_id,omitempty"`
 	LocalPlaybackHistory []LocalPlaybackEntry `json:"local_playback_history,omitempty"`
+	AutoplayNextEpisode  bool                 `json:"autoplay_next_episode"`
 }
 
 type LocalPlaybackEntry struct {
@@ -156,7 +105,12 @@ type LocalPlaybackEntry struct {
 func LocalPlaybackPosition(serverID, path string) float64 {
 	for _, e := range Load().LocalPlaybackHistory {
 		if e.ServerID == serverID && e.Path == path {
-			if e.PositionSeconds < 5 || (e.DurationSeconds > 0 && e.PositionSeconds >= e.DurationSeconds*.95) {
+			// Same tail rule as the Emby/Plex providers: only "within the last
+			// 15s" or "past 99%" counts as finished. A percentage alone is too
+			// aggressive for long files (95% of 3h leaves 9 minutes unwatched).
+			if e.PositionSeconds < 5 ||
+				(e.DurationSeconds > 0 &&
+					(e.PositionSeconds >= e.DurationSeconds-15 || e.PositionSeconds/e.DurationSeconds >= 0.99)) {
 				return 0
 			}
 			return e.PositionSeconds
@@ -185,21 +139,31 @@ func RecordLocalPlayback(serverID, path string, position, duration float64) {
 
 const (
 	DefaultMpvCacheSecs = 300
-	MinMpvCacheSecs     = 60
-	MaxMpvCacheSecs     = 7200
 )
+
+// MpvCachePresetSecs is deliberately small: buffering duration is only a
+// target (actual duration depends on bitrate), so arbitrary minute values add
+// complexity without giving users a predictable result.
+var MpvCachePresetSecs = []int{300, 900, 1800, 3600}
 
 func NormalizeMpvCacheSecs(secs int) int {
 	if secs <= 0 {
 		return DefaultMpvCacheSecs
 	}
-	if secs < MinMpvCacheSecs {
-		return MinMpvCacheSecs
+	nearest := MpvCachePresetSecs[0]
+	for _, preset := range MpvCachePresetSecs[1:] {
+		if absInt(secs-preset) < absInt(secs-nearest) {
+			nearest = preset
+		}
 	}
-	if secs > MaxMpvCacheSecs {
-		return MaxMpvCacheSecs
+	return nearest
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
 	}
-	return secs
+	return v
 }
 
 // serverDefaults mirrors _SERVER_DEFAULTS in config.py.
@@ -246,6 +210,7 @@ func loadLocked() (*Config, bool) {
 		SeekBackwardSecs:    5,
 		SeekForwardSecs:     30,
 		DLNAReceiverEnabled: true,
+		AutoplayNextEpisode: true,
 	}
 	raw, err := os.ReadFile(ConfigFile())
 	if err != nil {
@@ -371,7 +336,16 @@ func saveLocked(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "config.json"), buf, 0o644)
+	// 0o600: config.json holds media-server passwords and access tokens in
+	// clear text, so keep it readable only by the user who runs TinyPlay.
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
+		return err
+	}
+	// WriteFile leaves an existing file's mode untouched; tighten configs that
+	// predate this (they were written 0o644) so upgrades aren't left exposed.
+	_ = os.Chmod(path, 0o600)
+	return nil
 }
 
 // patch loads, mutates via fn, and saves atomically under the lock.
@@ -382,431 +356,4 @@ func patch(fn func(*Config)) *Config {
 	fn(cfg)
 	_ = saveLocked(cfg)
 	return cfg
-}
-
-// ── Server CRUD (port of config.py) ──────────────────────────────────────────
-
-func Servers() []*Server { return Load().Servers }
-
-func GetServer(id string) *Server {
-	for _, s := range Servers() {
-		if s.ID == id {
-			return s
-		}
-	}
-	return nil
-}
-
-// ActiveServer returns the active server, falling back to the first one.
-func ActiveServer() *Server {
-	cfg := Load()
-	if len(cfg.Servers) == 0 {
-		return nil
-	}
-	if cfg.ActiveServerID != "" {
-		for _, s := range cfg.Servers {
-			if s.ID == cfg.ActiveServerID {
-				return s
-			}
-		}
-	}
-	return cfg.Servers[0]
-}
-
-// AddServer merges data over the server defaults, assigns a uuid, and persists.
-func AddServer(in Server) *Server {
-	srv := serverDefaults()
-	mergeServer(&srv, in)
-	// Checked against the caller's raw input, not srv.Name: serverDefaults()
-	// already pre-fills Name with a generic placeholder, so checking the
-	// merged value here would never see it as blank and this per-type
-	// fallback (host, or the playlist's own host for iptv) would never run.
-	if strings.TrimSpace(in.Name) == "" {
-		srv.Name = defaultServerName(&srv)
-	}
-	srv.ID = newID()
-	out := srv
-	patch(func(cfg *Config) {
-		cfg.Servers = append(cfg.Servers, &out)
-		if cfg.ActiveServerID == "" {
-			cfg.ActiveServerID = out.ID
-		}
-	})
-	return &out
-}
-
-// UpdateServer applies the non-empty fields of data over the existing server.
-func UpdateServer(id string, data ServerPatch) *Server {
-	var result *Server
-	patch(func(cfg *Config) {
-		for _, s := range cfg.Servers {
-			if s.ID != id {
-				continue
-			}
-			data.apply(s)
-			if data.Name != nil && strings.TrimSpace(*data.Name) == "" {
-				s.Name = defaultServerName(s)
-			}
-			result = s
-			break
-		}
-	})
-	return result
-}
-
-func DeleteServer(id string) bool {
-	removed := false
-	patch(func(cfg *Config) {
-		kept := cfg.Servers[:0:0]
-		for _, s := range cfg.Servers {
-			if s.ID == id {
-				removed = true
-				continue
-			}
-			kept = append(kept, s)
-		}
-		cfg.Servers = kept
-		history := cfg.LocalPlaybackHistory[:0:0]
-		for _, entry := range cfg.LocalPlaybackHistory {
-			if entry.ServerID != id {
-				history = append(history, entry)
-			}
-		}
-		cfg.LocalPlaybackHistory = history
-		if cfg.ActiveServerID == id {
-			if len(cfg.Servers) > 0 {
-				cfg.ActiveServerID = cfg.Servers[0].ID
-			} else {
-				cfg.ActiveServerID = ""
-			}
-		}
-	})
-	return removed
-}
-
-func SetActiveServer(id string) bool {
-	exists := GetServer(id) != nil
-	if exists {
-		patch(func(cfg *Config) { cfg.ActiveServerID = id })
-	}
-	return exists
-}
-
-func SetActiveHost(id string, hostIndex int) bool {
-	ok := false
-	patch(func(cfg *Config) {
-		for _, s := range cfg.Servers {
-			if s.ID == id {
-				if hostIndex >= 0 && hostIndex < len(s.Hosts) {
-					s.ActiveHost = hostIndex
-					ok = true
-				}
-				break
-			}
-		}
-	})
-	return ok
-}
-
-// SetAuth records login results (token + user id) for a server.
-func SetAuth(id, username, token, userID string) {
-	patch(func(cfg *Config) {
-		for _, s := range cfg.Servers {
-			if s.ID == id {
-				s.Username = username
-				s.AccessToken = token
-				s.UserID = userID
-				break
-			}
-		}
-	})
-}
-
-// ToggleIPTVFavorite adds/removes channelID from a server's favorites and
-// returns the updated list.
-func ToggleIPTVFavorite(serverID, channelID string) []string {
-	var result []string
-	patch(func(cfg *Config) {
-		for _, s := range cfg.Servers {
-			if s.ID != serverID {
-				continue
-			}
-			idx := -1
-			for i, id := range s.IPTVFavorites {
-				if id == channelID {
-					idx = i
-					break
-				}
-			}
-			if idx >= 0 {
-				s.IPTVFavorites = append(s.IPTVFavorites[:idx], s.IPTVFavorites[idx+1:]...)
-			} else {
-				s.IPTVFavorites = append(s.IPTVFavorites, channelID)
-			}
-			result = s.IPTVFavorites
-			break
-		}
-	})
-	return result
-}
-
-// IPTVFavorites returns a server's favorite channel ids.
-func IPTVFavorites(serverID string) []string {
-	if s := GetServer(serverID); s != nil {
-		return s.IPTVFavorites
-	}
-	return nil
-}
-
-// RecordIPTVRecent pushes a channel watch to the front of a server's
-// recently-watched list, deduplicating and capping it at limit entries.
-func RecordIPTVRecent(serverID, channelID string, limit int) []RecentChannel {
-	var result []RecentChannel
-	patch(func(cfg *Config) {
-		for _, s := range cfg.Servers {
-			if s.ID != serverID {
-				continue
-			}
-			entry := RecentChannel{ChannelID: channelID, WatchedAt: nowUTC()}
-			kept := make([]RecentChannel, 0, len(s.IPTVRecent)+1)
-			kept = append(kept, entry)
-			for _, r := range s.IPTVRecent {
-				if r.ChannelID != channelID {
-					kept = append(kept, r)
-				}
-			}
-			if limit > 0 && len(kept) > limit {
-				kept = kept[:limit]
-			}
-			s.IPTVRecent = kept
-			result = s.IPTVRecent
-			break
-		}
-	})
-	return result
-}
-
-// IPTVRecent returns a server's recently-watched channels, most recent first.
-func IPTVRecent(serverID string) []RecentChannel {
-	if s := GetServer(serverID); s != nil {
-		return s.IPTVRecent
-	}
-	return nil
-}
-
-// Settings returns user-editable app settings.
-func Settings() map[string]any {
-	cfg := Load()
-	return map[string]any{
-		"mpv_cache_secs":        NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
-		"seek_backward_secs":    normalizeSeek(cfg.SeekBackwardSecs, 5),
-		"seek_forward_secs":     normalizeSeek(cfg.SeekForwardSecs, 30),
-		"language":              NormalizeLanguage(cfg.Language),
-		"dlna_receiver_enabled": cfg.DLNAReceiverEnabled,
-		// The source-type picker filters its file-source cards against this
-		// list, so a build that can't actually serve a given kind doesn't
-		// offer it as an option.
-		"supported_file_protocols": []string{"local", "smb", "webdav", "nfs"},
-	}
-}
-
-// ResetAll clears every server/account and user preference back to defaults
-// — the settings danger-zone "reset everything" action. Installation-level
-// settings with no phone-UI control (listen port, mpv path) are left alone.
-func ResetAll() map[string]any {
-	patch(func(cfg *Config) {
-		cfg.Servers = []*Server{}
-		cfg.ActiveServerID = ""
-		cfg.MpvCacheSecs = DefaultMpvCacheSecs
-		cfg.SeekBackwardSecs = 5
-		cfg.SeekForwardSecs = 30
-		cfg.Language = ""
-		cfg.DLNAReceiverEnabled = true
-		cfg.DLNAReceiverID = newID()
-		cfg.LocalPlaybackHistory = nil
-	})
-	return Settings()
-}
-
-// DLNAReceiverID is a stable UPnP device UUID, generated once and persisted.
-func DLNAReceiverID() string { return Load().DLNAReceiverID }
-
-// SetDLNAReceiverEnabled persists the receiver toggle. The server owns the
-// socket lifecycle; callers apply this result immediately after saving.
-func SetDLNAReceiverEnabled(enabled bool) map[string]any {
-	patch(func(cfg *Config) { cfg.DLNAReceiverEnabled = enabled })
-	return Settings()
-}
-
-func normalizeSeek(v, fallback int) int {
-	if v < 5 || v > 60 || v%5 != 0 {
-		return fallback
-	}
-	return v
-}
-
-func SetSeekSeconds(backward, forward int) map[string]any {
-	patch(func(cfg *Config) {
-		cfg.SeekBackwardSecs = normalizeSeek(backward, 5)
-		cfg.SeekForwardSecs = normalizeSeek(forward, 30)
-	})
-	return Settings()
-}
-
-func SetMpvCacheSecs(secs int) map[string]any {
-	patch(func(cfg *Config) { cfg.MpvCacheSecs = NormalizeMpvCacheSecs(secs) })
-	return Settings()
-}
-
-func NormalizeLanguage(lang string) string {
-	switch strings.ToLower(strings.TrimSpace(lang)) {
-	case "zh", "zh-cn":
-		return "zh-CN"
-	case "en":
-		return "en"
-	default:
-		return "auto"
-	}
-}
-
-func SetLanguage(lang string) map[string]any {
-	lang = NormalizeLanguage(lang)
-	patch(func(cfg *Config) { cfg.Language = lang })
-	i18n.SetPreferred(lang)
-	return Settings()
-}
-
-// MaxServerHosts is the backup-address cap: 1 primary + 2 backups is enough
-// for the "server moved to a new IP / has a LAN + WAN address" cases this
-// exists for, and keeps the address list short enough to actually manage
-// from a phone keyboard. Enforced here (not just in the UI) so the API can't
-// be used to stash more.
-const MaxServerHosts = 3
-
-func normalizeHosts(hosts []string) []string {
-	out := make([]string, 0, len(hosts))
-	for _, h := range hosts {
-		if h = strings.TrimSpace(h); h != "" {
-			out = append(out, h)
-		}
-		if len(out) == MaxServerHosts {
-			break
-		}
-	}
-	return out
-}
-
-func NormalizeServerType(kind string) string {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "jellyfin", "plex", "webdav", "smb", "local", "nfs", "iptv":
-		return strings.ToLower(strings.TrimSpace(kind))
-	default:
-		return "emby"
-	}
-}
-
-// IsFileServerType reports whether kind is one of the file-browsing source
-// kinds (as opposed to a poster-wall media server or IPTV).
-func IsFileServerType(kind string) bool {
-	switch NormalizeServerType(kind) {
-	case "webdav", "smb", "local", "nfs":
-		return true
-	default:
-		return false
-	}
-}
-
-// ── URL helpers ──────────────────────────────────────────────────────────────
-
-// BuildServerURL builds protocol://host:port for the active host.
-func BuildServerURL(s *Server) string {
-	if s == nil || len(s.Hosts) == 0 {
-		return ""
-	}
-	idx := s.ActiveHost
-	if idx < 0 || idx >= len(s.Hosts) {
-		idx = 0
-	}
-	proto := s.Protocol
-	if proto == "" {
-		proto = "http"
-	}
-	port := s.Port
-	if port == 0 {
-		if NormalizeServerType(s.Type) == "plex" {
-			port = 32400
-		} else {
-			port = 8096
-		}
-	}
-	return proto + "://" + s.Hosts[idx] + ":" + strconv.Itoa(port)
-}
-
-func defaultServerName(s *Server) string {
-	kind := NormalizeServerType(s.Type)
-	if len(s.Hosts) > 0 {
-		if h := strings.TrimSpace(s.Hosts[0]); h != "" {
-			return h
-		}
-	}
-	if kind == "iptv" {
-		if u, err := url.Parse(s.PlaylistURL); err == nil && u.Host != "" {
-			return u.Host
-		}
-		return i18n.System("default_iptv_name")
-	}
-	// local/nfs have no host to fall back on; use the chosen folder's own
-	// name (e.g. RootPath ".../NAS/Movies" -> "Movies") when there is one.
-	if (kind == "local" || kind == "nfs") && strings.TrimSpace(s.RootPath) != "" {
-		base := strings.TrimRight(strings.ReplaceAll(s.RootPath, "\\", "/"), "/")
-		if idx := strings.LastIndex(base, "/"); idx >= 0 {
-			base = base[idx+1:]
-		}
-		if base != "" {
-			return base
-		}
-	}
-	return i18n.System("default_server_name")
-}
-
-func mergeServer(dst *Server, in Server) {
-	if in.Name != "" {
-		dst.Name = in.Name
-	}
-	if in.Type != "" {
-		dst.Type = NormalizeServerType(in.Type)
-	}
-	if in.Protocol != "" {
-		dst.Protocol = in.Protocol
-	}
-	if in.Hosts != nil {
-		dst.Hosts = normalizeHosts(in.Hosts)
-	}
-	if in.Port != 0 {
-		dst.Port = in.Port
-	}
-	if in.Share != "" {
-		dst.Share = strings.TrimSpace(in.Share)
-	}
-	if in.Domain != "" {
-		dst.Domain = strings.TrimSpace(in.Domain)
-	}
-	if in.RootPath != "" {
-		dst.RootPath = strings.TrimSpace(in.RootPath)
-	}
-	if in.Username != "" {
-		dst.Username = in.Username
-	}
-	if in.Password != "" {
-		dst.Password = in.Password
-	}
-	if in.AccessToken != "" {
-		dst.AccessToken = in.AccessToken
-	}
-	if in.PlaylistURL != "" {
-		dst.PlaylistURL = strings.TrimSpace(in.PlaylistURL)
-	}
-	if in.EPGURL != "" {
-		dst.EPGURL = strings.TrimSpace(in.EPGURL)
-	}
 }

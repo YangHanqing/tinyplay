@@ -11,6 +11,7 @@
 #   CORE_BIN  path to the built Go core   (default: ../build/tvremote-core-darwin-<goarch>,
 #                                          where <goarch> is arm64 or amd64 to match ARCH)
 #   MPV_DIR   dir copied to Contents/Resources/mpv; expects bin/mpv inside it
+#   REQUIRE_BUNDLED_MPV=1  fail unless the assembled app contains bin/mpv
 #   OUT       output .app path            (default: ../build/TinyPlay.app)
 #   VERSION   CFBundleShortVersionString  (default: 0.1.0)
 set -euo pipefail
@@ -65,6 +66,13 @@ if [ -n "${MPV_DIR:-}" ] && [ -d "$MPV_DIR" ]; then
     [ -f "$RES/mpv/bin/mpv" ] && chmod +x "$RES/mpv/bin/mpv" || true
 else
     echo "==> no MPV_DIR given; the app will fall back to mpv on PATH"
+fi
+
+if [ "${REQUIRE_BUNDLED_MPV:-0}" = "1" ]; then
+    [ -x "$RES/mpv/bin/mpv" ] || {
+        echo "bundled mpv is required but missing: $RES/mpv/bin/mpv" >&2
+        exit 1
+    }
 fi
 
 cat > "$OUT/Contents/Info.plist" <<PLIST

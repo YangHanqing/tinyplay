@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +36,7 @@ func TestActivatingAnotherLibraryDoesNotStopPlayback(t *testing.T) {
 	}
 
 	h := New(p).Handler()
-	req := httptest.NewRequest(http.MethodPost, "/api/servers/"+b.ID+"/activate", strings.NewReader(`{}`))
+	req := jsonReq(http.MethodPost, "/api/servers/"+b.ID+"/activate", `{}`)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -49,7 +48,7 @@ func TestActivatingAnotherLibraryDoesNotStopPlayback(t *testing.T) {
 		t.Fatalf("playback changed after browsing switch: %#v", state)
 	}
 
-	req = httptest.NewRequest(http.MethodPut, "/api/servers/"+b.ID+"/host", strings.NewReader(`{"host_index":1}`))
+	req = jsonReq(http.MethodPut, "/api/servers/"+b.ID+"/host", `{"host_index":1}`)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
