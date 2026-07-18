@@ -331,6 +331,7 @@ var (
 	procGetWindowRect     = user32.NewProc("GetWindowRect")
 	procMonitorFromWindow = user32.NewProc("MonitorFromWindow")
 	procGetMonitorInfoW   = user32.NewProc("GetMonitorInfoW")
+	procShowWindow        = user32.NewProc("ShowWindow")
 )
 
 const (
@@ -351,9 +352,23 @@ const (
 	swpNoActivate           = 0x0010
 	swpShowWindow           = 0x0040
 	swpFrameChanged         = 0x0020
+	swShowMaximized         = 3 // SW_SHOWMAXIMIZED
 	hwndTop                 = 0
 	monitorDefaultToNearest = 2
 )
+
+// maximizeWindow shows a normal app window maximized: it fills the work area
+// but keeps the system title bar (close / maximize buttons) and the taskbar
+// visible. Used for the website browser window, which is an ordinary window the
+// user can close natively — not a borderless kiosk surface. Per-site video
+// "fullscreen" is handled inside the page by the site's own player, so the host
+// window never needs to go borderless.
+func maximizeWindow(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	_, _, _ = procShowWindow.Call(hwnd, uintptr(swShowMaximized))
+}
 
 // removeMinimizeButton adjusts the native WebView2 host window after the
 // dependency has created it. go-webview2 exposes size and title options but

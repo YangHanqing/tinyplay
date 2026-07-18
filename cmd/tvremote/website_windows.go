@@ -327,10 +327,14 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 		return nil
 	})
 
+	// A normal maximized app window, not a borderless kiosk surface: it keeps the
+	// system title bar (close / maximize) and the taskbar, so the user can always
+	// close it natively — the message loop's WM_CLOSE path then destroys it
+	// cleanly and the deferred cleanup reports window_closed to the broker. Video
+	// "fullscreen" is the site player's own concern inside the page.
 	hwnd := uintptr(w.Window())
-	var fs winFullscreen
 	if hwnd != 0 {
-		_ = fs.enter(hwnd)
+		maximizeWindow(hwnd)
 	}
 
 	// Pump shell commands while the window message loop runs.
@@ -368,7 +372,15 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 func (h *websiteHost) applyOnWindow(w webview2.WebView, cmd websiteCmd) {
 	switch cmd.Action {
 	case website.ActionClose:
-		w.Terminate()
+		// Destroy, not Terminate. The website window is borderless WS_POPUP with
+		// no native close affordance, so this programmatic path is the only way it
+		// ever closes. Terminate() only posts WM_QUIT — it exits w.Run() while
+		// leaving the native window (and its full-screen WebView2 surface) on
+		// screen, since the deferred w.Destroy() then posts WM_CLOSE to a message
+		// loop that has already stopped. Destroy() posts WM_CLOSE while this loop
+		// is still pumping (we run inside a Dispatch callback), so it reaches
+		// DestroyWindow → WM_DESTROY → Terminate and the window actually goes away.
+		w.Destroy()
 	case website.ActionOpen:
 		if cmd.URL == "" {
 			h.report(map[string]any{"status": "error", "error": "unknown_site", "action": website.ActionOpen, "command_id": cmd.ID, "open": true})

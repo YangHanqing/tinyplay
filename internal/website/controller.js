@@ -4,7 +4,7 @@
  */
 (function () {
   'use strict';
-  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 10) {
+  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 11) {
     return;
   }
 
@@ -1256,12 +1256,78 @@
   // Clean overlays on navigation.
   window.addEventListener('pagehide', clearHints, true);
   window.addEventListener('beforeunload', clearHints, true);
+
+  // ── Single-container guard ──────────────────────────────────────────────
+  // The desktop website window is one lone WebView2 with no tab bar and no
+  // popup surface, and WebView2's default new-window behaviour spawns a second
+  // top-level window that our injected controller never reaches and the close
+  // button never tears down. So every route to a second window — window.open,
+  // target="_blank"/_new links and forms, <base target> — is folded back into
+  // this same page. There must only ever be one container.
+  function navigateHere(url) {
+    if (!url) return;
+    try {
+      window.location.assign(String(url));
+    } catch (_) {
+      try { window.location.href = String(url); } catch (__) {}
+    }
+  }
+
+  // Minimal window-like stub so the common login-popup pattern
+  // (`var w = window.open(); w.location = url;`) still lands in this page
+  // instead of throwing on a null return.
+  function stubWindow() {
+    var loc = {
+      assign: navigateHere,
+      replace: navigateHere,
+      reload: function () { try { window.location.reload(); } catch (_) {} },
+      get href() { return ''; },
+      set href(v) { navigateHere(v); },
+    };
+    return {
+      closed: false,
+      focus: function () {},
+      blur: function () {},
+      close: function () {},
+      postMessage: function () {},
+      get location() { return loc; },
+      set location(v) { navigateHere(typeof v === 'string' ? v : (v && v.href)); },
+    };
+  }
+
+  try {
+    window.open = function (url) {
+      navigateHere(url);
+      return stubWindow();
+    };
+  } catch (_) {}
+
+  function effectiveTarget(anchor) {
+    var t = (anchor.getAttribute && anchor.getAttribute('target')) || '';
+    if (!t) {
+      var base = document.querySelector('base[target]');
+      if (base) t = base.getAttribute('target') || '';
+    }
+    return t.toLowerCase();
+  }
+
+  // Anchors: keep every _blank / _new navigation in this window.
   document.addEventListener('click', function (event) {
     var target = event.target;
-    var link = target && target.closest ? target.closest('a[target="_blank"][href]') : null;
+    var link = target && target.closest ? target.closest('a[href]') : null;
     if (!link || !link.href) return;
+    var t = effectiveTarget(link);
+    if (t !== '_blank' && t !== '_new') return;
     event.preventDefault();
-    window.location.assign(link.href);
+    navigateHere(link.href);
+  }, true);
+
+  // Forms: rewrite a _blank target at submit time so the result renders in-page.
+  document.addEventListener('submit', function (event) {
+    var form = event.target;
+    if (!form || form.tagName !== 'FORM') return;
+    var t = (form.getAttribute('target') || '').toLowerCase();
+    if (t === '_blank' || t === '_new') form.setAttribute('target', '_self');
   }, true);
   try {
     var mo = new MutationObserver(function () {
@@ -1342,7 +1408,7 @@
   }
 
   window.__tinyplayWebsite = {
-    __version: 10,
+    __version: 11,
     handle: handle,
     clearHints: clearHints,
     isHintActive: function () { return !!hintState.active; },

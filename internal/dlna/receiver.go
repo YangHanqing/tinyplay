@@ -18,8 +18,9 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/ipv4"
+
 	"tvremote/internal/config"
-	"tvremote/internal/netutil"
 	"tvremote/internal/player"
 )
 
@@ -31,14 +32,33 @@ const (
 	renderingControlType  = "urn:schemas-upnp-org:service:RenderingControl:1"
 )
 
+// groupUDP is the SSDP multicast destination as a resolved address, reused for
+// every NOTIFY and for joining the group on each interface.
+var groupUDP = &net.UDPAddr{IP: net.IPv4(239, 255, 255, 250), Port: 1900}
+
+// ifaceSock is one multicast listener bound to a single interface. Binding
+// per-interface (rather than a single nil-interface socket) is what makes
+// discovery reliable on multi-homed hosts — a Windows box with Hyper-V / WSL /
+// VMware adapters would otherwise join the group on one arbitrary NIC and never
+// see an M-SEARCH from the phone's LAN. Knowing the interface also lets each
+// reply carry a LOCATION on the subnet the query came from.
+type ifaceSock struct {
+	ifi  net.Interface
+	ip   net.IP
+	conn *net.UDPConn
+}
+
 // Receiver is safe to start/stop repeatedly as the Settings toggle changes.
 type Receiver struct {
-	p       *player.Player
-	port    func() int
+	p    *player.Player
+	port func() int
+
 	mu      sync.Mutex
-	conn    *net.UDPConn
+	socks   map[int]*ifaceSock // one receive socket per interface, keyed by index
+	send    *ipv4.PacketConn   // shared sender; egress interface pinned per write
 	stop    chan struct{}
-	stopped chan struct{}
+	running bool
+	wg      sync.WaitGroup
 }
 
 func New(p *player.Player, port func() int) *Receiver { return &Receiver{p: p, port: port} }
@@ -57,55 +77,124 @@ func FriendlyName() string {
 
 func (r *Receiver) Start() {
 	r.mu.Lock()
-	if r.conn != nil {
+	if r.running {
 		r.mu.Unlock()
 		return
 	}
-	conn, err := net.ListenMulticastUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("239.255.255.250"), Port: 1900})
+	// One unconnected sender for the whole receiver: NOTIFY and M-SEARCH
+	// replies both pin their egress interface through a per-write control
+	// message, so each packet leaves the right NIC with a matching source IP.
+	sendConn, err := net.ListenPacket("udp4", ":0")
 	if err != nil {
 		r.mu.Unlock()
-		log.Printf("DLNA receiver unavailable (UDP 1900): %v", err)
+		log.Printf("DLNA receiver unavailable (send socket): %v", err)
 		return
 	}
-	r.conn, r.stop, r.stopped = conn, make(chan struct{}), make(chan struct{})
-	stop, stopped := r.stop, r.stopped
+	send := ipv4.NewPacketConn(sendConn)
+	_ = send.SetMulticastTTL(4)
+	r.send = send
+	r.socks = map[int]*ifaceSock{}
+	r.stop = make(chan struct{})
+	r.running = true
+	r.bindInterfacesLocked()
+	joined := len(r.socks)
 	r.mu.Unlock()
-	go r.serve(conn, stop, stopped)
-	go r.advertiseLoop(conn, stop)
-	log.Printf("DLNA receiver enabled on UDP 1900")
+
+	r.advertise("ssdp:alive")
+	r.wg.Add(1)
+	go r.maintainLoop(r.stop)
+	if joined == 0 {
+		log.Printf("DLNA receiver: no interface joined yet; will keep scanning")
+	} else {
+		log.Printf("DLNA receiver enabled on UDP 1900 across %d interface(s)", joined)
+	}
 }
 
-// Running reports whether this receiver currently owns its SSDP multicast
-// socket. It deliberately reflects the live socket rather than the persisted
-// setting: another application may prevent us from binding UDP 1900.
+// Running reports whether discovery is actually live: the receiver owns its
+// sender and has joined the group on at least one interface. It reflects the
+// live sockets rather than the persisted setting, since another application or
+// a down link may keep us off every interface.
 func (r *Receiver) Running() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.conn != nil
+	return r.running && len(r.socks) > 0
 }
 
 func (r *Receiver) Stop() {
 	r.mu.Lock()
-	conn, stop, stopped := r.conn, r.stop, r.stopped
-	if conn == nil {
+	if !r.running {
 		r.mu.Unlock()
 		return
 	}
-	r.conn = nil
+	r.running = false
+	close(r.stop)
+	socks := r.socks
+	send := r.send
+	r.socks = nil
+	r.send = nil
 	r.mu.Unlock()
-	r.notify(conn, "ssdp:byebye")
-	close(stop)
-	_ = conn.Close()
-	<-stopped
+
+	// Announce departure while the sockets are still open, then tear down.
+	list := make([]*ifaceSock, 0, len(socks))
+	for _, s := range socks {
+		list = append(list, s)
+	}
+	r.sendNotify(list, send, "ssdp:byebye")
+	for _, s := range socks {
+		_ = s.conn.Close()
+	}
+	if send != nil {
+		_ = send.Close()
+	}
+	r.wg.Wait()
 	log.Printf("DLNA receiver disabled")
 }
 
-func (r *Receiver) serve(conn *net.UDPConn, stop <-chan struct{}, stopped chan<- struct{}) {
-	defer close(stopped)
+// bindInterfacesLocked joins the SSDP group on every suitable interface that
+// does not already have a socket. It is called both at Start and periodically,
+// so an interface that comes up later (e.g. Wi-Fi after launch) is picked up
+// without a restart. Callers must hold r.mu.
+func (r *Receiver) bindInterfacesLocked() {
+	for _, ifi := range suitableInterfaces() {
+		if _, ok := r.socks[ifi.Index]; ok {
+			continue
+		}
+		ip := firstIPv4(ifi)
+		if ip == nil {
+			continue
+		}
+		ifi := ifi
+		conn, err := net.ListenMulticastUDP("udp4", &ifi, groupUDP)
+		if err != nil {
+			// A single interface refusing the join (permissions, races on a
+			// vanishing NIC) must not sink the others.
+			log.Printf("DLNA receiver: interface %s not joined: %v", ifi.Name, err)
+			continue
+		}
+		s := &ifaceSock{ifi: ifi, ip: ip, conn: conn}
+		r.socks[ifi.Index] = s
+		r.wg.Add(1)
+		go r.serve(s, r.stop)
+	}
+}
+
+// dropSock forgets a receive socket whose read failed (interface removed, or a
+// close during Stop) so a later re-scan can re-bind it if it returns.
+func (r *Receiver) dropSock(s *ifaceSock) {
+	r.mu.Lock()
+	if cur, ok := r.socks[s.ifi.Index]; ok && cur == s {
+		delete(r.socks, s.ifi.Index)
+	}
+	r.mu.Unlock()
+	_ = s.conn.Close()
+}
+
+func (r *Receiver) serve(s *ifaceSock, stop <-chan struct{}) {
+	defer r.wg.Done()
 	buf := make([]byte, 8192)
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-		n, addr, err := conn.ReadFromUDP(buf)
+		_ = s.conn.SetReadDeadline(time.Now().Add(time.Second))
+		n, addr, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				select {
@@ -115,27 +204,45 @@ func (r *Receiver) serve(conn *net.UDPConn, stop <-chan struct{}, stopped chan<-
 					continue
 				}
 			}
+			// Non-timeout error: the socket was closed (Stop) or the
+			// interface went away. Drop it and let a re-scan re-bind later.
+			r.dropSock(s)
 			return
 		}
-		r.handleSearch(conn, addr, string(buf[:n]))
+		r.handleSearch(s, addr, string(buf[:n]))
 	}
 }
 
-func (r *Receiver) advertiseLoop(conn *net.UDPConn, stop <-chan struct{}) {
-	r.notify(conn, "ssdp:alive")
-	t := time.NewTicker(15 * time.Minute)
-	defer t.Stop()
+// maintainLoop keeps the announcement alive and adopts interfaces that appear
+// after Start. The re-scan cadence is short so a phone on a newly-connected LAN
+// becomes reachable quickly; the alive NOTIFY cadence stays under the 1800s
+// max-age it advertises.
+func (r *Receiver) maintainLoop(stop <-chan struct{}) {
+	defer r.wg.Done()
+	rescan := time.NewTicker(30 * time.Second)
+	notify := time.NewTicker(9 * time.Minute)
+	defer rescan.Stop()
+	defer notify.Stop()
 	for {
 		select {
 		case <-stop:
 			return
-		case <-t.C:
-			r.notify(conn, "ssdp:alive")
+		case <-rescan.C:
+			r.mu.Lock()
+			before := len(r.socks)
+			r.bindInterfacesLocked()
+			added := len(r.socks) - before
+			r.mu.Unlock()
+			if added > 0 {
+				r.advertise("ssdp:alive")
+			}
+		case <-notify.C:
+			r.advertise("ssdp:alive")
 		}
 	}
 }
 
-func (r *Receiver) handleSearch(conn *net.UDPConn, addr *net.UDPAddr, request string) {
+func (r *Receiver) handleSearch(s *ifaceSock, addr *net.UDPAddr, request string) {
 	upper := strings.ToUpper(request)
 	if !strings.HasPrefix(upper, "M-SEARCH * HTTP/1.1") || !strings.Contains(upper, "SSDP:DISCOVER") {
 		return
@@ -144,17 +251,66 @@ func (r *Receiver) handleSearch(conn *net.UDPConn, addr *net.UDPAddr, request st
 	if len(targets) == 0 {
 		return
 	}
+	r.mu.Lock()
+	send := r.send
+	r.mu.Unlock()
+	if send == nil {
+		return
+	}
 	delayLimit := searchDelay(header(request, "mx"))
+	cm := &ipv4.ControlMessage{IfIndex: s.ifi.Index}
 	for _, target := range targets {
-		target := target
+		resp := r.response(target, s.ip)
 		delay := time.Duration(0)
 		if delayLimit > 0 {
 			delay = time.Duration(rand.Int63n(int64(delayLimit) + 1))
 		}
 		time.AfterFunc(delay, func() {
-			_, _ = conn.WriteToUDP([]byte(r.response(target)), addr)
+			_, _ = send.WriteTo([]byte(resp), cm, addr)
 		})
 	}
+}
+
+// suitableInterfaces returns the up, multicast-capable, non-loopback interfaces
+// that carry a usable IPv4 address.
+func suitableInterfaces() []net.Interface {
+	all, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []net.Interface
+	for _, ifi := range all {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagMulticast == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if firstIPv4(ifi) == nil {
+			continue
+		}
+		out = append(out, ifi)
+	}
+	return out
+}
+
+// firstIPv4 returns the interface's first routable IPv4 address, skipping
+// loopback and 169.254 link-local addresses that no phone would reach us on.
+func firstIPv4(ifi net.Interface) net.IP {
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return nil
+	}
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip4 := ip.To4(); ip4 != nil && !ip4.IsLoopback() && !ip4.IsLinkLocalUnicast() {
+			return ip4
+		}
+	}
+	return nil
 }
 
 func (r *Receiver) targets() []string {
@@ -192,28 +348,47 @@ func searchDelay(mx string) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func (r *Receiver) notify(conn *net.UDPConn, nts string) {
-	addr, _ := net.ResolveUDPAddr("udp4", group)
-	for _, target := range r.targets() {
-		message := strings.Join([]string{
-			"NOTIFY * HTTP/1.1", "HOST: " + group, "CACHE-CONTROL: max-age=1800",
-			"LOCATION: " + r.location(), "NT: " + target, "NTS: " + nts,
-			"SERVER: TinyPlay/1.0 UPnP/1.1", "USN: " + r.usn(target), "", "",
-		}, "\r\n")
-		_, _ = conn.WriteToUDP([]byte(message), addr)
+// advertise snapshots the live sockets and multicasts a NOTIFY out each one.
+func (r *Receiver) advertise(nts string) {
+	r.mu.Lock()
+	send := r.send
+	socks := make([]*ifaceSock, 0, len(r.socks))
+	for _, s := range r.socks {
+		socks = append(socks, s)
+	}
+	r.mu.Unlock()
+	r.sendNotify(socks, send, nts)
+}
+
+// sendNotify multicasts a NOTIFY (alive or byebye) for every advertised target
+// out each interface, with a LOCATION that resolves on that interface's subnet.
+func (r *Receiver) sendNotify(socks []*ifaceSock, send *ipv4.PacketConn, nts string) {
+	if send == nil {
+		return
+	}
+	for _, s := range socks {
+		cm := &ipv4.ControlMessage{IfIndex: s.ifi.Index}
+		for _, target := range r.targets() {
+			message := strings.Join([]string{
+				"NOTIFY * HTTP/1.1", "HOST: " + group, "CACHE-CONTROL: max-age=1800",
+				"LOCATION: " + r.location(s.ip), "NT: " + target, "NTS: " + nts,
+				"SERVER: TinyPlay/1.0 UPnP/1.1", "USN: " + r.usn(target), "", "",
+			}, "\r\n")
+			_, _ = send.WriteTo([]byte(message), cm, groupUDP)
+		}
 	}
 }
 
-func (r *Receiver) response(target string) string {
+func (r *Receiver) response(target string, ip net.IP) string {
 	return strings.Join([]string{
-		"HTTP/1.1 200 OK", "CACHE-CONTROL: max-age=1800", "EXT:", "LOCATION: " + r.location(),
+		"HTTP/1.1 200 OK", "CACHE-CONTROL: max-age=1800", "EXT:", "LOCATION: " + r.location(ip),
 		"SERVER: TinyPlay/1.0 UPnP/1.1", "DATE: " + time.Now().UTC().Format(http.TimeFormat),
 		"ST: " + target, "USN: " + r.usn(target), "", "",
 	}, "\r\n")
 }
 
-func (r *Receiver) location() string {
-	return fmt.Sprintf("http://%s:%d/dlna/device.xml", netutil.LocalIP(), r.port())
+func (r *Receiver) location(ip net.IP) string {
+	return fmt.Sprintf("http://%s:%d/dlna/device.xml", ip.String(), r.port())
 }
 func (r *Receiver) usn(target string) string {
 	base := "uuid:" + config.DLNAReceiverID()

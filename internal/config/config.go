@@ -212,11 +212,14 @@ func loadLocked() (*Config, bool) {
 		DLNAReceiverEnabled: true,
 		AutoplayNextEpisode: true,
 	}
-	raw, err := os.ReadFile(ConfigFile())
-	if err != nil {
-		return cfg, false
+	// A missing file is a fresh install, not an error: fall through with the
+	// defaults so the normalization below still runs. Skipping it here used to
+	// leave DLNAReceiverID empty until the user happened to save a setting,
+	// which advertised an invalid empty UPnP UDN (uuid:) — strict control
+	// points (phones) reject it, and the standby screen showed "TinyPlay ()".
+	if raw, err := os.ReadFile(ConfigFile()); err == nil {
+		_ = json.Unmarshal(raw, cfg) // partial parse keeps defaults on error
 	}
-	_ = json.Unmarshal(raw, cfg) // partial parse keeps defaults on error
 	if cfg.Servers == nil {
 		cfg.Servers = []*Server{}
 	}

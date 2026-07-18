@@ -593,8 +593,13 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 		t.Fatal("bilibili/iqiyi SITE_KEYS host tests missing")
 	}
 	// Version gate must re-inject after controller upgrades.
-	if !contains(js, "__version >= 10") {
+	if !contains(js, "__version >= 11") {
 		t.Fatal("controller version gate missing")
+	}
+	// Single-container guard: a lone WebView2 must fold every new-window route
+	// (window.open, target=_blank/_new links/forms) back into this same page.
+	if !containsAll(js, []string{"window.open =", "effectiveTarget", "_blank", "_new"}) {
+		t.Fatal("single-container new-window guard missing")
 	}
 	// A temporarily empty SPA DOM (for example iQIYI swapping its episode
 	// panel) is retried before surfacing no_targets to the phone.
