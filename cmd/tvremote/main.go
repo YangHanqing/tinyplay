@@ -124,6 +124,9 @@ func newRotatingLogFile(path string, maxBytes int64, backups int) (*rotatingLogF
 func (f *rotatingLogFile) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.file == nil {
+		return 0, os.ErrClosed
+	}
 
 	info, err := f.file.Stat()
 	if err != nil {
@@ -140,6 +143,18 @@ func (f *rotatingLogFile) Write(p []byte) (int, error) {
 		}
 	}
 	return f.file.Write(p)
+}
+
+// Close releases the active log file. It is safe to call more than once.
+func (f *rotatingLogFile) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.file == nil {
+		return nil
+	}
+	err := f.file.Close()
+	f.file = nil
+	return err
 }
 
 // archiveNonEnglishLog keeps the active diagnostic file consistently English

@@ -48,6 +48,11 @@ func TestRotatingLogFileRotatesWhileRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close rotating log: %v", err)
+		}
+	})
 	if _, err := f.Write([]byte("123456")); err != nil {
 		t.Fatal(err)
 	}
