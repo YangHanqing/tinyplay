@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestNormalizeLanguage(t *testing.T) {
 	cases := []struct {
@@ -62,5 +65,32 @@ func TestNormalizeLanguage(t *testing.T) {
 		if got := NormalizeLanguage(tc.in); got != tc.want {
 			t.Errorf("NormalizeLanguage(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestUpdatePromptPreferences(t *testing.T) {
+	useTempData(t)
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	if !ShouldOfferUpdate("v1.0.0", now) {
+		t.Fatal("a fresh update should be offered")
+	}
+
+	SkipUpdate("v1.0.0")
+	if ShouldOfferUpdate("v1.0.0", now) {
+		t.Fatal("skipped version should not be offered")
+	}
+	if !ShouldOfferUpdate("v1.0.1", now) {
+		t.Fatal("newer version should not inherit a skip")
+	}
+
+	RemindAboutUpdateAfter("v1.0.0", now.Add(72*time.Hour))
+	if ShouldOfferUpdate("v1.0.0", now.Add(time.Hour)) {
+		t.Fatal("snoozed version should not be offered early")
+	}
+	if !ShouldOfferUpdate("v1.0.1", now.Add(time.Hour)) {
+		t.Fatal("a newer version should not inherit a snooze")
+	}
+	if !ShouldOfferUpdate("v1.0.0", now.Add(73*time.Hour)) {
+		t.Fatal("snoozed version should be offered after the reminder time")
 	}
 }

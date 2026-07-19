@@ -2,6 +2,7 @@ package config
 
 import (
 	"strings"
+	"time"
 
 	"tvremote/internal/i18n"
 )
@@ -45,8 +46,54 @@ func ResetAll() map[string]any {
 		cfg.DLNAReceiverID = newID()
 		cfg.LocalPlaybackHistory = nil
 		cfg.AutoplayNextEpisode = true
+		cfg.UpdateSkippedVersion = ""
+		cfg.UpdateRemindVersion = ""
+		cfg.UpdateRemindAfter = ""
 	})
 	return Settings()
+}
+
+// ShouldOfferUpdate reports whether an automatically discovered release may
+// interrupt the user. Manual "Check for Updates" actions deliberately bypass
+// this policy so people can revisit a skipped release on their own terms.
+func ShouldOfferUpdate(version string, now time.Time) bool {
+	cfg := Load()
+	if version == "" || cfg.UpdateSkippedVersion == version {
+		return false
+	}
+	if cfg.UpdateRemindVersion == version {
+		until, err := time.Parse(time.RFC3339, cfg.UpdateRemindAfter)
+		if err == nil && until.After(now) {
+			return false
+		}
+	}
+	return true
+}
+
+func SkipUpdate(version string) {
+	if version == "" {
+		return
+	}
+	patch(func(cfg *Config) {
+		cfg.UpdateSkippedVersion = version
+		cfg.UpdateRemindVersion = ""
+		cfg.UpdateRemindAfter = ""
+	})
+}
+
+func RemindAboutUpdateAfter(version string, until time.Time) {
+	if version == "" {
+		return
+	}
+	patch(func(cfg *Config) {
+		// A prior skip is only for that exact release; "remind later" is an
+		// affirmative re-enable of its prompt.
+		if cfg.UpdateSkippedVersion == version {
+			cfg.UpdateSkippedVersion = ""
+		}
+		cfg.UpdateRemindVersion = version
+		cfg.UpdateRemindAfter = until.UTC().Format(time.RFC3339)
+	})
 }
 
 // DLNAReceiverID is a stable UPnP device UUID, generated once and persisted.

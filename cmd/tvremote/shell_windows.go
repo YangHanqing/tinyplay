@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -57,6 +58,7 @@ func runShell(localURL string, httpSrv *http.Server) {
 		dlnaEnabled := config.Load().DLNAReceiverEnabled
 		mDLNA := mSettings.AddSubMenuItemCheckbox(i18n.System("dlna_receiver"), i18n.System("dlna_receiver_tip"), dlnaEnabled)
 		systray.AddSeparator()
+		mCheckUpdates := systray.AddMenuItem(i18n.System("check_updates"), i18n.System("check_updates_tip"))
 		mAbout := systray.AddMenuItem(i18n.System("about"), i18n.System("about_tip"))
 		mQuit := systray.AddMenuItem(i18n.System("quit"), i18n.System("quit_tip"))
 
@@ -71,6 +73,8 @@ func runShell(localURL string, httpSrv *http.Server) {
 			mSettings.SetTitle(i18n.System("settings"))
 			mDLNA.SetTitle(i18n.System("dlna_receiver"))
 			mDLNA.SetTooltip(i18n.System("dlna_receiver_tip"))
+			mCheckUpdates.SetTitle(i18n.System("check_updates"))
+			mCheckUpdates.SetTooltip(i18n.System("check_updates_tip"))
 			mAbout.SetTitle(i18n.System("about"))
 			mAbout.SetTooltip(i18n.System("about_tip"))
 			mQuit.SetTitle(i18n.System("quit"))
@@ -92,6 +96,8 @@ func runShell(localURL string, httpSrv *http.Server) {
 					openWindow(desktopURL())
 				case <-mAbout.ClickedCh:
 					showAbout()
+				case <-mCheckUpdates.ClickedCh:
+					go checkForTinyPlayUpdates(true)
 				case <-mLogs.ClickedCh:
 					if resp, err := http.Get(localURL + "/desktop/open-logs"); err == nil {
 						resp.Body.Close()
@@ -133,6 +139,12 @@ func runShell(localURL string, httpSrv *http.Server) {
 
 		// Website playback shell: dedicated singleton WebView2, separate from QR.
 		go startWebsiteShell(localURL)
+		// Update discovery is deliberately late and asynchronous: a slow or
+		// blocked GitHub connection must never delay the tray or QR window.
+		go func() {
+			time.Sleep(8 * time.Second)
+			checkForTinyPlayUpdates(false)
+		}()
 
 		// Show the window once on first launch so users see the QR immediately.
 		go openWindow(desktopURL())
@@ -324,22 +336,29 @@ func showWebView2Missing() {
 }
 
 var (
-	user32                = syscall.NewLazyDLL("user32.dll")
-	procMessageBoxW       = user32.NewProc("MessageBoxW")
-	procFindWindowW       = user32.NewProc("FindWindowW")
-	procGetWindowLongPtrW = user32.NewProc("GetWindowLongPtrW")
-	procSetWindowLongPtrW = user32.NewProc("SetWindowLongPtrW")
-	procSetWindowPos      = user32.NewProc("SetWindowPos")
-	procGetWindowRect     = user32.NewProc("GetWindowRect")
-	procMonitorFromWindow = user32.NewProc("MonitorFromWindow")
-	procGetMonitorInfoW   = user32.NewProc("GetMonitorInfoW")
-	procShowWindow        = user32.NewProc("ShowWindow")
+	user32                 = syscall.NewLazyDLL("user32.dll")
+	comctl32               = syscall.NewLazyDLL("comctl32.dll")
+	procMessageBoxW        = user32.NewProc("MessageBoxW")
+	procFindWindowW        = user32.NewProc("FindWindowW")
+	procGetWindowLongPtrW  = user32.NewProc("GetWindowLongPtrW")
+	procSetWindowLongPtrW  = user32.NewProc("SetWindowLongPtrW")
+	procSetWindowPos       = user32.NewProc("SetWindowPos")
+	procGetWindowRect      = user32.NewProc("GetWindowRect")
+	procMonitorFromWindow  = user32.NewProc("MonitorFromWindow")
+	procGetMonitorInfoW    = user32.NewProc("GetMonitorInfoW")
+	procShowWindow         = user32.NewProc("ShowWindow")
+	procTaskDialogIndirect = comctl32.NewProc("TaskDialogIndirect")
 )
 
 const (
 	mbYesNo                 = 0x00000004
 	mbIconInformation       = 0x00000040
 	idYes                   = 6
+	tdfSizeToContent        = 0x01000000
+	tdfAllowCancellation    = 0x0008
+	updateDownloadButton    = 100
+	updateRemindButton      = 101
+	updateSkipButton        = 102
 	gwlStyle                = ^uintptr(15) // GWL_STYLE (-16)
 	wsPopup                 = 0x80000000
 	wsVisible               = 0x10000000
@@ -359,6 +378,41 @@ const (
 	hwndTop                 = 0
 	monitorDefaultToNearest = 2
 )
+
+// taskDialogConfig mirrors TASKDIALOGCONFIG from commctrl.h. TaskDialog gives
+// the update prompt three clearly labelled choices; MessageBox only offers
+// fixed Yes/No/Cancel labels, which makes "skip this version" ambiguous.
+type taskDialogConfig struct {
+	cbSize                  uint32
+	hwndParent              uintptr
+	hInstance               uintptr
+	dwFlags                 uint32
+	dwCommonButtons         uint32
+	pszWindowTitle          *uint16
+	hMainIcon               uintptr
+	pszMainInstruction      *uint16
+	pszContent              *uint16
+	cButtons                uint32
+	pButtons                *taskDialogButton
+	nDefaultButton          int32
+	cRadioButtons           uint32
+	pRadioButtons           *taskDialogButton
+	nDefaultRadioButton     int32
+	pszVerificationText     *uint16
+	pszExpandedInformation  *uint16
+	pszExpandedControlText  *uint16
+	pszCollapsedControlText *uint16
+	hFooterIcon             uintptr
+	pszFooter               *uint16
+	pfCallback              uintptr
+	lpCallbackData          uintptr
+	cxWidth                 uint32
+}
+
+type taskDialogButton struct {
+	nButtonID     int32
+	pszButtonText *uint16
+}
 
 // maximizeWindow shows a normal app window maximized: it fills the work area
 // but keeps the system title bar (close / maximize buttons) and the taskbar
@@ -406,6 +460,76 @@ func messageBoxYesNo(title, text string) bool {
 		uintptr(mbYesNo|mbIconInformation),
 	)
 	return ret == idYes
+}
+
+func checkForTinyPlayUpdates(manual bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	defer cancel()
+	release, err := findTinyPlayUpdate(ctx, version)
+	if err != nil {
+		log.Printf("Update check failed: %v", err)
+		if manual {
+			showInformation(i18n.System("update_failed"))
+		}
+		return
+	}
+	if release == nil {
+		if manual {
+			showInformation(i18n.System("update_latest"))
+		}
+		return
+	}
+	if !manual && !config.ShouldOfferUpdate(release.Version, time.Now()) {
+		return
+	}
+
+	switch showUpdateDialog(release.Version) {
+	case updateDownloadButton:
+		openWithDefaultHandler(release.PageURL)
+	case updateRemindButton:
+		config.RemindAboutUpdateAfter(release.Version, time.Now().Add(72*time.Hour))
+	case updateSkipButton:
+		config.SkipUpdate(release.Version)
+	}
+}
+
+func showInformation(text string) {
+	_, _, _ = procMessageBoxW.Call(
+		0,
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("TinyPlay"))),
+		uintptr(mbIconInformation),
+	)
+}
+
+func showUpdateDialog(latestVersion string) int {
+	buttons := []taskDialogButton{
+		{nButtonID: updateDownloadButton, pszButtonText: syscall.StringToUTF16Ptr(i18n.System("update_download"))},
+		{nButtonID: updateRemindButton, pszButtonText: syscall.StringToUTF16Ptr(i18n.System("update_remind"))},
+		{nButtonID: updateSkipButton, pszButtonText: syscall.StringToUTF16Ptr(i18n.System("update_skip"))},
+	}
+	config := taskDialogConfig{
+		cbSize:             uint32(unsafe.Sizeof(taskDialogConfig{})),
+		dwFlags:            tdfSizeToContent | tdfAllowCancellation,
+		pszWindowTitle:     syscall.StringToUTF16Ptr("TinyPlay"),
+		pszMainInstruction: syscall.StringToUTF16Ptr(i18n.System("update_available_title")),
+		pszContent:         syscall.StringToUTF16Ptr(i18n.System("update_available_body", latestVersion, version)),
+		cButtons:           uint32(len(buttons)),
+		pButtons:           &buttons[0],
+		nDefaultButton:     updateDownloadButton,
+	}
+	var clicked int32
+	result, _, _ := procTaskDialogIndirect.Call(
+		uintptr(unsafe.Pointer(&config)),
+		uintptr(unsafe.Pointer(&clicked)),
+		0,
+		0,
+	)
+	if int32(result) != 0 {
+		log.Printf("Update dialog failed: HRESULT %#x", result)
+		return 0
+	}
+	return int(clicked)
 }
 
 // showAbout displays the version (baked in at build time via -ldflags -X

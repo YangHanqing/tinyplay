@@ -15,6 +15,7 @@
 //   4. Terminate the sidecar on quit.
 
 import AppKit
+import Foundation
 import WebKit
 import Network
 
@@ -33,6 +34,14 @@ private func L(_ key: String) -> String {
 		"about": ("\u{5173}\u{4E8E} TinyPlay", "About TinyPlay"),
 		"version_label": ("\u{7248}\u{672C}", "Version"),
 		"third_party_notices": ("\u{67E5}\u{770B}\u{7B2C}\u{4E09}\u{65B9}\u{58F0}\u{660E}", "View Third-Party Notices"),
+		"check_updates": ("\u{68C0}\u{67E5}\u{66F4}\u{65B0}\u{2026}", "Check for Updates…"),
+		"update_available_title": ("\u{6709}\u{65B0}\u{7248}\u{672C}\u{53EF}\u{7528}", "Update Available"),
+		"update_available_body": ("TinyPlay %@ \u{5DF2}\u{53D1}\u{5E03}\u{3002}\n\u{5F53}\u{524D}\u{7248}\u{672C}\u{FF1A}%@", "TinyPlay %@ is available.\nCurrent version: %@"),
+		"update_download": ("\u{6253}\u{5F00}\u{4E0B}\u{8F7D}\u{9875}\u{9762}", "Open Download Page"),
+		"update_remind": ("3 \u{5929}\u{540E}\u{63D0}\u{9192}", "Remind Me in 3 Days"),
+		"update_skip": ("\u{8DF3}\u{8FC7}\u{6B64}\u{7248}\u{672C}", "Skip This Version"),
+		"update_latest": ("\u{4F60}\u{6B63}\u{5728}\u{4F7F}\u{7528}\u{6700}\u{65B0}\u{7248}\u{672C}\u{3002}", "You're using the latest version."),
+		"update_failed": ("\u{6682}\u{65F6}\u{65E0}\u{6CD5}\u{68C0}\u{67E5}\u{66F4}\u{65B0}\u{FF0C}\u{8BF7}\u{7A0D}\u{540E}\u{518D}\u{8BD5}\u{3002}", "Couldn't check for updates. Please try again later."),
 		"ok": ("\u{597D}\u{7684}", "OK"),
     ]
     guard let pair = table[key] else { return key }
@@ -46,6 +55,102 @@ private func resolvedWebLanguage(_ preference: String) -> String {
 	if identifier.hasPrefix("zh") { return "zh-CN" }
 	for code in ["ja", "ko", "es", "fr", "de"] where identifier.hasPrefix(code) { return code }
 	return "en"
+}
+
+// MARK: - Release update discovery
+
+private let tinyPlayReleaseAPI = "https://api.github.com/repos/YangHanqing/tinyplay/releases/latest"
+private let tinyPlayReleasePage = "https://github.com/YangHanqing/tinyplay/releases/latest"
+private let skippedUpdateVersionKey = "TinyPlaySkippedUpdateVersion"
+private let updateRemindVersionKey = "TinyPlayUpdateRemindVersion"
+private let updateRemindAfterKey = "TinyPlayUpdateRemindAfter"
+
+private struct TinyPlayRelease: Decodable {
+	let tag_name: String
+	let html_url: String
+	let draft: Bool
+	let prerelease: Bool
+}
+
+private struct TinyPlayUpdate {
+	let version: String
+	let pageURL: URL
+}
+
+private struct TinyPlayVersion: Comparable {
+	let major: Int
+	let minor: Int
+	let patch: Int
+
+	static func < (lhs: TinyPlayVersion, rhs: TinyPlayVersion) -> Bool {
+		if lhs.major != rhs.major { return lhs.major < rhs.major }
+		if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
+		return lhs.patch < rhs.patch
+	}
+}
+
+private func parseTinyPlayVersion(_ raw: String) -> TinyPlayVersion? {
+	let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+	let value = trimmed.hasPrefix("v") ? String(trimmed.dropFirst()) : trimmed
+	guard !value.isEmpty, !value.contains("-"), !value.contains("+") else { return nil }
+	let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+	guard parts.count == 3 else { return nil }
+	var numbers: [Int] = []
+	for part in parts {
+		guard !part.isEmpty,
+			!(part.count > 1 && part.first == "0"),
+			let number = Int(part), number >= 0 else { return nil }
+		numbers.append(number)
+	}
+	return TinyPlayVersion(major: numbers[0], minor: numbers[1], patch: numbers[2])
+}
+
+private func tinyPlayReleaseTag(from url: URL) -> String? {
+	guard url.host?.lowercased() == "github.com" else { return nil }
+	let prefix = "/YangHanqing/tinyplay/releases/tag/"
+	guard url.path.hasPrefix(prefix) else { return nil }
+	let tag = String(url.path.dropFirst(prefix.count))
+	return tag.isEmpty ? nil : tag
+}
+
+private func makeUpdateRequest(_ url: URL) -> URLRequest {
+	var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 6)
+	request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+	request.setValue("TinyPlay update checker", forHTTPHeaderField: "User-Agent")
+	return request
+}
+
+private func fetchLatestTinyPlayUpdate(completion: @escaping (TinyPlayUpdate?) -> Void) {
+	guard let apiURL = URL(string: tinyPlayReleaseAPI), let pageURL = URL(string: tinyPlayReleasePage) else {
+		completion(nil)
+		return
+	}
+	URLSession.shared.dataTask(with: makeUpdateRequest(apiURL)) { data, response, _ in
+		if let response = response as? HTTPURLResponse,
+			response.statusCode == 200,
+			let data,
+			let release = try? JSONDecoder().decode(TinyPlayRelease.self, from: data),
+			!release.draft, !release.prerelease,
+			let releaseURL = URL(string: release.html_url),
+			tinyPlayReleaseTag(from: releaseURL) == release.tag_name {
+			completion(TinyPlayUpdate(version: release.tag_name, pageURL: releaseURL))
+			return
+		}
+
+		// github.com and api.github.com occasionally behave differently behind
+		// network filters. The documented latest-release redirect is a cheap,
+		// safe fallback; its final host and path are checked before use.
+		URLSession.shared.dataTask(with: makeUpdateRequest(pageURL)) { _, fallbackResponse, _ in
+			guard let response = fallbackResponse as? HTTPURLResponse,
+				(200..<300).contains(response.statusCode),
+				let finalURL = response.url,
+				let tag = tinyPlayReleaseTag(from: finalURL) else {
+				completion(nil)
+				return
+			}
+			completion(TinyPlayUpdate(version: tag, pageURL: finalURL))
+		}.resume()
+	}.resume()
 }
 
 // MARK: - Full-screen standby restore policy (pure / testable)
@@ -127,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private var lastPlaybackRevision: UInt64?
 	/// Monitor stays active until applicationWillTerminate cancels it.
 	private var playbackStandbyMonitorActive = false
+	private var updateCheckInFlight = false
 	/// Client timeout must exceed the Go long-poll bound (25s) so a quiet
 	/// server does not look like a network failure.
 	private let playerStateRequestTimeout: TimeInterval = 30
@@ -142,6 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 			self?.startPlaybackStandbyMonitor()
 			self?.startWebsiteShell()
 			self?.openMainWindow()
+			self?.scheduleAutomaticUpdateCheck()
 		}
     }
 
@@ -426,9 +533,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		dlnaMenuItem = dlna
 		menu.addItem(settings)
         menu.addItem(.separator())
+		menu.addItem(NSMenuItem(title: L("check_updates"), action: #selector(checkForUpdates), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L("about"), action: #selector(showAbout), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L("quit"), action: #selector(quit), keyEquivalent: "q"))
 		statusItem.menu = menu
+	}
+
+	// MARK: - Updates
+
+	private func appVersion() -> String {
+		Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+	}
+
+	private func scheduleAutomaticUpdateCheck() {
+		DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+			self?.performUpdateCheck(manual: false)
+		}
+	}
+
+	@objc private func checkForUpdates() {
+		performUpdateCheck(manual: true)
+	}
+
+	private func performUpdateCheck(manual: Bool) {
+		guard !updateCheckInFlight, parseTinyPlayVersion(appVersion()) != nil else { return }
+		updateCheckInFlight = true
+		let currentVersion = appVersion()
+		fetchLatestTinyPlayUpdate { [weak self] update in
+			DispatchQueue.main.async {
+				guard let self else { return }
+				self.updateCheckInFlight = false
+				guard let update,
+					let latest = parseTinyPlayVersion(update.version),
+					let current = parseTinyPlayVersion(currentVersion) else {
+					if manual { self.showUpdateMessage(L("update_failed")) }
+					return
+				}
+				guard latest > current else {
+					if manual { self.showUpdateMessage(L("update_latest")) }
+					return
+				}
+				if !manual && !self.shouldOfferAutomaticUpdate(update.version) { return }
+				self.showUpdateAlert(update, currentVersion: currentVersion)
+			}
+		}
+	}
+
+	private func shouldOfferAutomaticUpdate(_ version: String) -> Bool {
+		if UserDefaults.standard.string(forKey: skippedUpdateVersionKey) == version { return false }
+		if UserDefaults.standard.string(forKey: updateRemindVersionKey) == version,
+			let until = UserDefaults.standard.object(forKey: updateRemindAfterKey) as? Date,
+			until > Date() {
+			return false
+		}
+		return true
+	}
+
+	private func showUpdateAlert(_ update: TinyPlayUpdate, currentVersion: String) {
+		let alert = NSAlert()
+		alert.messageText = L("update_available_title")
+		alert.informativeText = String(format: L("update_available_body"), update.version, currentVersion)
+		alert.addButton(withTitle: L("update_download"))
+		alert.addButton(withTitle: L("update_remind"))
+		alert.addButton(withTitle: L("update_skip"))
+		NSApp.activate(ignoringOtherApps: true)
+		switch alert.runModal() {
+		case .alertFirstButtonReturn:
+			NSWorkspace.shared.open(update.pageURL)
+		case .alertSecondButtonReturn:
+			UserDefaults.standard.removeObject(forKey: skippedUpdateVersionKey)
+			UserDefaults.standard.set(update.version, forKey: updateRemindVersionKey)
+			UserDefaults.standard.set(Date().addingTimeInterval(72 * 60 * 60), forKey: updateRemindAfterKey)
+		case .alertThirdButtonReturn:
+			UserDefaults.standard.set(update.version, forKey: skippedUpdateVersionKey)
+			UserDefaults.standard.removeObject(forKey: updateRemindVersionKey)
+			UserDefaults.standard.removeObject(forKey: updateRemindAfterKey)
+		default:
+			break
+		}
+	}
+
+	private func showUpdateMessage(_ message: String) {
+		let alert = NSAlert()
+		alert.messageText = "TinyPlay"
+		alert.informativeText = message
+		alert.addButton(withTitle: L("ok"))
+		NSApp.activate(ignoringOtherApps: true)
+		alert.runModal()
 	}
 
 	@objc private func toggleDLNAReceiver(_ sender: NSMenuItem) {

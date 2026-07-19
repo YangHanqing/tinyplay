@@ -92,6 +92,12 @@ type Config struct {
 	DLNAReceiverID       string               `json:"dlna_receiver_id,omitempty"`
 	LocalPlaybackHistory []LocalPlaybackEntry `json:"local_playback_history,omitempty"`
 	AutoplayNextEpisode  bool                 `json:"autoplay_next_episode"`
+	// Desktop update prompts are intentionally small, local preferences. A
+	// skipped version never suppresses a newer release, while RemindAfter keeps
+	// an app restart from immediately asking the same question again.
+	UpdateSkippedVersion string `json:"update_skipped_version,omitempty"`
+	UpdateRemindVersion  string `json:"update_remind_version,omitempty"`
+	UpdateRemindAfter    string `json:"update_remind_after,omitempty"`
 }
 
 type LocalPlaybackEntry struct {
