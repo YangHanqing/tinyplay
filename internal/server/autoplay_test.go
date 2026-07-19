@@ -69,11 +69,13 @@ func TestAutoplayGraceTimerFiresWithoutBrowser(t *testing.T) {
 
 	var played atomic.Value
 	var fireFn func()
+	armed := make(chan struct{}, 1)
 	s.autoplayAfter = func(d time.Duration, fn func()) func() {
 		if d != autoplayGrace {
 			t.Fatalf("grace duration = %v, want %v", d, autoplayGrace)
 		}
 		fireFn = fn
+		armed <- struct{}{}
 		return func() { fireFn = nil }
 	}
 	s.resolveNextEpisode = func(finished player.PlayContext) (*autoplayNext, error) {
@@ -94,6 +96,7 @@ func TestAutoplayGraceTimerFiresWithoutBrowser(t *testing.T) {
 	}, 1)
 
 	waitAutoplayStatus(t, s, autoplayStatusNextAvailable)
+	waitAutoplayTimer(t, armed)
 	if fireFn == nil {
 		t.Fatal("timer was not armed")
 	}
@@ -111,8 +114,10 @@ func TestAutoplayCancelPreventsFire(t *testing.T) {
 
 	var cancelled bool
 	var fireFn func()
+	armed := make(chan struct{}, 1)
 	s.autoplayAfter = func(d time.Duration, fn func()) func() {
 		fireFn = fn
+		armed <- struct{}{}
 		return func() { cancelled = true; fireFn = nil }
 	}
 	s.resolveNextEpisode = func(finished player.PlayContext) (*autoplayNext, error) {
@@ -129,6 +134,7 @@ func TestAutoplayCancelPreventsFire(t *testing.T) {
 		PlaybackCompleted: true, SourceType: "emby",
 	}, 1)
 	waitAutoplayStatus(t, s, autoplayStatusNextAvailable)
+	waitAutoplayTimer(t, armed)
 
 	genBefore := s.autoplaySnapshot().generation
 	s.CancelAutoplay(true)
@@ -151,8 +157,10 @@ func TestAutoplayPlayNowOnceAndSupersede(t *testing.T) {
 	s, serverID := setupAutoplayTest(t)
 
 	var fireFn func()
+	armed := make(chan struct{}, 1)
 	s.autoplayAfter = func(d time.Duration, fn func()) func() {
 		fireFn = fn
+		armed <- struct{}{}
 		return func() { fireFn = nil }
 	}
 	s.resolveNextEpisode = func(finished player.PlayContext) (*autoplayNext, error) {
@@ -174,6 +182,7 @@ func TestAutoplayPlayNowOnceAndSupersede(t *testing.T) {
 		PlaybackCompleted: true, SourceType: "emby",
 	}, 1)
 	waitAutoplayStatus(t, s, autoplayStatusNextAvailable)
+	waitAutoplayTimer(t, armed)
 
 	result := s.PlayAutoplayNow()
 	if ok, _ := result["ok"].(bool); !ok {
@@ -198,7 +207,9 @@ func TestNewPlaySupersedesPendingAutoplay(t *testing.T) {
 	s, serverID := setupAutoplayTest(t)
 
 	var cancelled bool
+	armed := make(chan struct{}, 1)
 	s.autoplayAfter = func(d time.Duration, fn func()) func() {
+		armed <- struct{}{}
 		return func() { cancelled = true }
 	}
 	s.resolveNextEpisode = func(finished player.PlayContext) (*autoplayNext, error) {
@@ -214,6 +225,7 @@ func TestNewPlaySupersedesPendingAutoplay(t *testing.T) {
 		PlaybackCompleted: true, SourceType: "emby",
 	}, 1)
 	waitAutoplayStatus(t, s, autoplayStatusNextAvailable)
+	waitAutoplayTimer(t, armed)
 
 	s.CancelAutoplay(false) // same path playItem uses before beginPlay
 	if !cancelled {
@@ -282,8 +294,10 @@ func TestPlayerNaturalEOFReporterDrivesAutoplay(t *testing.T) {
 	s, serverID := setupAutoplayTest(t)
 
 	var fireFn func()
+	armed := make(chan struct{}, 1)
 	s.autoplayAfter = func(d time.Duration, fn func()) func() {
 		fireFn = fn
+		armed <- struct{}{}
 		return func() { fireFn = nil }
 	}
 	s.resolveNextEpisode = func(finished player.PlayContext) (*autoplayNext, error) {
@@ -305,6 +319,7 @@ func TestPlayerNaturalEOFReporterDrivesAutoplay(t *testing.T) {
 	}, 1)
 
 	waitAutoplayStatus(t, s, autoplayStatusNextAvailable)
+	waitAutoplayTimer(t, armed)
 	if fireFn == nil {
 		t.Fatal("grace timer was not armed from the player callback")
 	}
@@ -350,6 +365,15 @@ func waitAutoplayStatus(t *testing.T, s *Server, want string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for autoplay status %q (got %q)", want, s.autoplaySnapshot().status)
+}
+
+func waitAutoplayTimer(t *testing.T, armed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-armed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for autoplay timer to arm")
+	}
 }
 
 // A cancel that lands while a title is playing must not blacklist that title's
