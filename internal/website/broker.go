@@ -21,44 +21,49 @@ type Command struct {
 // Workspace choice (Media/Website) is a phone-local UI preference and is never
 // part of this snapshot. Full current URLs are never exposed here.
 type Snapshot struct {
-	CurrentSiteID string   `json:"current_site_id"`
-	DesiredOpen   bool     `json:"desired_open"`
-	ReportedOpen  bool     `json:"reported_open"`
-	HintActive    bool     `json:"hint_active"`
-	HintLabels    []string `json:"hint_labels"`
-	LastStatus    string   `json:"last_status"`
-	LastError     string   `json:"last_error,omitempty"`
-	LastAction    string   `json:"last_action,omitempty"`
-	Catalog       []Site   `json:"catalog"`
+	CurrentSiteID string       `json:"current_site_id"`
+	DesiredOpen   bool         `json:"desired_open"`
+	ReportedOpen  bool         `json:"reported_open"`
+	HintActive    bool         `json:"hint_active"`
+	HintLabels    []string     `json:"hint_labels"`
+	MoreActions   []MoreAction `json:"more_actions"`
+	LastStatus    string       `json:"last_status"`
+	LastError     string       `json:"last_error,omitempty"`
+	LastAction    string       `json:"last_action,omitempty"`
+	Catalog       []Site       `json:"catalog"`
 }
 
 // Report is what a native shell posts after applying a command, navigating, or
 // when the window lifecycle changes. CurrentURL is shell-private transport used
 // only to derive CurrentSiteID; it is never returned on the phone snapshot.
 type Report struct {
-	Open       *bool    `json:"open,omitempty"`
-	HintActive *bool    `json:"hint_active,omitempty"`
-	HintLabels []string `json:"hint_labels,omitempty"`
-	Status     string   `json:"status,omitempty"`
-	Error      string   `json:"error,omitempty"`
-	Action     string   `json:"action,omitempty"`
-	CommandID  uint64   `json:"command_id,omitempty"`
-	CurrentURL string   `json:"current_url,omitempty"`
+	Open        *bool    `json:"open,omitempty"`
+	HintActive  *bool    `json:"hint_active,omitempty"`
+	HintLabels  []string `json:"hint_labels,omitempty"`
+	MoreActions []string `json:"more_actions,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	Action      string   `json:"action,omitempty"`
+	CommandID   uint64   `json:"command_id,omitempty"`
+	CurrentURL  string   `json:"current_url,omitempty"`
 }
 
 // Broker is the process-global website control plane.
 type Broker struct {
-	mu           sync.Mutex
-	currentSite  string
-	desiredOpen  bool
-	reportedOpen bool
-	hintActive   bool
-	hintLabels   []string
-	lastStatus   string
-	lastError    string
-	lastAction   string
-	nextCmdID    uint64
-	lastReportID uint64
+	mu             sync.Mutex
+	currentSite    string
+	desiredOpen    bool
+	reportedOpen   bool
+	hintActive     bool
+	hintLabels     []string
+	moreActions    []MoreAction
+	moreProbeCmdID uint64
+	moreProbeSite  string
+	lastStatus     string
+	lastError      string
+	lastAction     string
+	nextCmdID      uint64
+	lastReportID   uint64
 	// latestLifecycleCmdID is the newest open/close command requested by the
 	// phone. A response from an older lifecycle command must not undo it (for
 	// example Close #2 arriving after Open #3 was already requested).
@@ -103,6 +108,9 @@ func (b *Broker) Reset() Snapshot {
 	b.currentSite = ""
 	b.hintActive = false
 	b.hintLabels = nil
+	b.moreActions = nil
+	b.moreProbeCmdID = 0
+	b.moreProbeSite = ""
 	b.lastError = ""
 	if b.desiredOpen || b.reportedOpen {
 		b.closeGen++
@@ -135,6 +143,7 @@ func (b *Broker) snapshotLocked() Snapshot {
 		ReportedOpen:  b.reportedOpen,
 		HintActive:    b.hintActive,
 		HintLabels:    append([]string(nil), b.hintLabels...),
+		MoreActions:   append([]MoreAction(nil), b.moreActions...),
 		LastStatus:    b.lastStatus,
 		LastError:     b.lastError,
 		LastAction:    b.lastAction,
@@ -165,6 +174,9 @@ func (b *Broker) RequestOpen(siteID string) (Snapshot, error) {
 	b.currentSite = ""
 	b.hintActive = false
 	b.hintLabels = nil
+	b.moreActions = nil
+	b.moreProbeCmdID = 0
+	b.moreProbeSite = ""
 	b.lastAction = ActionOpen
 	b.lastStatus = "opening"
 	b.lastError = ""
@@ -184,6 +196,9 @@ func (b *Broker) RequestClose() Snapshot {
 	b.currentSite = ""
 	b.hintActive = false
 	b.hintLabels = nil
+	b.moreActions = nil
+	b.moreProbeCmdID = 0
+	b.moreProbeSite = ""
 	b.lastAction = ActionClose
 	b.lastStatus = "closing"
 	b.lastError = ""
@@ -233,6 +248,12 @@ func (b *Broker) EnqueueAction(action, text, label string) (Snapshot, error) {
 			return Snapshot{}, errInvalid("invalid_number")
 		}
 		cmd.Text = clean
+	case ActionVolume:
+		clean, ok := ValidateNumber(text, MinWebsiteVolumeDelta, MaxWebsiteVolumeDelta)
+		if !ok || clean == "0" {
+			return Snapshot{}, errInvalid("invalid_number")
+		}
+		cmd.Text = clean
 	case ActionHintLabel:
 		clean, ok := ValidateHintLabel(label)
 		if !ok {
@@ -246,6 +267,9 @@ func (b *Broker) EnqueueAction(action, text, label string) (Snapshot, error) {
 	if !b.desiredOpen {
 		return b.snapshotLocked(), errInvalid("window_not_open")
 	}
+	if isSiteMoreAction(action) && !hasMoreAction(b.moreActions, action) {
+		return b.snapshotLocked(), errInvalid("action_unavailable")
+	}
 	if action == ActionHome {
 		// Root URLs come only from the fixed catalog, never from a phone request.
 		site, ok := SiteByID(b.currentSite)
@@ -256,13 +280,17 @@ func (b *Broker) EnqueueAction(action, text, label string) (Snapshot, error) {
 		cmd.URL = site.URL
 	}
 	if action == ActionLogin {
-		// Fixed login routes only — never a free-form URL from the phone.
-		loginURL, ok := LoginURL(b.currentSite)
-		if !ok {
+		// Prefer a fixed route where we have verified one. A catalog site with
+		// no fixed route (currently Douyin) is still allowed to invoke the
+		// controller's generic visible-login control; neither path accepts a
+		// phone-provided URL.
+		if _, ok := SiteByID(b.currentSite); !ok {
 			return b.snapshotLocked(), errInvalid("login_unavailable")
 		}
 		cmd.SiteID = b.currentSite
-		cmd.URL = loginURL
+		if loginURL, ok := LoginURL(b.currentSite); ok {
+			cmd.URL = loginURL
+		}
 	}
 	if action == ActionHintEnter {
 		b.hintActive = true
@@ -274,10 +302,19 @@ func (b *Broker) EnqueueAction(action, text, label string) (Snapshot, error) {
 		b.hintActive = false
 		b.hintLabels = nil
 	}
+	if action == ActionCapabilities {
+		// An old page capability list must not remain tappable while the new probe
+		// is in flight.
+		b.moreActions = nil
+	}
 	b.lastAction = action
 	b.lastStatus = "pending"
 	b.lastError = ""
-	b.enqueueLocked(cmd)
+	queued := b.enqueueLocked(cmd)
+	if action == ActionCapabilities {
+		b.moreProbeCmdID = queued.ID
+		b.moreProbeSite = b.currentSite
+	}
 	return b.snapshotLocked(), nil
 }
 
@@ -315,6 +352,9 @@ func (b *Broker) ApplyReport(r Report) Snapshot {
 			b.currentSite = ""
 			b.hintActive = false
 			b.hintLabels = nil
+			b.moreActions = nil
+			b.moreProbeCmdID = 0
+			b.moreProbeSite = ""
 			// User closed the window natively — align desired so UI stays honest.
 			if r.Action == "window_closed" || r.Action == ActionClose {
 				if b.desiredOpen {
@@ -329,6 +369,10 @@ func (b *Broker) ApplyReport(r Report) Snapshot {
 	if r.CurrentURL != "" {
 		if acceptOpenState {
 			b.currentSite = SiteIDFromURL(r.CurrentURL)
+			// Every main-document navigation invalidates page-level capabilities.
+			b.moreActions = nil
+			b.moreProbeCmdID = 0
+			b.moreProbeSite = ""
 			// A navigation report implies the singleton window is still up.
 			if r.Open == nil {
 				b.reportedOpen = true
@@ -347,6 +391,12 @@ func (b *Broker) ApplyReport(r Report) Snapshot {
 	if r.HintLabels != nil && acceptOpenState && b.hintActive {
 		b.hintLabels = validHintLabels(r.HintLabels)
 	}
+	if r.MoreActions != nil && acceptOpenState && r.Action == ActionCapabilities &&
+		r.CommandID != 0 && r.CommandID == b.moreProbeCmdID && b.currentSite == b.moreProbeSite {
+		b.moreActions = FilterMoreActions(b.currentSite, r.MoreActions)
+		b.moreProbeCmdID = 0
+		b.moreProbeSite = ""
+	}
 	if r.Status != "" {
 		b.lastStatus = r.Status
 	}
@@ -362,6 +412,26 @@ func (b *Broker) ApplyReport(r Report) Snapshot {
 		b.lastAction = r.Action
 	}
 	return b.snapshotLocked()
+}
+
+func hasMoreAction(actions []MoreAction, id string) bool {
+	for _, action := range actions {
+		if action.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func isSiteMoreAction(id string) bool {
+	for _, actions := range siteMoreActions {
+		for _, action := range actions {
+			if action.ID == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // WaitCommand long-polls for the next command with id > afterID.

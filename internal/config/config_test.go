@@ -58,6 +58,37 @@ func TestHostsCappedAtThree(t *testing.T) {
 	}
 }
 
+func TestBuildServerURLHonorsCompleteURLAndBasePath(t *testing.T) {
+	tests := []struct {
+		name   string
+		server Server
+		want   string
+	}{
+		{
+			name:   "complete HTTPS URL overrides HTTP form fields",
+			server: Server{Type: "jellyfin", Protocol: "http", Port: 8096, Hosts: []string{"https://demo.jellyfin.org/stable"}},
+			want:   "https://demo.jellyfin.org:443/stable",
+		},
+		{
+			name:   "explicit URL port wins",
+			server: Server{Type: "jellyfin", Protocol: "http", Port: 8096, Hosts: []string{"https://demo.jellyfin.org:9443/stable"}},
+			want:   "https://demo.jellyfin.org:9443/stable",
+		},
+		{
+			name:   "normalized host uses configured base path",
+			server: Server{Type: "jellyfin", Protocol: "https", Port: 443, Hosts: []string{"demo.jellyfin.org"}, BasePath: "stable"},
+			want:   "https://demo.jellyfin.org:443/stable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BuildServerURL(&tt.server); got != tt.want {
+				t.Fatalf("BuildServerURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBlankServerNamesIncludeSourceTypeAndAddress(t *testing.T) {
 	useTempData(t)
 	cases := []struct {

@@ -6,6 +6,11 @@ config.json
 *.mobileprovision
 .env
 .env.*
+node_modules/
+
+# Local build/deployment helpers and machine-specific paths. These never ship
+# in the public desktop repository.
+/dev-local/
 
 # Build outputs
 build/
@@ -19,6 +24,10 @@ mpv.7z
 *.zip
 *.7z
 *.syso
+
+# Generated VitePress output. GitHub Pages builds it from docs/.
+site/guide/
+docs/.vitepress/cache/
 
 # Editors and operating systems
 .DS_Store

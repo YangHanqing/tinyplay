@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tinyplay-shell-v20260718-website-remote-layout-v9';
+const CACHE_NAME = 'tinyplay-shell-v20260720-temporary-mouse-v1';
 const SHELL_ASSETS = [
   '/',
   '/index.html',

@@ -57,6 +57,7 @@ type Server struct {
 	DeviceID      string   `json:"device_id"`
 	ClientVersion string   `json:"client_version"`
 	LastLibraryID string   `json:"last_library_id"`
+	BasePath      string   `json:"base_path,omitempty"`
 	Share         string   `json:"share,omitempty"`
 	Domain        string   `json:"domain,omitempty"`
 	RootPath      string   `json:"root_path,omitempty"`

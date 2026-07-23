@@ -44,6 +44,15 @@ func TestDesktopPageIncludesFullscreenStandbyControls(t *testing.T) {
 		"Ready",
 		"NASA, ESA, CSA, STScI",
 		"/desktop/background.jpg",
+		"asset=ngc6000",
+		"asset=earthrise",
+		"nextIndex % 3",
+		"IMAGE_HOLD_MS = 240000",
+		"HUD_INITIAL_MS = 120000",
+		"HUD_WAKE_MS = 20000",
+		"IDLE_SLEEP_MS = 1800000",
+		"is-sleeping",
+		"hud-hidden",
 		"tinyplaySetFullscreen",
 		"tinyplayIsFullscreen",
 		"mode-standby",
@@ -71,33 +80,52 @@ func TestDesktopPageIncludesFullscreenStandbyControls(t *testing.T) {
 			t.Fatalf("standby page should not contain %q", unwanted)
 		}
 	}
+	if strings.Contains(body, "%!") {
+		t.Fatalf("desktop page contains a fmt formatting error: %s", body)
+	}
 }
 
 func TestDesktopBackgroundServesBundledJPEG(t *testing.T) {
 	s := &Server{}
-	req := httptest.NewRequest(http.MethodGet, "/desktop/background.jpg", nil)
+	for _, path := range []string{
+		"/desktop/background.jpg",
+		"/desktop/background.jpg?asset=ngc6000",
+		"/desktop/background.jpg?asset=earthrise",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		s.desktopBackground(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", path, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+			t.Fatalf("%s: Content-Type = %q", path, ct)
+		}
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+			t.Fatalf("%s: expected immutable cache header, got %q", path, cc)
+		}
+		body := rec.Body.Bytes()
+		if len(body) < 50_000 {
+			t.Fatalf("%s: unexpected background size: %d bytes", path, len(body))
+		}
+		// JPEG SOI marker
+		if len(body) < 2 || body[0] != 0xff || body[1] != 0xd8 {
+			t.Fatalf("%s: response is not a JPEG", path)
+		}
+	}
+	if len(desktopBackgroundJPG) == 0 || len(desktopNGC6000JPG) == 0 || len(desktopEarthriseJPG) == 0 {
+		t.Fatal("an embedded background asset is empty")
+	}
+}
+
+func TestDesktopBackgroundRejectsUnknownAsset(t *testing.T) {
+	s := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/desktop/background.jpg?asset=unknown", nil)
 	rec := httptest.NewRecorder()
 	s.desktopBackground(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
-		t.Fatalf("Content-Type = %q", ct)
-	}
-	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
-		t.Fatalf("expected immutable cache header, got %q", cc)
-	}
-	body := rec.Body.Bytes()
-	if len(body) < 50_000 || len(body) > 500_000 {
-		t.Fatalf("unexpected background size: %d bytes", len(body))
-	}
-	// JPEG SOI marker
-	if len(body) < 2 || body[0] != 0xff || body[1] != 0xd8 {
-		t.Fatalf("response is not a JPEG")
-	}
-	if len(desktopBackgroundJPG) == 0 {
-		t.Fatal("embedded background asset is empty")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
 

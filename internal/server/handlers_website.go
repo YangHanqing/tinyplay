@@ -143,6 +143,8 @@ func websiteErrorDetail(r *http.Request, err error) string {
 		return i18n.Request(r, "website_unknown_site")
 	case "unknown_action":
 		return i18n.Request(r, "website_unknown_action")
+	case "action_unavailable":
+		return i18n.Request(r, "website_unknown_action")
 	case "text_too_long":
 		return i18n.Request(r, "website_text_too_long")
 	case "text_required":

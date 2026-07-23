@@ -60,7 +60,15 @@ func main() {
 
 	srv := server.New(p)
 	srv.SetPort(port)
-	httpSrv := &http.Server{Handler: srv.Handler()}
+	// Bound parsing before a request reaches the control handlers. Leave
+	// WriteTimeout unset because file streaming can legitimately last hours.
+	httpSrv := &http.Server{
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 * 1024,
+	}
 
 	localURL := fmt.Sprintf("http://%s:%d", netutil.LocalIP(), port)
 

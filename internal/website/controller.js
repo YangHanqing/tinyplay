@@ -4,7 +4,7 @@
  */
 (function () {
   'use strict';
-  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 12) {
+  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 14) {
     return;
   }
 
@@ -29,14 +29,18 @@
   // Generic login-trigger text is retained only as a fallback for a site that
   // has no fixed route in the table above.
   var LOGIN_TEXT = /^(登录|登陆|登录注册|注册\/登录|login|log in|sign in)$/i;
-  // Per-site keyboard fallbacks. Synthetic KeyboardEvents are untrusted
-  // (isTrusted === false); every use is effect-oracle-confirmed and falls
-  // through to the generic path on failure — never a blind claimed success.
-  // Keys sit *behind* the standard media / CSS-pin APIs, never as step 1.
-  //   bilibili: Space play/pause, F web-fullscreen (user-reported; oracle-gated)
+  // Per-site keyboard adapters. Synthetic KeyboardEvents are untrusted
+  // (isTrusted === false), so every shortcut has an effect oracle and falls
+  // through to the generic media path on failure — never a blind success.
+  // Bilibili's mappings below are taken from its in-player shortcut help.
   //   iqiyi:    Space play/pause, F web-fullscreen (user-reported; oracle-gated)
   var SITE_KEYS = [
-    { test: /(^|\.)bilibili\.com$/i, keys: { play_pause: ' ', fullscreen: 'f' } },
+    { test: /(^|\.)bilibili\.com$/i, keys: {
+      play_pause: ' ', seek_backward: 'ArrowLeft', seek_forward: 'ArrowRight',
+      volume_down: 'ArrowDown', volume_up: 'ArrowUp', fullscreen_exit: 'Escape',
+      danmaku_toggle: 'd', bilibili_like: 'q', bilibili_coin: 'w',
+      bilibili_favorite: 'e', bilibili_follow: 'g', bilibili_triple: 'r'
+    } },
     { test: /(^|\.)iqiyi\.com$/i, keys: { play_pause: ' ', fullscreen: 'f' } },
   ];
 
@@ -48,6 +52,12 @@
       }
     }
     return null;
+  }
+
+  function preferSiteShortcut(action) {
+    // Bilibili is deliberately opt-in: the phone's generic button should have
+    // the same semantics a viewer gets from Bilibili's own keyboard first.
+    return isBilibiliHost() && !!siteKey(action);
   }
 
   function findURLTemplate(table) {
@@ -349,11 +359,15 @@
 
   // Dispatch an untrusted key at the page (blurring text inputs first so the
   // site's global hotkey handler sees it, not a text field).
-  function dispatchKey(key) {
+  function keyboardTarget() {
     var active = document.activeElement;
     if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
       try { active.blur(); } catch (_) {}
     }
+    return document.body || document.documentElement;
+  }
+
+  function keyboardOptions(key) {
     var code, keyCode;
     if (key === ' ') {
       code = 'Space';
@@ -361,19 +375,69 @@
     } else if (/^[a-z]$/i.test(key)) {
       code = 'Key' + key.toUpperCase();
       keyCode = key.toUpperCase().charCodeAt(0);
+    } else if (key === 'ArrowLeft') {
+      code = 'ArrowLeft';
+      keyCode = 37;
+    } else if (key === 'ArrowUp') {
+      code = 'ArrowUp';
+      keyCode = 38;
+    } else if (key === 'ArrowRight') {
+      code = 'ArrowRight';
+      keyCode = 39;
+    } else if (key === 'ArrowDown') {
+      code = 'ArrowDown';
+      keyCode = 40;
+    } else if (key === 'Escape') {
+      code = 'Escape';
+      keyCode = 27;
     } else {
       code = key;
       keyCode = 0;
     }
-    var opts = { key: key, code: code, keyCode: keyCode, which: keyCode, bubbles: true, cancelable: true };
-    var target = document.body || document.documentElement;
+    return { key: key, code: code, keyCode: keyCode, which: keyCode, bubbles: true, cancelable: true };
+  }
+
+  function dispatchKey(key) {
+    var target = keyboardTarget();
     try {
+      var opts = keyboardOptions(key);
       target.dispatchEvent(new KeyboardEvent('keydown', opts));
       target.dispatchEvent(new KeyboardEvent('keyup', opts));
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  function dispatchKeyHold(key, durationMs) {
+    var target = keyboardTarget();
+    try {
+      var opts = keyboardOptions(key);
+      target.dispatchEvent(new KeyboardEvent('keydown', opts));
+      return new Promise(function (resolve) {
+        setTimeout(function () {
+          try {
+            target.dispatchEvent(new KeyboardEvent('keyup', opts));
+            resolve(true);
+          } catch (_) { resolve(false); }
+        }, durationMs);
+      });
+    } catch (_) {
+      return Promise.resolve(false);
+    }
+  }
+
+  function dispatchKeyRepeated(key, count, gapMs) {
+    return new Promise(function (resolve) {
+      var sent = 0;
+      function next() {
+        if (sent >= count) return resolve(true);
+        if (!dispatchKey(key)) return resolve(false);
+        sent++;
+        setTimeout(next, gapMs);
+      }
+      next();
+    });
   }
 
   function primaryVideo() {
@@ -393,23 +457,184 @@
     return best;
   }
 
-  // Standard HTMLMediaElement API first — even the custom MSE/EME shells on
-  // commercial sites render into a real <video>, and the media API is the only
-  // path whose effect we can read back. A verified site key (SITE_KEYS) is the
-  // fallback for shells whose own controller fights the direct call.
+  // ── Site capability profiles ───────────────────────────────────────────
+  // "More" is page-sensitive. The phone asks for a fresh probe when opening
+  // the sheet; this controller returns only typed IDs, and Go applies the
+  // recognized site's allowlist before anything reaches the phone.
+
+  function isBilibiliHost() {
+    return /(^|\.)bilibili\.com$/i.test(HOST);
+  }
+
+  // Bilibili's own player labels its danmaku switch as either 关闭弹幕 (d) or
+  // 打开/开启弹幕 (d). Prefer explicit control state when available, then the
+  // official label. Returning null means we cannot prove an effect, so the
+  // action is not advertised in More and is never reported as a blind success.
+  function bilibiliDanmakuState() {
+    if (!isBilibiliHost()) return null;
+    var selectors = [
+      '.bpx-player-dm-switch input[type="checkbox"]',
+      '.bpx-player-dm-switch [role="switch"]',
+      '.bpx-player-dm-switch',
+      '[aria-label*="弹幕"]',
+      '[title*="弹幕"]',
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      var nodes;
+      try { nodes = document.querySelectorAll(selectors[i]); } catch (_) { nodes = []; }
+      for (var j = 0; j < nodes.length; j++) {
+        var el = nodes[j];
+        if (!isVisible(el) && el.tagName !== 'INPUT') continue;
+        if (el.tagName === 'INPUT' && el.type === 'checkbox') return !!el.checked;
+        var checked = el.getAttribute('aria-checked');
+        if (checked === 'true' || checked === 'false') return checked === 'true';
+        var pressed = el.getAttribute('aria-pressed');
+        if (pressed === 'true' || pressed === 'false') return pressed === 'true';
+        var label = [
+          el.getAttribute('aria-label') || '',
+          el.getAttribute('title') || '',
+          el.textContent || '',
+        ].join(' ').trim();
+        if (/关闭弹幕/i.test(label)) return true;
+        if (/(?:打开|开启)弹幕/i.test(label)) return false;
+      }
+    }
+    return null;
+  }
+
+  function siteMoreActions() {
+    if (!primaryVideo()) return [];
+    var actions = [];
+    if (isBilibiliHost()) {
+      if (bilibiliDanmakuState() !== null) actions.push('danmaku_toggle');
+      ['bilibili_like', 'bilibili_coin', 'bilibili_favorite', 'bilibili_follow', 'bilibili_triple'].forEach(function (action) {
+        if (bilibiliShortcutSurface(action)) actions.push(action);
+      });
+    }
+    return actions;
+  }
+
+  function capabilities() {
+    return { ok: true, status: 'capabilities', actions: siteMoreActions() };
+  }
+
+  function toggleBilibiliDanmaku() {
+    if (!isBilibiliHost()) return failed('action_unavailable');
+    if (!primaryVideo()) return failed('no_player');
+    var before = bilibiliDanmakuState();
+    if (before === null) return failed('effect_unconfirmed');
+    var key = siteKey('danmaku_toggle');
+    if (!key || !dispatchKey(key)) return failed('effect_unconfirmed');
+    return settle(function () {
+      var after = bilibiliDanmakuState();
+      return after !== null && after !== before;
+    }, 700).then(function (changed) {
+      return changed ? { ok: true, status: 'danmaku_toggle' } : failed('effect_unconfirmed');
+    });
+  }
+
+  function bilibiliShortcutSurface(action) {
+    var selectors = {
+      bilibili_like: '.video-like[title*="点赞"]',
+      bilibili_coin: '.video-coin[title*="投币"]',
+      bilibili_favorite: '.video-fav[title*="收藏"]',
+      bilibili_follow: '.bpx-player-follow, .bpx-player-top-left-follow',
+      bilibili_triple: '.video-like[title*="点赞"], .video-coin[title*="投币"], .video-fav[title*="收藏"]'
+    };
+    var selector = selectors[action];
+    if (!selector || !isBilibiliHost()) return null;
+    try {
+      var nodes = document.querySelectorAll(selector);
+      for (var i = 0; i < nodes.length; i++) {
+        if (isVisible(nodes[i])) return nodes[i];
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function bilibiliSurfaceSignature(action) {
+    var node = bilibiliShortcutSurface(action);
+    if (!node) return '';
+    return [
+      node.className || '', node.getAttribute('title') || '',
+      node.getAttribute('aria-label') || '', node.getAttribute('aria-pressed') || '',
+      (node.textContent || '').replace(/\s+/g, ' ').trim()
+    ].join('|');
+  }
+
+  function bilibiliOverlaySignature() {
+    var nodes;
+    try { nodes = document.querySelectorAll('[role="dialog"], [class*="dialog"], [class*="modal"], [class*="popup"]'); } catch (_) { nodes = []; }
+    var labels = [];
+    for (var i = 0; i < nodes.length && labels.length < 8; i++) {
+      if (!isVisible(nodes[i])) continue;
+      labels.push((nodes[i].className || '') + '|' + (nodes[i].getAttribute('aria-label') || ''));
+    }
+    return labels.join('||');
+  }
+
+  // The Bilibili player keeps volume in its own control model. In particular,
+  // some streamed videos expose an unusable HTMLMediaElement.volume readback
+  // even though the official ↑/↓ shortcuts work. Its visible numeric readout
+  // and slider transform are a better effect oracle for that site.
+  function bilibiliVolumeSignature() {
+    if (!isBilibiliHost()) return null;
+    var root;
+    try { root = document.querySelector('.bpx-player-ctrl-volume'); } catch (_) { root = null; }
+    if (!root) return null;
+    var number = root.querySelector('.bpx-player-ctrl-volume-number');
+    var bar = root.querySelector('.bpx-player-ctrl-volume-progress .bui-bar');
+    if (!number && !bar) return null;
+    return [
+      number ? (number.textContent || '').replace(/\s+/g, ' ').trim() : '',
+      bar ? (bar.getAttribute('style') || '') : '',
+      root.querySelector('.bpx-player-ctrl-muted-icon') ? 'has-muted-icon' : ''
+    ].join('|');
+  }
+
+  function triggerBilibiliShortcut(action) {
+    if (!isBilibiliHost() || !bilibiliShortcutSurface(action)) return failed('action_unavailable');
+    var key = siteKey(action);
+    if (!key) return failed('action_unavailable');
+    var beforeControl = bilibiliSurfaceSignature(action);
+    var beforeOverlay = bilibiliOverlaySignature();
+    var fired = action === 'bilibili_triple' ? dispatchKeyHold(key, 700) : Promise.resolve(dispatchKey(key));
+    return fired.then(function (sent) {
+      if (!sent) return failed('effect_unconfirmed');
+      return settle(function () {
+        return bilibiliSurfaceSignature(action) !== beforeControl || bilibiliOverlaySignature() !== beforeOverlay;
+      }, 900).then(function (changed) {
+        return changed ? { ok: true, status: action } : failed('effect_unconfirmed');
+      });
+    });
+  }
+
+  // Bilibili's documented shortcuts take priority so the phone has the same
+  // behavior as the viewer's keyboard. Other sites retain the HTMLMediaElement
+  // API first, with their shortcut as a verified fallback.
   function togglePlayPause() {
     var video = primaryVideo();
     if (!video) return failed('no_player');
     var wasPaused = video.paused;
-    if (wasPaused) {
-      var p = video.play();
-      if (p && typeof p.catch === 'function') p.catch(function () {});
-    } else {
-      video.pause();
-    }
     var flipped = function () { return video.paused !== wasPaused; };
-    return settle(flipped, 450).then(function (viaAPI) {
-      if (viaAPI) return { ok: true, status: 'play_pause' };
+    function viaMediaAPI() {
+      if (wasPaused) {
+        var p = video.play();
+        if (p && typeof p.catch === 'function') p.catch(function () {});
+      } else {
+        video.pause();
+      }
+      return settle(flipped, 450).then(function (viaAPI) {
+        return viaAPI ? { ok: true, status: 'play_pause' } : failed('effect_unconfirmed');
+      });
+    }
+    if (preferSiteShortcut('play_pause') && dispatchKey(siteKey('play_pause'))) {
+      return settle(flipped, 600).then(function (viaKey) {
+        return viaKey ? { ok: true, status: 'play_pause' } : viaMediaAPI();
+      });
+    }
+    return viaMediaAPI().then(function (viaAPI) {
+      if (viaAPI.ok) return viaAPI;
       var key = siteKey('play_pause');
       if (key && dispatchKey(key)) {
         return settle(flipped, 600).then(function (viaKey) {
@@ -425,18 +650,35 @@
     if (!video) return failed('no_player');
     var delta = parseFloat(text);
     if (!isFinite(delta)) return failed('bad_delta');
-    var next = video.currentTime + delta;
-    if (isFinite(video.duration)) next = Math.max(0, Math.min(video.duration, next));
-    else next = Math.max(0, next);
-    video.currentTime = next;
-    // currentTime reads back as the seek target while seeking, so this passes
-    // immediately in the normal case; it only fails when a custom shell
-    // forcibly snaps playback elsewhere (e.g. a narrow live seekable range).
-    var landed = function () {
-      return video.seeking || Math.abs(video.currentTime - next) <= 3;
-    };
-    return settle(landed, 450).then(function (done) {
-      return done ? { ok: true, status: 'seek' } : failed('effect_unconfirmed');
+    function viaMediaAPI() {
+      var next = video.currentTime + delta;
+      if (isFinite(video.duration)) next = Math.max(0, Math.min(video.duration, next));
+      else next = Math.max(0, next);
+      video.currentTime = next;
+      // currentTime reads back as the seek target while seeking, so this passes
+      // immediately in the normal case; it only fails when a custom shell
+      // forcibly snaps playback elsewhere (e.g. a narrow live seekable range).
+      var landed = function () {
+        return video.seeking || Math.abs(video.currentTime - next) <= 3;
+      };
+      return settle(landed, 450).then(function (done) {
+        return done ? { ok: true, status: 'seek' } : failed('effect_unconfirmed');
+      });
+    }
+    if (!preferSiteShortcut(delta < 0 ? 'seek_backward' : 'seek_forward')) return viaMediaAPI();
+    var key = siteKey(delta < 0 ? 'seek_backward' : 'seek_forward');
+    var before = video.currentTime;
+    // Bilibili documents one arrow press as five seconds. The phone's existing
+    // ±10 controls send two official presses, keeping their established range.
+    var presses = Math.max(1, Math.min(4, Math.round(Math.abs(delta) / 5)));
+    return dispatchKeyRepeated(key, presses, 110).then(function (sent) {
+      if (!sent) return viaMediaAPI();
+      return settle(function () {
+        var moved = video.currentTime - before;
+        return delta < 0 ? moved < -0.5 : moved > 0.5;
+      }, 800).then(function (viaKey) {
+        return viaKey ? { ok: true, status: 'seek' } : viaMediaAPI();
+      });
     });
   }
 
@@ -450,6 +692,38 @@
       return Math.abs(video.playbackRate - rate) < 0.01;
     }).then(function (kept) {
       return kept ? { ok: true, status: 'speed' } : failed('effect_unconfirmed');
+    });
+  }
+
+  function changeVolume(text) {
+    var video = primaryVideo();
+    if (!video) return failed('no_player');
+    var delta = parseFloat(text);
+    if (!isFinite(delta) || delta === 0) return failed('bad_delta');
+    function viaMediaAPI() {
+      var before = Number(video.volume);
+      if (!isFinite(before)) return failed('effect_unconfirmed');
+      var next = Math.max(0, Math.min(1, before + delta / 100));
+      video.muted = false;
+      video.volume = next;
+      return confirmAfter(300, function () { return Math.abs(video.volume - next) < 0.01; }).then(function (kept) {
+        return kept ? { ok: true, status: 'volume' } : failed('effect_unconfirmed');
+      });
+    }
+    var action = delta < 0 ? 'volume_down' : 'volume_up';
+    if (!preferSiteShortcut(action)) return viaMediaAPI();
+    var presses = Math.max(1, Math.min(4, Math.round(Math.abs(delta) / 10)));
+    var beforeBilibili = bilibiliVolumeSignature();
+    var beforeMedia = Number(video.volume);
+    return dispatchKeyRepeated(siteKey(action), presses, 110).then(function (sent) {
+      if (!sent) return viaMediaAPI();
+      return settle(function () {
+        if (beforeBilibili !== null) return bilibiliVolumeSignature() !== beforeBilibili;
+        var current = Number(video.volume);
+        return isFinite(current) && isFinite(beforeMedia) && Math.abs(current - beforeMedia) > 0.02;
+      }, 800).then(function (viaKey) {
+        return viaKey ? { ok: true, status: 'volume' } : viaMediaAPI();
+      });
     });
   }
 
@@ -768,6 +1042,17 @@
       // user already exited natively with their own mouse/Esc.
       return { ok: true, status: 'fullscreen_exit' };
     }
+    // Bilibili documents Escape as the native way to leave fullscreen. Prefer
+    // that exact behavior before touching generic fullscreen state.
+    if (preferSiteShortcut('fullscreen_exit') && dispatchKey(siteKey('fullscreen_exit'))) {
+      return settle(function () { return !currentlyFullscreen(video); }, 900).then(function (exited) {
+        return exited ? { ok: true, status: 'fullscreen_exit' } : exitFullscreenGeneric(video);
+      });
+    }
+    return exitFullscreenGeneric(video);
+  }
+
+  function exitFullscreenGeneric(video) {
     if (document.fullscreenElement || document.webkitFullscreenElement) {
       var exit = document.exitFullscreen || document.webkitExitFullscreen;
       if (exit) {
@@ -1414,6 +1699,8 @@
         return seekBy(cmd.text || '');
       case 'speed':
         return setSpeed(cmd.text || '');
+      case 'volume':
+        return changeVolume(cmd.text || '');
       case 'scroll_up':
         return scrollPage('up');
       case 'scroll_down':
@@ -1432,13 +1719,23 @@
         return exitHints();
       case 'hint_label':
         return selectHint(cmd.label || '');
+      case 'capabilities':
+        return capabilities();
+      case 'danmaku_toggle':
+        return toggleBilibiliDanmaku();
+      case 'bilibili_like':
+      case 'bilibili_coin':
+      case 'bilibili_favorite':
+      case 'bilibili_follow':
+      case 'bilibili_triple':
+        return triggerBilibiliShortcut(action);
       default:
         return failed('unknown_action');
     }
   }
 
   window.__tinyplayWebsite = {
-    __version: 12,
+    __version: 14,
     handle: handle,
     clearHints: clearHints,
     isHintActive: function () { return !!hintState.active; },

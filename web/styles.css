@@ -441,6 +441,14 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 .sheet-handle { width: 42px; height: 4px; border-radius: 3px; background: var(--border); margin: 12px auto 14px; }
 
+/* Sheet modifier for content that should stretch to fill the sheet's height
+   (a picker list, a trackpad) rather than size to its own content: pins the
+   handle/header and lets one child grow via flex/grid `1fr` instead of the
+   whole sheet scrolling as one block. Pair with a max-height override on the
+   sheet's own class when the default cap is too short for that content. */
+.sheet-tall { display: flex; flex-direction: column; overflow: hidden; }
+.sheet-tall > .sheet-handle, .sheet-tall > .sheet-header { flex-shrink: 0; }
+
 /* ── Playback support entry + user-shareable debug report ─────────────────
    Deliberately understated: this is a rare, diagnostic action, not a normal
    playback control, so it gets plain muted text rather than a card/button. */
@@ -763,6 +771,21 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   border-color: rgba(255,214,10,.35);
   color: #ffe566;
 }
+.website-more-trigger {
+  gap: 8px;
+  background: rgba(255,255,255,.045);
+  border-style: dashed;
+}
+.website-more-trigger svg {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+}
+.website-btn:focus-visible,
+.website-more-action:focus-visible {
+  outline: 2px solid rgba(142,200,255,.9);
+  outline-offset: 2px;
+}
 /* Search / select-element sheet bodies */
 .website-sheet-body {
   display: flex;
@@ -795,6 +818,96 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .website-sheet-go {
   flex: 0 0 auto;
   min-width: 84px;
+}
+.website-more-sheet {
+  max-height: min(82vh, 680px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.website-more-body {
+  padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+}
+.website-more-hint {
+  margin: 0;
+  color: rgba(255,255,255,.5);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.website-more-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.website-more-status {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 11px 13px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  background: rgba(255,255,255,.035);
+  color: rgba(255,255,255,.48);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.website-more-status:empty {
+  display: none;
+}
+.website-more-status.is-loading::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  margin-right: 9px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255,255,255,.2);
+  border-top-color: rgba(142,200,255,.9);
+  border-radius: 50%;
+  animation: website-more-spin .75s linear infinite;
+}
+@keyframes website-more-spin { to { transform: rotate(360deg); } }
+.website-more-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.website-more-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 5px;
+  min-height: 58px;
+  padding: 10px 13px;
+  border: 1px solid rgba(142,200,255,.3);
+  border-radius: 14px;
+  background: rgba(54,120,200,.2);
+  color: rgba(255,255,255,.94);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, transform .06s;
+}
+.website-more-action:active {
+  transform: translateY(1px);
+  background: rgba(54,120,200,.3);
+}
+.website-more-action:disabled {
+  opacity: .38;
+  cursor: default;
+  transform: none;
+}
+.website-more-action-name {
+  font-size: 14px;
+  font-weight: 800;
+}
+.website-more-badge {
+  color: rgba(183,218,255,.72);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+@media (prefers-reduced-motion: reduce) {
+  .website-more-status.is-loading::before { animation: none; }
 }
 .website-hint-help {
   margin: 0;
@@ -887,6 +1000,33 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .settings-card-head { margin-bottom: 14px; }
 .settings-card-head h2 { font-size: 16px; font-weight: 800; color: rgba(255,255,255,.92); margin-bottom: 5px; }
 .settings-card-head p { font-size: 12px; line-height: 1.5; color: rgba(255,255,255,.46); }
+.desktop-input-entry { padding: 0; overflow: hidden; }
+.desktop-input-entry-btn { display:flex; align-items:center; gap:13px; width:100%; min-height:72px; padding:14px 16px; border:0; color:inherit; text-align:left; background:transparent; font-family:inherit; cursor:pointer; }
+.desktop-input-entry-btn:active { background:rgba(255,255,255,.06); }
+.desktop-input-entry-icon { display:grid; place-items:center; width:36px; height:36px; border-radius:12px; background:rgba(124,92,252,.22); color:#c6b6ff; line-height:1; }
+.desktop-input-entry-icon svg { width:20px; height:20px; display:block; }
+.desktop-input-entry-copy { min-width:0; display:flex; flex:1; flex-direction:column; gap:4px; }
+.desktop-input-entry-copy strong { font-size:15px; color:rgba(255,255,255,.95); }
+.desktop-input-entry-copy small { color:rgba(255,255,255,.48); font-size:12px; line-height:1.35; }
+.desktop-input-entry-arrow { color:rgba(255,255,255,.36); font-size:26px; }
+.desktop-input-sheet { max-width:560px; max-height:min(92dvh,860px); }
+.desktop-input-help { margin:4px 0 0; color:rgba(255,255,255,.52); font-size:12px; line-height:1.45; }
+.desktop-input-permission { display:grid; gap:10px; padding:0 14px 14px; flex-shrink:0; }
+.desktop-input-permission p { margin:0 0 2px; color:rgba(255,255,255,.65); font-size:13px; line-height:1.45; }
+.desktop-input-controls {
+  flex:1; min-height:0; overflow-y:auto;
+  display:grid; gap:10px; grid-template-rows:minmax(220px,1fr) repeat(4,auto);
+  padding:0 14px calc(14px + env(safe-area-inset-bottom,0px));
+}
+.desktop-trackpad { min-height:220px; display:grid; place-items:center; border:1px solid rgba(255,255,255,.16); border-radius:18px; background:linear-gradient(145deg,rgba(255,255,255,.09),rgba(255,255,255,.035)); color:rgba(255,255,255,.46); font-size:13px; touch-action:none; user-select:none; }
+.desktop-input-buttons { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.desktop-input-buttons-3 { grid-template-columns:repeat(3,1fr); }
+.desktop-input-buttons button,.desktop-input-arrow-keys button,.desktop-input-type-row button { min-height:44px; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:rgba(255,255,255,.075); color:rgba(255,255,255,.9); font:700 14px inherit; }
+.desktop-input-arrow-keys { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+.desktop-input-arrow-keys button { font-size:19px; }
+.desktop-input-type-row { display:grid; grid-template-columns:1fr auto; gap:8px; }
+.desktop-input-type-row input { min-width:0; height:44px; padding:0 12px; border:1px solid rgba(255,255,255,.14); border-radius:12px; background:rgba(0,0,0,.18); color:#fff; font:14px inherit; }
+.desktop-input-type-row button { padding:0 16px; background:rgba(124,92,252,.35); }
 
 .segmented-control {
   display: grid;
@@ -1323,8 +1463,7 @@ button { font-family: inherit; }
 .btn-secondary { padding: 9px 20px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border); color: var(--text); font-size: 14px; cursor: pointer; font-family: inherit; }
 
 /* Folder picker (webdav/smb/local/nfs root-path selection after connecting) */
-.folder-picker-sheet { max-width: 600px; overflow: hidden; display: flex; flex-direction: column; }
-.folder-picker-sheet .sheet-handle, .folder-picker-sheet .sheet-header { flex-shrink: 0; }
+.folder-picker-sheet { max-width: 600px; }
 .folder-picker-sheet .sheet-header { padding-left: 16px; padding-right: 16px; margin-bottom: 4px; }
 .folder-picker-hint { padding: 0 16px; margin: 0 0 8px; font-size: 13px; color: var(--text-muted); line-height: 1.5; flex-shrink: 0; }
 .folder-picker-name { padding: 0 16px 12px; flex-shrink: 0; }

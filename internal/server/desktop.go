@@ -18,6 +18,25 @@ import (
 //go:embed assets/carina_nebula.jpg
 var desktopBackgroundJPG []byte
 
+//go:embed assets/ngc6000.jpg
+var desktopNGC6000JPG []byte
+
+//go:embed assets/earthrise_lro.jpg
+var desktopEarthriseJPG []byte
+
+type desktopBackgroundAsset struct {
+	image []byte
+}
+
+// Keep this set local and deliberately small: a responsive, offline standby
+// screen must not become a video download. Credits and source records live in
+// THIRD_PARTY_NOTICES.md beside the distributable desktop implementation.
+var desktopBackgroundAssets = map[string]desktopBackgroundAsset{
+	"carina":    {image: desktopBackgroundJPG},
+	"ngc6000":   {image: desktopNGC6000JPG},
+	"earthrise": {image: desktopEarthriseJPG},
+}
+
 // phoneURL is the address the phone should open, derived from the LAN IP and
 // the port the server actually bound to (falls back to the configured port if
 // SetPort was never called, e.g. in tests).
@@ -145,9 +164,20 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
   .standby-bg {
     position: absolute; inset: 0;
     background: #05070c center / cover no-repeat;
-    background-image: url("/desktop/background.jpg");
-    transform: scale(1.02);
-    filter: saturate(1.05) brightness(.88);
+    opacity: 0; filter: saturate(1.05) brightness(.88);
+    transition: opacity 4s ease-in-out;
+    will-change: opacity, transform;
+  }
+  .standby-bg.is-active { opacity: 1; }
+  .standby-bg.motion-0 { animation: standby-pan-0 240s ease-out both; }
+  .standby-bg.motion-1 { animation: standby-pan-1 240s ease-out both; }
+  .standby-bg.motion-2 { animation: standby-pan-2 240s ease-out both; }
+  @keyframes standby-pan-0 { from { transform: scale(1); } to { transform: scale(1.06) translate3d(-2%%, -1.5%%, 0); } }
+  @keyframes standby-pan-1 { from { transform: scale(1.01) translate3d(-1%%, 1%%, 0); } to { transform: scale(1.06) translate3d(2%%, -1.5%%, 0); } }
+  @keyframes standby-pan-2 { from { transform: scale(1) translate3d(1.5%%, -1%%, 0); } to { transform: scale(1.06) translate3d(-1.5%%, 1.5%%, 0); } }
+  .standby-blackout {
+    position: absolute; inset: 0; z-index: 3; background: #000; opacity: 0;
+    pointer-events: none; transition: opacity 60s linear;
   }
   .standby-scrim {
     position: absolute; inset: 0;
@@ -156,10 +186,11 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
       linear-gradient(180deg, rgba(4,8,16,.55) 0%%, rgba(4,8,16,.28) 38%%, rgba(4,8,16,.52) 72%%, rgba(2,4,10,.78) 100%%);
   }
   .standby-inner {
-    position: relative; z-index: 1; min-height: 100%%;
+    position: relative; z-index: 2; min-height: 100%%;
     display: grid; grid-template-rows: auto 1fr auto;
     padding: clamp(20px, 4vh, 48px) clamp(20px, 5vw, 64px);
     gap: clamp(12px, 2vh, 24px);
+    transition: opacity 2s ease; will-change: opacity;
   }
   .standby-top {
     display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
@@ -221,6 +252,10 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
   body.mode-standby { background: #05070c; }
   body.mode-standby .compact { display: none; }
   body.mode-standby .standby { display: block; }
+  .standby.hud-hidden .standby-inner { opacity: 0; pointer-events: none; }
+  .standby.is-sleeping .standby-blackout { opacity: 1; }
+  .standby.is-sleeping .standby-bg { animation-play-state: paused; }
+  .standby.is-waking .standby-blackout { transition-duration: 1s; }
 
   @media (max-width: 700px), (max-height: 500px) {
     .standby-top { flex-wrap: wrap; }
@@ -241,7 +276,8 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
     .fs-enter { padding: 8px 14px; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .standby-bg { transform: none; }
+    .standby-bg { animation: none !important; transition-duration: .01ms; }
+    .standby-blackout, .standby-inner { transition-duration: .01ms; }
   }
 </style></head>
 <body class="mode-compact">
@@ -263,8 +299,10 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
   </div>
 
   <div class="standby" id="standby" aria-hidden="true">
-    <div class="standby-bg" role="presentation"></div>
+    <div class="standby-bg" id="standby-bg-a" role="presentation"></div>
+    <div class="standby-bg" id="standby-bg-b" role="presentation"></div>
     <div class="standby-scrim" role="presentation"></div>
+    <div class="standby-blackout" id="standby-blackout" role="presentation"></div>
     <div class="standby-inner">
       <div class="standby-top">
         <div class="brand">
@@ -284,7 +322,7 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
       </div>
       <div class="standby-footer">
         <img class="standby-qr" src="/desktop/qr.png" alt="QR" width="148" height="148">
-        <p class="photo-credit">%s</p>
+        <p class="photo-credit" id="photo-credit">%s</p>
       </div>
     </div>
   </div>
@@ -293,19 +331,133 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
     (() => {
       const body = document.body;
       const standby = document.getElementById('standby');
+      const blackout = document.getElementById('standby-blackout');
       const enterBtn = document.getElementById('fs-enter');
       const exitBtn = document.getElementById('fs-exit');
       const clockEl = document.getElementById('clock');
       const dateEl = document.getElementById('clock-date');
+      const photoCredit = document.getElementById('photo-credit');
       const lang = document.documentElement.lang || 'en';
+      const backgroundLayers = [
+        document.getElementById('standby-bg-a'),
+        document.getElementById('standby-bg-b'),
+      ];
+      const backgrounds = [
+        { src: '/desktop/background.jpg?asset=carina', credit: 'NASA, ESA, CSA, STScI' },
+        { src: '/desktop/background.jpg?asset=ngc6000', credit: 'ESA/Hubble & NASA, A. Filippenko; acknowledgment: M. H. Özsaraç' },
+        { src: '/desktop/background.jpg?asset=earthrise', credit: 'NASA / Goddard Space Flight Center / Arizona State University' },
+      ];
+      const IMAGE_HOLD_MS = 240000;
+      const HUD_INITIAL_MS = 120000;
+      const HUD_WAKE_MS = 20000;
+      const IDLE_SLEEP_MS = 1800000;
       let wantStandby = false;
       let nativeBridge = false;
+      let activeLayer = 0;
+      let backgroundIndex = -1;
+      let backgroundTimer;
+      let hudTimer;
+      let sleepTimer;
+      let clockTimer;
+      let lastPointer;
+
+      const clearTimer = (timer) => {
+        if (timer) clearTimeout(timer);
+      };
+
+      const hideHUD = () => standby.classList.add('hud-hidden');
+      const showHUD = (duration) => {
+        standby.classList.remove('hud-hidden');
+        clearTimer(hudTimer);
+        hudTimer = setTimeout(hideHUD, duration);
+      };
+
+      const chooseBackground = () => {
+        if (backgrounds.length === 1) return 0;
+        let next = Math.floor(Math.random() * backgrounds.length);
+        while (next === backgroundIndex) next = Math.floor(Math.random() * backgrounds.length);
+        return next;
+      };
+
+      const setBackground = () => {
+        const nextIndex = chooseBackground();
+        const nextLayer = backgroundLayers[1 - activeLayer];
+        const previousLayer = backgroundLayers[activeLayer];
+        const background = backgrounds[nextIndex];
+        backgroundIndex = nextIndex;
+        photoCredit.textContent = background.credit;
+        nextLayer.className = 'standby-bg';
+        nextLayer.style.backgroundImage = 'url("' + background.src + '")';
+        // Restart one of the three gentle pan paths for every four-minute still.
+        void nextLayer.offsetWidth;
+        nextLayer.classList.add('motion-' + (nextIndex %% 3), 'is-active');
+        previousLayer.classList.remove('is-active');
+        activeLayer = 1 - activeLayer;
+      };
+
+      const scheduleBackground = () => {
+        clearTimer(backgroundTimer);
+        backgroundTimer = setTimeout(() => {
+          if (wantStandby && !standby.classList.contains('is-sleeping')) {
+            setBackground();
+            scheduleBackground();
+          }
+        }, IMAGE_HOLD_MS);
+      };
+
+      const enterSleep = () => {
+        if (!wantStandby) return;
+        hideHUD();
+        clearTimer(hudTimer);
+        clearTimer(backgroundTimer);
+        clearInterval(clockTimer);
+        clockTimer = undefined;
+        standby.classList.add('is-sleeping');
+      };
+
+      const armSleep = () => {
+        clearTimer(sleepTimer);
+        sleepTimer = setTimeout(enterSleep, IDLE_SLEEP_MS);
+      };
+
+      const wakeStandby = (duration = HUD_WAKE_MS) => {
+        if (!wantStandby) return;
+        if (standby.classList.contains('is-sleeping')) {
+          standby.classList.add('is-waking');
+          void blackout.offsetWidth;
+          standby.classList.remove('is-sleeping');
+          setTimeout(() => standby.classList.remove('is-waking'), 1000);
+          scheduleBackground();
+          startClock();
+        }
+        showHUD(duration);
+        armSleep();
+      };
+
+      const startStandby = () => {
+        setBackground();
+        scheduleBackground();
+        startClock();
+        showHUD(HUD_INITIAL_MS);
+        armSleep();
+      };
+
+      const stopStandby = () => {
+        clearTimer(backgroundTimer);
+        clearTimer(hudTimer);
+        clearTimer(sleepTimer);
+        clearInterval(clockTimer);
+        clockTimer = undefined;
+        standby.classList.remove('hud-hidden', 'is-sleeping', 'is-waking');
+      };
 
       const setLayout = (standbyOn) => {
         body.classList.toggle('mode-standby', standbyOn);
         body.classList.toggle('mode-compact', !standbyOn);
         standby.setAttribute('aria-hidden', standbyOn ? 'false' : 'true');
         enterBtn.setAttribute('aria-pressed', standbyOn ? 'true' : 'false');
+        if (standbyOn) startStandby();
+        else stopStandby();
       };
 
       // Called by the native shell after true window full-screen changes.
@@ -361,11 +513,33 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
       exitBtn.addEventListener('click', () => setStandby(false));
 
       document.addEventListener('keydown', (e) => {
+        if (!wantStandby) return;
         if (e.key === 'Escape' && wantStandby) {
           e.preventDefault();
+          if (standby.classList.contains('hud-hidden') || standby.classList.contains('is-sleeping')) {
+            wakeStandby();
+            return;
+          }
           setStandby(false);
+          return;
         }
+        wakeStandby();
       });
+
+      const pointerActivity = (e) => {
+        if (!wantStandby) return;
+        if (e.type === 'pointermove') {
+          const point = { x: e.clientX, y: e.clientY };
+          const moved = !lastPointer || Math.hypot(point.x - lastPointer.x, point.y - lastPointer.y) >= 24;
+          lastPointer = point;
+          if (!moved) return;
+        }
+        wakeStandby();
+      };
+      document.addEventListener('pointermove', pointerActivity, { passive: true });
+      document.addEventListener('pointerdown', pointerActivity, { passive: true });
+      document.addEventListener('wheel', pointerActivity, { passive: true });
+      document.addEventListener('touchstart', pointerActivity, { passive: true });
 
       const onFsChange = () => {
         if (nativeBridge || hasNativeBridge()) return;
@@ -388,8 +562,11 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
           dateEl.textContent = now.toDateString();
         }
       };
-      tick();
-      setInterval(tick, 1000);
+      const startClock = () => {
+        if (clockTimer) return;
+        tick();
+        clockTimer = setInterval(tick, 1000);
+      };
 
       // If the native window is already full screen (page reloaded while
       // standby was active), restore the standby layout immediately.
@@ -433,14 +610,24 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(html))
 }
 
-// desktopBackground serves the bundled HTPC standby backdrop. Immutable cache
-// is safe because the asset is compiled into the binary and only changes with
-// a new build.
+// desktopBackground serves one bundled HTPC standby backdrop. Immutable cache
+// is safe because each asset is compiled into the binary and only changes with
+// a new build. The empty asset remains the original Carina image for backward
+// compatibility with older desktop shells.
 func (s *Server) desktopBackground(w http.ResponseWriter, r *http.Request) {
+	assetName := r.URL.Query().Get("asset")
+	if assetName == "" {
+		assetName = "carina"
+	}
+	asset, ok := desktopBackgroundAssets[assetName]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(desktopBackgroundJPG)))
-	w.Write(desktopBackgroundJPG)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(asset.image)))
+	w.Write(asset.image)
 }
 
 // desktopDLNAStatus makes discovery health visible before the user tries to

@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -330,32 +331,74 @@ func (c *Client) ItemDetailRaw(itemID string) ([]byte, error) {
 	return c.request("GET", "/Users/"+c.userID()+"/Items/"+itemID, q, nil)
 }
 
-func (c *Client) Episodes(seriesID, seasonID string, start, limit int, sort string) ([]byte, error) {
+func (c *Client) Episodes(seriesID, seasonID string, start, limit int, order string) ([]byte, error) {
 	if limit < 1 {
 		limit = 1
-	}
-	if limit > 200 {
-		limit = 200
 	}
 	if start < 0 {
 		start = 0
 	}
-	order := "Ascending"
-	if sort == "desc" {
-		order = "Descending"
-	}
+	// Do NOT trust the server's ordering: Emby's /Shows/{id}/Episodes ignores
+	// SortBy/SortOrder and floats watched episodes to the bottom of the list
+	// (verified against a real 4.x server), and other servers/versions have their
+	// own quirks. Fetch the whole season and order it ourselves, mirroring
+	// plex.Client.Episodes. Episode counts per series are bounded (One Piece
+	// ~1100), so one fetch + in-memory sort + slice is safe and deterministic.
 	q := url.Values{
-		"UserId":     {c.userID()},
-		"Fields":     {"Overview,RunTimeTicks,UserData,SeriesName,SeasonName,IndexNumber,ParentIndexNumber"},
-		"StartIndex": {strconv.Itoa(start)},
-		"Limit":      {strconv.Itoa(limit)},
-		"SortBy":     {"IndexNumber"},
-		"SortOrder":  {order},
+		"UserId": {c.userID()},
+		"Fields": {"Overview,RunTimeTicks,UserData,SeriesName,SeasonName,IndexNumber,ParentIndexNumber"},
+		"Limit":  {"5000"},
 	}
 	if seasonID != "" {
 		q.Set("SeasonId", seasonID)
 	}
-	return c.request("GET", "/Shows/"+seriesID+"/Episodes", q, nil)
+	data, err := c.request("GET", "/Shows/"+seriesID+"/Episodes", q, nil)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Items []map[string]any `json:"Items"`
+	}
+	if json.Unmarshal(data, &parsed) != nil {
+		return data, nil // unexpected shape: fall back to the raw payload
+	}
+	items := parsed.Items
+	key := func(m map[string]any) int {
+		return episodeInt(m["ParentIndexNumber"])*100000 + episodeInt(m["IndexNumber"])
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if order == "desc" {
+			return key(items[i]) > key(items[j])
+		}
+		return key(items[i]) < key(items[j])
+	})
+	total := len(items)
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return json.Marshal(map[string]any{
+		"Items":            items[start:end],
+		"TotalRecordCount": total,
+	})
+}
+
+// episodeInt coerces a decoded JSON value (numbers arrive as float64) to an int
+// for episode/season ordering; anything unrecognized sorts as 0.
+func episodeInt(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	}
+	return 0
 }
 
 func (c *Client) Seasons(seriesID string) ([]byte, error) {

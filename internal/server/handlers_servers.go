@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"runtime"
+	"strings"
 
 	"tvremote/internal/config"
 	"tvremote/internal/i18n"
@@ -23,12 +24,16 @@ func safeServer(s *config.Server) map[string]any {
 		"username":        s.Username,
 		"user_id":         s.UserID,
 		"last_library_id": s.LastLibraryID,
+		"base_path":       s.BasePath,
 		"type":            config.NormalizeServerType(s.Type),
 		"share":           s.Share,
 		"domain":          s.Domain,
 		"root_path":       s.RootPath,
 		"playlist_url":    s.PlaylistURL,
 		"epg_url":         s.EPGURL,
+		// Expose only credential state. The edit API preserves a password when
+		// its field is absent, so the phone never needs the stored secret.
+		"password_saved": s.Password != "",
 	}
 }
 
@@ -137,6 +142,7 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		Protocol    string   `json:"protocol"`
 		Hosts       []string `json:"hosts"`
 		Port        int      `json:"port"`
+		BasePath    string   `json:"base_path"`
 		Username    string   `json:"username"`
 		Password    string   `json:"password"`
 		Token       string   `json:"token"`
@@ -157,6 +163,7 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		Protocol:    in.Protocol,
 		Hosts:       in.Hosts,
 		Port:        in.Port,
+		BasePath:    in.BasePath,
 		Share:       in.Share,
 		Domain:      in.Domain,
 		RootPath:    in.RootPath,
@@ -174,7 +181,12 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	// one after this succeeds, instead of typing it up front.
 	var token, userID string
 	kind := config.NormalizeServerType(candidate.Type)
-	shouldVerify := config.IsFileServerType(kind) || kind == "iptv" || in.Token != "" || (in.Username != "" && in.Password != "")
+	// A username with an empty password is a valid Emby/Jellyfin credential
+	// for guest accounts (including Jellyfin's public demo). Plex retains its
+	// existing password-or-token requirement.
+	shouldVerify := config.IsFileServerType(kind) || kind == "iptv" || in.Token != "" ||
+		((kind == "emby" || kind == "jellyfin") && strings.TrimSpace(in.Username) != "") ||
+		(kind == "plex" && in.Username != "" && in.Password != "")
 	if shouldVerify {
 		var err error
 		token, userID, err = provider.Authenticate(&candidate, in.Username, in.Password, in.Token)
@@ -229,7 +241,12 @@ func (s *Server) editServer(w http.ResponseWriter, r *http.Request) {
 			err = iptv.New(&candidate).Refresh(r.Context())
 		case config.IsFileServerType(kind):
 			_, _, err = provider.Authenticate(&candidate, candidate.Username, candidate.Password, "")
-		case body.Token != "" || body.ServerPatch.Password != nil:
+		case body.Token != "" || body.ServerPatch.Password != nil ||
+			((kind == "emby" || kind == "jellyfin") &&
+				strings.TrimSpace(candidate.Username) != "" && candidate.UserID == ""):
+			// Re-authenticate a source that was created by an older build without
+			// a user ID. This also permits the legitimate empty-password guest
+			// flow instead of issuing a later /Users//Views request.
 			token, userID, err = provider.Authenticate(&candidate, candidate.Username, candidate.Password, body.Token)
 		default:
 			// Address-only edits retain the existing access token. Probe the

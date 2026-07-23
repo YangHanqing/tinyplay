@@ -292,6 +292,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /dlna/{path...}", s.dlna.ServeHTTP)
 	mux.HandleFunc("SUBSCRIBE /dlna/{path...}", s.dlna.ServeHTTP)
 
+	// ── Unified device activity (which surface owns the device right now) ──
+	// Read-only derivation over the player + website states; lets a reloaded
+	// phone restore the correct workspace instead of always snapping to media.
+	mux.HandleFunc("GET /api/activity/state", s.activityState)
+
 	// ── Player ──
 	mux.HandleFunc("GET /api/player/state", s.playerState)
 	mux.HandleFunc("POST /api/player/play", s.playItem)
@@ -342,6 +347,9 @@ func (s *Server) Handler() http.Handler {
 	// ── System output volume (remote's volume slider) ──
 	mux.HandleFunc("GET /api/system/volume", s.systemVolumeGet)
 	mux.HandleFunc("POST /api/system/volume", s.systemVolumeSet)
+	// ── Temporary desktop mouse/keyboard (desktop shells only) ──
+	mux.HandleFunc("GET /api/system/input/state", s.desktopInputState)
+	mux.HandleFunc("POST /api/system/input/action", s.desktopInputAction)
 
 	// ── Website playback (desktop experimental; fixed allowlist) ──
 	// Phone Media/Website workspace is client-local; no /api/website/mode.
@@ -354,6 +362,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /desktop/website/poll", s.websiteShellPoll)
 	mux.HandleFunc("POST /desktop/website/report", s.websiteShellReport)
 	mux.HandleFunc("GET /desktop/website/controller.js", s.websiteControllerJS)
+	mux.HandleFunc("GET /desktop/input/poll", s.desktopInputPoll)
+	mux.HandleFunc("POST /desktop/input/report", s.desktopInputReport)
 
 	// ── Frontend (embedded) ──
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.webFS))))
@@ -361,5 +371,5 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /sw.js", s.serviceWorker)
 	mux.HandleFunc("GET /", s.index)
 
-	return withLogging(withGuard(mux))
+	return withLogging(withGuard(withRequestLimits(mux)))
 }

@@ -37,6 +37,9 @@ func runShell(localURL string, httpSrv *http.Server) {
 	desktopURL := func() string { return localURL + "/desktop?lang=" + url.QueryEscape(i18n.SystemLang()) }
 
 	onReady := func() {
+		// Runs separately from the website WebView: the temporary mouse is a
+		// computer-wide, foreground-window control, not a website-only feature.
+		startDesktopInputHost()
 		systray.SetIcon(trayIcon)
 		systray.SetTitle("TinyPlay")
 		systray.SetTooltip(i18n.System("tooltip"))

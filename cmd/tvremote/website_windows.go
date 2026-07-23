@@ -50,11 +50,12 @@ type websiteCmd struct {
 }
 
 type websiteActionResult struct {
-	OK         bool     `json:"ok"`
-	Status     string   `json:"status"`
-	Error      string   `json:"error"`
-	HintActive *bool    `json:"hint_active"`
-	HintLabels []string `json:"labels"`
+	OK          bool     `json:"ok"`
+	Status      string   `json:"status"`
+	Error       string   `json:"error"`
+	HintActive  *bool    `json:"hint_active"`
+	HintLabels  []string `json:"labels"`
+	MoreActions []string `json:"actions"`
 }
 
 func startWebsiteShell(coreURL string) {
@@ -323,6 +324,9 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 		if result.HintLabels != nil {
 			body["hint_labels"] = result.HintLabels
 		}
+		if result.MoreActions != nil {
+			body["more_actions"] = result.MoreActions
+		}
 		go h.report(body)
 		return nil
 	})
@@ -423,30 +427,37 @@ func (h *websiteHost) applyOnWindow(w webview2.WebView, cmd websiteCmd) {
 		w.Navigate(cmd.URL)
 		h.report(map[string]any{"status": "home", "action": website.ActionHome, "command_id": cmd.ID, "open": true})
 	case website.ActionLogin:
-		if cmd.URL == "" {
-			h.report(map[string]any{"status": "error", "error": "login_unavailable", "action": website.ActionLogin, "command_id": cmd.ID, "open": true})
+		if cmd.URL != "" {
+			// Broker-supplied fixed login route only; never phone-provided URL text.
+			w.Navigate(cmd.URL)
+			h.report(map[string]any{"status": "login", "action": website.ActionLogin, "command_id": cmd.ID, "open": true})
 			return
 		}
-		// Broker-supplied fixed login route only; never phone-provided URL text.
-		w.Navigate(cmd.URL)
-		h.report(map[string]any{"status": "login", "action": website.ActionLogin, "command_id": cmd.ID, "open": true})
+		// Some catalog sites expose login only as an in-page modal. Their
+		// allowlisted blank-URL command is handled by the generic controller;
+		// it finds a visible login control and never accepts a caller URL.
+		h.runDOMAction(w, cmd)
 	case website.ActionRefresh:
 		w.Eval(`window.location.reload()`)
 		h.report(map[string]any{"status": "refresh", "action": website.ActionRefresh, "command_id": cmd.ID, "open": true})
 	default:
-		// DOM actions via shared controller.
-		payload, _ := json.Marshal(map[string]any{
-			"action": cmd.Action,
-			"text":   cmd.Text,
-			"label":  cmd.Label,
-		})
-		// WebView2's Eval is fire-and-forget, so send the real controller result
-		// through the narrow typed RPC binding above instead of guessing success.
-		// handle() may return a Promise (oracle-checked transport actions), so
-		// resolve before reporting — the shell must report the confirmed effect.
-		js := fmt.Sprintf(`(function(){function send(r){try{if(window.tinyplayWebsiteReport){window.tinyplayWebsiteReport(r||{ok:false,status:'error',error:'exception'},%d,%q);}}catch(e){}}var r;try{r=window.__tinyplayWebsite?window.__tinyplayWebsite.handle(%s):{ok:false,status:'error',error:'no_controller'};}catch(e){send({ok:false,status:'error',error:'exception'});return;}if(r&&typeof r.then==='function'){r.then(send,function(){send({ok:false,status:'error',error:'exception'});});}else{send(r);}})()`, cmd.ID, cmd.Action, string(payload))
-		w.Eval(js)
+		h.runDOMAction(w, cmd)
 	}
+}
+
+func (h *websiteHost) runDOMAction(w webview2.WebView, cmd websiteCmd) {
+	// DOM actions via shared controller.
+	payload, _ := json.Marshal(map[string]any{
+		"action": cmd.Action,
+		"text":   cmd.Text,
+		"label":  cmd.Label,
+	})
+	// WebView2's Eval is fire-and-forget, so send the real controller result
+	// through the narrow typed RPC binding above instead of guessing success.
+	// handle() may return a Promise (oracle-checked transport actions), so
+	// resolve before reporting — the shell must report the confirmed effect.
+	js := fmt.Sprintf(`(function(){function send(r){try{if(window.tinyplayWebsiteReport){window.tinyplayWebsiteReport(r||{ok:false,status:'error',error:'exception'},%d,%q);}}catch(e){}}var r;try{r=window.__tinyplayWebsite?window.__tinyplayWebsite.handle(%s):{ok:false,status:'error',error:'no_controller'};}catch(e){send({ok:false,status:'error',error:'exception'});return;}if(r&&typeof r.then==='function'){r.then(send,function(){send({ok:false,status:'error',error:'exception'});});}else{send(r);}})()`, cmd.ID, cmd.Action, string(payload))
+	w.Eval(js)
 }
 
 func (h *websiteHost) report(body map[string]any) {

@@ -3,7 +3,7 @@ package website
 import "testing"
 
 func TestCatalogOrder(t *testing.T) {
-	want := []string{SiteBilibili, SiteIQIYI, SiteTencent, SiteYouku}
+	want := []string{SiteBilibili, SiteIQIYI, SiteTencent, SiteYouku, SiteDouyin}
 	if len(Catalog) != len(want) {
 		t.Fatalf("catalog len=%d want %d", len(Catalog), len(want))
 	}
@@ -36,6 +36,8 @@ func TestSiteIDFromHostDomainMatching(t *testing.T) {
 		{"v.qq.com", SiteTencent},
 		{"www.v.qq.com", SiteTencent},
 		{"www.youku.com", SiteYouku},
+		{"www.douyin.com", SiteDouyin},
+		{"www.www.douyin.com", SiteDouyin},
 		{"www.mgtv.com", ""},
 		{"www.whatismybrowser.com", ""},
 		// Near-miss / unknown must not match.
@@ -59,6 +61,9 @@ func TestSiteIDFromURL(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	if got := SiteIDFromURL("https://www.iqiyi.com/v_19.html"); got != SiteIQIYI {
+		t.Fatalf("got %q", got)
+	}
+	if got := SiteIDFromURL("https://www.douyin.com/video/123"); got != SiteDouyin {
 		t.Fatalf("got %q", got)
 	}
 	if got := SiteIDFromURL("https://evilbilibili.com/"); got != "" {
@@ -142,13 +147,39 @@ func TestIsKnownAction(t *testing.T) {
 	if !IsKnownAction(ActionPlayPause) {
 		t.Fatal("play_pause should be known")
 	}
-	for _, action := range []string{ActionSeek, ActionSpeed, ActionScrollUp, ActionScrollDown, ActionLogin, ActionHome, ActionRefresh, ActionFullscreenEnter, ActionFullscreenExit} {
+	for _, action := range []string{ActionSeek, ActionSpeed, ActionVolume, ActionScrollUp, ActionScrollDown, ActionLogin, ActionHome, ActionRefresh, ActionFullscreenEnter, ActionFullscreenExit, ActionCapabilities, ActionDanmakuToggle, ActionBilibiliLike, ActionBilibiliCoin, ActionBilibiliFav, ActionBilibiliFollow, ActionBilibiliTriple} {
 		if !IsKnownAction(action) {
 			t.Fatalf("%s should be known", action)
 		}
 	}
 	if IsKnownAction("eval") || IsKnownAction("shell") || IsKnownAction("navigate") {
 		t.Fatal("dangerous actions must not be known")
+	}
+}
+
+func TestFilterMoreActionsUsesFixedSiteProfile(t *testing.T) {
+	profile := MoreActionsForSite(SiteBilibili)
+	if len(profile) != 6 || profile[0].ID != ActionDanmakuToggle || profile[1].ID != ActionBilibiliLike || profile[5].ID != ActionBilibiliTriple || profile[0].Strategy != MoreActionStrategyShortcut {
+		t.Fatalf("unexpected bilibili profile: %+v", profile)
+	}
+
+	// Page reports are untrusted capability claims. Unknown IDs, duplicates,
+	// and actions declared by another site must never reach the phone.
+	got := FilterMoreActions(SiteBilibili, []string{"evil", ActionBilibiliTriple, ActionBilibiliLike, ActionBilibiliLike})
+	if len(got) != 2 || got[0].ID != ActionBilibiliLike || got[1].ID != ActionBilibiliTriple || got[0].Name != "点赞（Q）" {
+		t.Fatalf("filtered actions=%+v", got)
+	}
+	if got := FilterMoreActions(SiteIQIYI, []string{ActionDanmakuToggle, ActionBilibiliLike}); len(got) != 0 {
+		t.Fatalf("iqiyi must not inherit bilibili actions: %+v", got)
+	}
+	if got := FilterMoreActions("", []string{ActionDanmakuToggle, ActionBilibiliLike}); len(got) != 0 {
+		t.Fatalf("unknown site must expose no actions: %+v", got)
+	}
+
+	// Callers cannot mutate the package profile through the returned slice.
+	profile[0].Name = "mutated"
+	if next := MoreActionsForSite(SiteBilibili); next[0].Name == "mutated" {
+		t.Fatal("MoreActionsForSite must return a defensive copy")
 	}
 }
 
@@ -174,11 +205,9 @@ func TestLoginURLFixedRoutes(t *testing.T) {
 	if _, ok := LoginURL(""); ok {
 		t.Fatal("empty site must not expose a login route")
 	}
-	// Every public catalog entry must have a fixed login route.
-	for _, site := range Catalog {
-		if _, ok := LoginURL(site.ID); !ok {
-			t.Fatalf("catalog site %s missing LoginURL", site.ID)
-		}
+	// Douyin currently uses an in-page login modal, not a verified fixed route.
+	if _, ok := LoginURL(SiteDouyin); ok {
+		t.Fatal("Douyin must use the generic in-page login controller")
 	}
 }
 

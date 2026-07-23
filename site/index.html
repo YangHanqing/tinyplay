@@ -3,51 +3,58 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="TinyPlay：把接在电视上的 Windows 电脑或 Mac 变成由手机遥控的客厅播放器。" data-i18n="meta_description" data-i18n-attr="content">
+  <meta name="description" content="TinyPlay：让闲置 Windows PC 或 Mac 接上电视，用手机控制 Jellyfin、NAS 文件、IPTV 和支持的网站播放。" data-i18n="meta_description" data-i18n-attr="content">
   <meta name="theme-color" content="#07110f">
   <link rel="canonical" href="https://yanghanqing.github.io/tinyplay/">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://yanghanqing.github.io/tinyplay/">
-  <meta property="og:title" content="TinyPlay — 手机是遥控器，电脑负责播放。" data-i18n="og_title" data-i18n-attr="content">
-  <meta property="og:description" content="把接在电视上的电脑变成由手机遥控的客厅播放器。" data-i18n="og_description" data-i18n-attr="content">
+  <meta property="og:title" content="TinyPlay — 闲置 PC，接管电视" data-i18n="og_title" data-i18n-attr="content">
+  <meta property="og:description" content="手机遥控，电脑接电视播放。Jellyfin、NAS 文件和 IPTV 都能接进来。" data-i18n="og_description" data-i18n-attr="content">
   <meta property="og:image" content="https://yanghanqing.github.io/tinyplay/assets/hero.jpg">
   <meta name="twitter:card" content="summary_large_image">
-  <title data-i18n="page_title">TinyPlay — 榨干小主机，也把它变成客厅播放器</title>
-  <link rel="icon" href="assets/favicon-64.png" type="image/png" sizes="64x64">
-  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <link rel="stylesheet" href="assets/site.css">
+  <title data-i18n="page_title">TinyPlay — 闲置 PC，接管电视</title>
+  <link rel="icon" href="assets/favicon.png" type="image/png" sizes="1024x1024">
+  <link rel="apple-touch-icon" href="assets/favicon.png">
+  <link rel="stylesheet" href="assets/site.css?v=feature-sections">
 </head>
 <body>
   <header class="site-header">
     <a class="brand" href="#top" aria-label="TinyPlay 首页">
-      <img class="brand-mark" src="assets/favicon-64.png" alt="" aria-hidden="true">
+      <img class="brand-mark" src="assets/favicon.png" alt="" aria-hidden="true">
       <span>TinyPlay</span>
     </a>
     <nav aria-label="页面导航">
       <a href="#why" data-i18n="nav_why">为什么</a>
       <a href="#features" data-i18n="nav_features">功能</a>
-      <a href="guide.html#choose" data-i18n="nav_choose">选购指南</a>
-      <a href="guide.html" data-i18n="nav_guide">使用指南</a>
+      <a href="guide/" data-i18n="guide_path" data-i18n-attr="href"><span data-i18n="nav_guide">使用指南</span></a>
       <button type="button" class="lang-toggle" id="lang-toggle" onclick="toggleSiteLang()" aria-label="切换语言 / Switch language">
         <span class="lang-opt" data-lang="zh-CN">中文</span><span class="lang-sep">/</span><span class="lang-opt" data-lang="en">EN</span>
       </button>
       <a class="nav-atv" href="#" onclick="openAppleTvModal(event)" aria-haspopup="dialog" aria-controls="appletv-modal-backdrop" data-i18n="nav_appletv">Apple TV 即将推出</a>
-      <a class="nav-cta" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n="nav_download">下载</a>
+      <a class="nav-cta" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="nav_download">下载 <span class="nav-platform">macOS / Windows</span><span class="free-badge">免费</span></a>
     </nav>
   </header>
 
   <main id="top">
     <section class="hero section-shell">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="eyebrow-dash"></span> <span class="eyebrow-text" data-i18n="hero_eyebrow">手机控制，电脑播放</span></p>
-        <h1 data-i18n-html="hero_title">手机是遥控器，<br><em>电脑负责播放。</em></h1>
-        <p class="hero-lead" data-i18n="hero_lead">让接在电视上的 Windows 电脑或 Mac 处理播放；你只管用手机选片、拖进度、切字幕。无需安装手机 App，所有操作都留在家庭局域网。</p>
+        <p class="eyebrow"><span class="eyebrow-dash"></span> <span class="eyebrow-text" data-i18n="hero_eyebrow">把小主机变成客厅播放器 HTPC</span></p>
+        <h1 data-i18n-html="hero_title">可能比<em>电视盒子</em><br>更好用</h1>
+        <p class="hero-lead" data-i18n="hero_lead">把闲置的 Windows 小主机或 Mac mini 接上电视。手机扫码即可选电影、拖进度、切字幕、调倍速。没有复杂的插件系统和电视端菜单。打开手机，找到想看的，剩下的交给接电视的电脑。</p>
         <div class="hero-actions">
-          <a class="button primary" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS / Windows <span>↗</span></a>
+          <a class="button primary" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS / Windows <span class="free-badge">免费</span><span>↗</span></a>
           <a class="button secondary" href="#" onclick="openAppleTvModal(event)" data-i18n="btn_view_appletv">Apple TV 版 · 即将推出</a>
         </div>
         <div class="platform-note">
-          <span data-i18n="platform_win">Windows x86-64</span><i></i><span data-i18n="platform_mac">macOS Apple Silicon / Intel</span><i></i><span data-i18n="platform_phone">手机无需安装 App</span>
+          <span data-i18n="platform_win">Windows 10+</span><i></i><span data-i18n="platform_mac">macOS 13+</span><i></i><span data-i18n="platform_phone">手机无需安装 App</span>
+        </div>
+        <div class="hero-tags" data-i18n="hero_tags_label" data-i18n-attr="aria-label" aria-label="支持的内容入口">
+          <span data-i18n="hero_tag_media_servers">Jellyfin / Emby / Plex</span>
+          <span data-i18n="hero_tag_local_files">本地文件 / NFS</span>
+          <span data-i18n="hero_tag_network_shares">SMB / WebDAV</span>
+          <span data-i18n="hero_tag_iptv">IPTV</span>
+          <span data-i18n="hero_tag_dlna">DLNA</span>
+          <span data-lang-only="zh-CN" data-i18n="hero_tag_chinese_video">B站 / 爱 / 优 / 腾</span>
         </div>
       </div>
       <div class="hero-visual">
@@ -64,52 +71,90 @@
     </section>
 
     <section class="ticker" aria-label="主要特性">
-      <div><span>MPV PLAYBACK</span><b>◆</b><span>PHONE REMOTE</span><b>◆</b><span>DLNA CAST</span><b>◆</b><span>EMBY LIBRARY</span><b>◆</b><span>IPTV LIVE TV</span><b>◆</b><span>LAN FIRST</span><b>◆</b><span>NO PHONE APP</span></div>
+      <div><span>PHONE REMOTE</span><b>◆</b><span>JELLYFIN / EMBY / PLEX</span><b>◆</b><span>NAS FOLDERS</span><b>◆</b><span>IPTV LIVE TV</span><b>◆</b><span>DLNA RECEIVER</span><b>◆</b><span>NO PHONE APP</span></div>
     </section>
 
     <section class="story section-shell" id="why">
       <div class="section-heading sticky-heading">
         <p class="eyebrow"><span class="eyebrow-dash"></span> WHY TINYPLAY</p>
-        <h2 data-i18n-html="why_title">已有的电脑，<br>也能成为好用的电视播放器。</h2>
+        <h2 data-i18n-html="why_title">客厅不该在自由和好用之间<br>二选一。</h2>
       </div>
       <div class="story-content">
         <article class="story-card featured">
           <span class="step">01</span>
-          <h3 data-i18n="why1_title">不必先买新硬件</h3>
-          <p data-i18n="why1_body">常年开着的 x86 小主机、NUC、Mac，甚至闲置的 Windows 笔记本，都可能胜任。只要它能稳定输出画面，并满足你片源所需的解码能力，就能把 HDMI 接到电视。</p>
+          <h3 data-i18n="why1_title">电视盒子很省心，但不一定够自由</h3>
+          <p data-i18n="why1_body">想用电脑端软件、NAS、媒体服务器或自己的直播源时，电视盒子往往又多了一层限制。</p>
         </article>
         <article class="story-card">
           <span class="step">02</span>
-          <h3 data-i18n="why2_title">但"能播放"不等于"好控制"</h3>
-          <p data-i18n="why2_body">电脑接上电视很简单，真正麻烦的是窝在沙发里选片、拖进度、切字幕：键盘鼠标不属于客厅，远程桌面又太重。</p>
+          <h3 data-i18n="why2_title">小主机很自由，但不该靠键盘鼠标</h3>
+          <p data-i18n="why2_body">电脑接电视能做很多事，问题是它原本不是为沙发上的选片、搜索和拖进度设计的。</p>
         </article>
         <article class="story-card">
           <span class="step">03</span>
-          <h3 data-i18n="why3_title">于是有了 TinyPlay</h3>
-          <p data-i18n="why3_body">选片、拖进度条、切换字幕与倍速，全部挪到手机上完成。电脑连接媒体库、文件夹或直播源，再把播放交给随应用附带的 mpv；你不需要了解 mpv，只需让电脑处理格式兼容性。</p>
+          <h3 data-i18n="why3_title">TinyPlay 补上中间这一环</h3>
+          <p data-i18n="why3_body">手机给你现代、顺手的控制界面；小主机继续负责内容、播放和格式兼容。</p>
         </article>
       </div>
     </section>
 
-    <section class="product section-shell" id="features">
-      <div class="product-copy">
-        <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="features_eyebrow">FOUR ENTRANCES, ONE REMOTE</span></p>
-        <h2 data-i18n-html="features_title">四种内容入口，<br>一套手机遥控器。</h2>
-        <p data-i18n="features_lead">无论内容在哪里，播放都留在接电视的电脑上；浏览、选择和控制都在你的手机里完成。</p>
-        <div class="source-grid">
-          <article class="source-card"><span>01</span><div><strong data-i18n="feature1_title">媒体库</strong><small data-i18n="feature1_body">连接 Emby、Jellyfin 或 Plex，浏览海报、剧集与继续观看。</small></div></article>
-          <article class="source-card"><span>02</span><div><strong data-i18n="feature2_title">文件夹</strong><small data-i18n="feature2_body">从本机、已挂载目录、SMB 或 WebDAV 中浏览和播放。</small></div></article>
-          <article class="source-card"><span>03</span><div><strong data-i18n="feature3_title">IPTV</strong><small data-i18n="feature3_body">导入已有的 M3U/M3U8 播放列表，配合 XMLTV 查看节目。</small></div></article>
-          <article class="source-card"><span>04</span><div><strong data-i18n="feature4_title">DLNA 投屏</strong><small data-i18n="feature4_body">让局域网内支持 DLNA 的应用把内容投到这台电脑上。</small></div></article>
+    <section class="feature-section feature-section--content section-shell" id="features">
+      <div class="feature-inner">
+        <div class="feature-copy">
+          <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="feature_content_eyebrow">内容入口，都在手机里</span></p>
+          <h2 data-i18n="feature_content_title">媒体库 &amp; IPTV</h2>
+          <p data-i18n="feature_content_desc">从 Emby、Jellyfin、Plex 和文件夹中找片，或导入 M3U/M3U8 直播频道。选好以后，手机接着就是遥控器。</p>
+          <div class="content-screen-tabs" role="group" aria-label="选择界面预览" data-i18n="content_tabs_label" data-i18n-attr="aria-label">
+            <button type="button" data-content-screen="library" aria-pressed="true"><span>01</span><b data-i18n="content_tab_library">媒体库</b></button>
+            <button type="button" data-content-screen="iptv" aria-pressed="false"><span>02</span><b data-i18n="content_tab_iptv">IPTV</b></button>
+            <button type="button" data-content-screen="remote" aria-pressed="false"><span>03</span><b data-i18n="content_tab_remote">遥控器</b></button>
+          </div>
         </div>
-        <p class="product-note" data-i18n="product_note">暂停、跳转、倍速、音轨、字幕和画面控制始终使用同一套遥控器。播放由随应用附带的 mpv 完成。</p>
+        <div class="feature-visual">
+          <div class="content-showcase" data-active-screen="library" aria-label="TinyPlay 手机界面预览" data-i18n="content_showcase_label" data-i18n-attr="aria-label">
+            <div class="content-phone-fan">
+              <div class="phone-mock content-phone content-phone--library" data-content-screen-card="library">
+                <img src="assets/screenshot-library.png" alt="TinyPlay 手机媒体库界面" data-i18n="library_image_alt" data-i18n-attr="alt" loading="lazy">
+              </div>
+              <div class="phone-mock content-phone content-phone--iptv" data-content-screen-card="iptv">
+                <img src="assets/screenshot-iptv.png" alt="TinyPlay 手机上的 IPTV 频道界面" data-i18n="iptv_image_alt" data-i18n-attr="alt" loading="lazy">
+              </div>
+              <div class="phone-mock content-phone content-phone--remote" data-content-screen-card="remote">
+                <img src="assets/screenshot-remote.png" alt="TinyPlay 手机遥控器界面" data-i18n="remote_image_alt" data-i18n-attr="alt" loading="lazy">
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="screens-stack">
-        <div class="phone-mock screen phone-shot-a">
-          <img src="assets/screenshot-remote.png" alt="TinyPlay 手机遥控器界面" data-i18n="remote_image_alt" data-i18n-attr="alt" loading="lazy">
+    </section>
+
+    <section class="feature-section feature-section--landscape section-shell">
+      <div class="feature-inner">
+        <div class="feature-copy">
+          <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="feature_dlna_eyebrow">接收局域网投屏</span></p>
+          <h2 data-i18n="feature_dlna_title">DLNA 接收器</h2>
+          <p data-i18n="feature_dlna_desc">让这台接电视的电脑，出现在局域网应用的投屏设备列表里。</p>
         </div>
-        <div class="phone-mock screen phone-shot-b">
-          <img src="assets/screenshot-library.png" alt="TinyPlay 手机媒体库界面" data-i18n="library_image_alt" data-i18n-attr="alt" loading="lazy">
+        <div class="feature-visual">
+          <div class="feature-demo-shot">
+            <img src="assets/screenshot-dlna.png" alt="手机选择 TinyPlay 作为 DLNA 接收器" data-i18n="dlna_image_alt" data-i18n-attr="alt" loading="lazy">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="feature-section feature-section--landscape section-shell" data-lang-only="zh-CN">
+      <div class="feature-inner">
+        <div class="feature-copy">
+          <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="feature_web_eyebrow">手机控制在线视频</span><span class="feature-beta" data-i18n="feature_web_beta">中文 Beta</span></p>
+          <h2 data-i18n="feature_web_title">在线视频</h2>
+          <p data-i18n="feature_web_desc">创新的手机 / 电脑 Vim 联动：不用鼠标，也能快速选视频、控制播放、调倍速。</p>
+          <p class="feature-note" data-i18n="feature_web_note">* 仍需在电脑端登录账号；能看什么、能不能跳广告，取决于平台和你的会员。</p>
+        </div>
+        <div class="feature-visual">
+          <div class="feature-demo-shot">
+            <img src="assets/screenshot-online-video.png?v=20260723" alt="手机控制电脑端在线视频播放" data-i18n="online_video_image_alt" data-i18n-attr="alt" loading="lazy">
+          </div>
         </div>
       </div>
     </section>
@@ -132,14 +177,20 @@
         <h2 data-i18n-html="download_title">让那台小主机，<br>今晚就接管电视。</h2>
       </div>
       <div class="download-actions">
-        <a class="button light-button" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS / Windows <span>↗</span></a>
-        <p data-i18n="download_platforms">Windows x86-64 · macOS Apple Silicon / Intel</p>
+        <div class="download-buttons">
+          <a class="button light-button" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS / Windows <span class="free-badge">免费</span><span>↗</span></a>
+          <div class="download-secondary-actions">
+            <a class="button guide-button" href="guide/" data-i18n="guide_path" data-i18n-attr="href"><span data-i18n="btn_read_guide">使用指南</span></a>
+            <button type="button" class="button atv-button" onclick="openAppleTvModal(event)" aria-haspopup="dialog" aria-controls="appletv-modal-backdrop"><span data-i18n="download_atv_title">Apple TV 版</span><small data-i18n="download_atv_badge">即将推出</small></button>
+          </div>
+        </div>
+        <p data-i18n="download_platforms">Windows 10+ / macOS 13+</p>
       </div>
     </section>
   </main>
 
   <footer>
-    <a class="brand" href="#top"><img class="brand-mark" src="assets/favicon-64.png" alt=""><span>TinyPlay</span></a>
+    <a class="brand" href="#top"><img class="brand-mark" src="assets/favicon.png" alt=""><span>TinyPlay</span></a>
     <p data-i18n="footer_tagline">Turn the little box into the big screen.</p>
     <div><a href="https://github.com/YangHanqing/tinyplay">GitHub</a><a href="https://github.com/YangHanqing/tinyplay/releases/latest">Releases</a><a href="https://github.com/YangHanqing/tinyplay/blob/main/LICENSE" data-i18n="footer_license">GPL-3.0 License</a></div>
   </footer>
@@ -148,11 +199,11 @@
   <div class="modal-backdrop hidden" id="appletv-modal-backdrop" onclick="onAppleTvBackdropClick(event)">
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="appletv-modal-title" tabindex="-1">
       <h3 id="appletv-modal-title" data-i18n="appletv_modal_title">Apple TV 版本</h3>
-      <p data-i18n="appletv_modal_body">正在开发中，敬请期待。</p>
+      <p data-i18n="appletv_modal_body">原生 Apple TV 版本正在准备中，上线后可直接在 App Store 获取。</p>
       <button type="button" class="button primary" id="appletv-modal-close" onclick="closeAppleTvModal()" data-i18n="appletv_modal_close">好的</button>
     </div>
   </div>
 
-  <script src="assets/site.js"></script>
+  <script src="assets/site.js?v=feature-sections"></script>
 </body>
 </html>

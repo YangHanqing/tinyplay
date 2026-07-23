@@ -19,6 +19,7 @@ const (
 	SiteIQIYI    = "iqiyi"
 	SiteTencent  = "tencent"
 	SiteYouku    = "youku"
+	SiteDouyin   = "douyin"
 
 	MaxSearchText = 200
 	MaxTypeText   = 200
@@ -38,6 +39,10 @@ const (
 	// MinPlaybackRate/MaxPlaybackRate bound the playbackRate a phone may set.
 	MinPlaybackRate = 0.25
 	MaxPlaybackRate = 4
+	// Website player volume is relative to the current page's media element,
+	// not the computer's OS output volume.
+	MinWebsiteVolumeDelta = -100
+	MaxWebsiteVolumeDelta = 100
 )
 
 // Site is one fixed entry in the website allowlist.
@@ -47,6 +52,18 @@ type Site struct {
 	URL  string `json:"url"`
 }
 
+// MoreAction is one page-specific, server-approved action shown in the
+// phone's Website "More" sheet. The injected controller only reports action
+// IDs; Go resolves them through the current site's fixed profile so a page can
+// never invent a label, strategy, or executable command.
+type MoreAction struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Strategy string `json:"strategy"`
+}
+
+const MoreActionStrategyShortcut = "site_shortcut"
+
 // Catalog is the ordered fixed site list. Do not reorder without updating tests
 // and the phone UI expectations.
 var Catalog = []Site{
@@ -54,6 +71,9 @@ var Catalog = []Site{
 	{ID: SiteIQIYI, Name: "爱奇艺", URL: "https://www.iqiyi.com/"},
 	{ID: SiteTencent, Name: "腾讯视频", URL: "https://v.qq.com/"},
 	{ID: SiteYouku, Name: "优酷", URL: "https://www.youku.com/"},
+	// Keep Douyin last: it is intentionally a generic-baseline integration
+	// until an official shortcut surface is verified in the desktop WebView.
+	{ID: SiteDouyin, Name: "抖音", URL: "https://www.douyin.com/"},
 }
 
 // Known public phone actions. Anything else is rejected.
@@ -77,13 +97,63 @@ const (
 	ActionEnter           = "enter"
 	ActionSeek            = "seek"
 	ActionSpeed           = "speed"
+	ActionVolume          = "volume"
 	ActionScrollUp        = "scroll_up"
 	ActionScrollDown      = "scroll_down"
 	ActionLogin           = "login"
 	ActionHintEnter       = "hint_enter"
 	ActionHintExit        = "hint_exit"
 	ActionHintLabel       = "hint_label"
+	// ActionCapabilities is an internal, read-only page probe requested when
+	// the phone opens Website "More". The shell returns only IDs and Go filters
+	// them through MoreActionsForSite before exposing them to the phone.
+	ActionCapabilities = "capabilities"
+	// Site-profile actions remain typed public commands. Never expose a raw key
+	// or script field to phone clients.
+	ActionDanmakuToggle  = "danmaku_toggle"
+	ActionBilibiliLike   = "bilibili_like"
+	ActionBilibiliCoin   = "bilibili_coin"
+	ActionBilibiliFav    = "bilibili_favorite"
+	ActionBilibiliFollow = "bilibili_follow"
+	ActionBilibiliTriple = "bilibili_triple"
 )
+
+var siteMoreActions = map[string][]MoreAction{
+	SiteBilibili: {
+		{ID: ActionDanmakuToggle, Name: "开关弹幕", Strategy: MoreActionStrategyShortcut},
+		{ID: ActionBilibiliLike, Name: "点赞（Q）", Strategy: MoreActionStrategyShortcut},
+		{ID: ActionBilibiliCoin, Name: "投币（W）", Strategy: MoreActionStrategyShortcut},
+		{ID: ActionBilibiliFav, Name: "收藏（E）", Strategy: MoreActionStrategyShortcut},
+		{ID: ActionBilibiliFollow, Name: "关注 UP 主（G）", Strategy: MoreActionStrategyShortcut},
+		{ID: ActionBilibiliTriple, Name: "一键三连（长按 R）", Strategy: MoreActionStrategyShortcut},
+	},
+}
+
+// MoreActionsForSite returns a defensive copy of the fixed action profile.
+func MoreActionsForSite(siteID string) []MoreAction {
+	actions := siteMoreActions[strings.TrimSpace(siteID)]
+	return append([]MoreAction(nil), actions...)
+}
+
+// FilterMoreActions accepts only IDs declared by the recognized current site,
+// preserves profile order, and removes duplicates/unknown page claims.
+func FilterMoreActions(siteID string, reported []string) []MoreAction {
+	if len(reported) == 0 {
+		return []MoreAction{}
+	}
+	wanted := make(map[string]bool, len(reported))
+	for _, id := range reported {
+		wanted[strings.TrimSpace(id)] = true
+	}
+	profile := MoreActionsForSite(siteID)
+	out := make([]MoreAction, 0, len(profile))
+	for _, action := range profile {
+		if wanted[action.ID] {
+			out = append(out, action)
+		}
+	}
+	return out
+}
 
 // SiteByID returns a catalog entry or false when the id is not allowlisted.
 func SiteByID(id string) (Site, bool) {
@@ -183,8 +253,10 @@ func IsKnownAction(action string) bool {
 	switch strings.TrimSpace(action) {
 	case ActionOpen, ActionClose, ActionBack, ActionForward, ActionHome, ActionRefresh,
 		ActionPlayPause, ActionFullscreenEnter, ActionFullscreenExit, ActionSearch, ActionType,
-		ActionEnter, ActionSeek, ActionSpeed, ActionScrollUp, ActionScrollDown,
-		ActionLogin, ActionHintEnter, ActionHintExit, ActionHintLabel:
+		ActionEnter, ActionSeek, ActionSpeed, ActionVolume, ActionScrollUp, ActionScrollDown,
+		ActionLogin, ActionHintEnter, ActionHintExit, ActionHintLabel, ActionCapabilities,
+		ActionDanmakuToggle, ActionBilibiliLike, ActionBilibiliCoin, ActionBilibiliFav,
+		ActionBilibiliFollow, ActionBilibiliTriple:
 		return true
 	}
 	return false

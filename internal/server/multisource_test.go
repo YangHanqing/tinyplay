@@ -47,6 +47,67 @@ func TestFileSourceCRUDAndBrowseContract(t *testing.T) {
 	}
 }
 
+func TestJellyfinEmptyPasswordAuthenticatesOnCreate(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("TVREMOTE_DATA_DIR", data)
+
+	var authenticated bool
+	demo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/Users/AuthenticateByName" {
+			http.NotFound(w, r)
+			return
+		}
+		var credentials struct {
+			Username string `json:"Username"`
+			Password string `json:"Pw"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+			t.Fatalf("decode credentials: %v", err)
+		}
+		if credentials.Username != "demo" || credentials.Password != "" {
+			t.Fatalf("got credentials %#v, want demo with an empty password", credentials)
+		}
+		authenticated = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"AccessToken":"demo-token","User":{"Id":"demo-user"}}`))
+	}))
+	defer demo.Close()
+
+	demoURL, err := url.Parse(demo.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(demoURL.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(player.New()).Handler()
+	body, err := json.Marshal(map[string]any{
+		"name": "Jellyfin demo", "type": "jellyfin", "protocol": demoURL.Scheme,
+		"hosts": []string{demoURL.Hostname()}, "port": port,
+		"username": "demo", "password": "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := jsonReq(http.MethodPost, "/api/servers", string(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d: %s", rec.Code, rec.Body.String())
+	}
+	if !authenticated {
+		t.Fatal("Jellyfin sign-in was not attempted")
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if userID, _ := created["user_id"].(string); userID != "demo-user" {
+		t.Fatalf("user_id = %q, want demo-user", userID)
+	}
+}
+
 func TestLocalFolderPickerCanBrowseBeforeSourceExists(t *testing.T) {
 	data := t.TempDir()
 	t.Setenv("TVREMOTE_DATA_DIR", data)

@@ -15,6 +15,7 @@
 //   4. Terminate the sidecar on quit.
 
 import AppKit
+import ApplicationServices
 import Foundation
 import WebKit
 import Network
@@ -244,9 +245,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         startCore()
         setupMenuBar()
         // Show the QR window once on first launch so the user sees it immediately.
-        waitForCoreURL { [weak self] in
+		waitForCoreURL { [weak self] in
 			self?.startPlaybackStandbyMonitor()
 			self?.startWebsiteShell()
+			self?.startDesktopInputShell()
 			self?.openMainWindow()
 			self?.scheduleAutomaticUpdateCheck()
 		}
@@ -303,12 +305,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func applicationWillTerminate(_ notification: Notification) {
 		stopPlaybackStandbyMonitor()
 		stopWebsiteShell()
+		stopDesktopInputShell()
         if core.isRunning { core.terminate() }
     }
 
 	// MARK: - Website playback window (experimental)
 
 	private var websiteShell: WebsiteShellController?
+	private var desktopInputShell: DesktopInputShellController?
 
 	private func startWebsiteShell() {
 		websiteShell?.stop()
@@ -320,6 +324,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private func stopWebsiteShell() {
 		websiteShell?.stop()
 		websiteShell = nil
+	}
+
+	private func startDesktopInputShell() {
+		desktopInputShell?.stop()
+		let shell = DesktopInputShellController(coreURL: loopbackCoreURL(coreURL))
+		desktopInputShell = shell
+		shell.start()
+	}
+
+	private func stopDesktopInputShell() {
+		desktopInputShell?.stop()
+		desktopInputShell = nil
 	}
 
 	// MARK: - Playback → full-screen standby restore
@@ -843,6 +859,137 @@ private func loopbackCoreURL(_ coreURL: String) -> String {
 	return "http://127.0.0.1:\(port)"
 }
 
+// Native, computer-wide emergency input. This is intentionally separate from
+// WebsiteShellController: it drives the current foreground app, so a user can
+// recover from a browser dialog or a desktop-level interruption. macOS requires
+// Accessibility consent for CGEvent posting; the phone UI stays disabled until
+// this controller reports that consent back to the Go core.
+final class DesktopInputShellController {
+	private let coreURL: String
+	private var lastCommandID: UInt64 = 0
+	private var pollTask: URLSessionDataTask?
+	private var active = false
+	private let session: URLSession = {
+		let cfg = URLSessionConfiguration.ephemeral
+		cfg.timeoutIntervalForRequest = 35
+		cfg.timeoutIntervalForResource = 40
+		return URLSession(configuration: cfg)
+	}()
+
+	init(coreURL: String) { self.coreURL = coreURL }
+
+	func start() {
+		active = true
+		reportTrust()
+		pollOnce()
+	}
+	func stop() { active = false; pollTask?.cancel(); pollTask = nil }
+
+	private func trusted() -> Bool { AXIsProcessTrusted() }
+	private func reportTrust(error: String = "") {
+		guard let url = URL(string: coreURL + "/desktop/input/report") else { return }
+		let body: [String: Any] = [
+			"ready": true,
+			"permission_required": true,
+			"permission_granted": trusted(),
+			"last_error": error,
+		]
+		guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
+		var request = URLRequest(url: url)
+		request.httpMethod = "POST"
+		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+		request.httpBody = data
+		session.dataTask(with: request).resume()
+	}
+
+	private func pollOnce() {
+		guard active, let url = URL(string: "\(coreURL)/desktop/input/poll?after=\(lastCommandID)") else { return }
+		var request = URLRequest(url: url)
+		request.cachePolicy = .reloadIgnoringLocalCacheData
+		request.timeoutInterval = 35
+		pollTask = session.dataTask(with: request) { [weak self] data, response, error in
+			DispatchQueue.main.async {
+				guard let self, self.active else { return }
+				self.pollTask = nil
+				if error == nil, let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+					let data, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+					if let cmd = object["command"] as? [String: Any] { self.handle(cmd) }
+					self.reportTrust()
+					self.pollOnce()
+					return
+				}
+				DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.pollOnce() }
+			}
+		}
+		pollTask?.resume()
+	}
+
+	private func handle(_ command: [String: Any]) {
+		if let n = command["id"] as? NSNumber { lastCommandID = n.uint64Value }
+		let action = command["action"] as? String ?? ""
+		if action == "request_permission" {
+			// The prompt is system-owned and asynchronous. We always report the
+			// current state immediately; a subsequent Check again reaches here too.
+			let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+			_ = AXIsProcessTrustedWithOptions(options)
+			if let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+				NSWorkspace.shared.open(settings)
+			}
+			reportTrust()
+			return
+		}
+		guard trusted() else { reportTrust(error: "accessibility_permission_required"); return }
+		let dx = (command["dx"] as? NSNumber)?.intValue ?? 0
+		let dy = (command["dy"] as? NSNumber)?.intValue ?? 0
+		let text = command["text"] as? String ?? ""
+		do { try inject(action: action, dx: dx, dy: dy, text: text) }
+		catch { reportTrust(error: "input_injection_failed") }
+	}
+
+	private func inject(action: String, dx: Int, dy: Int, text: String) throws {
+		guard let source = CGEventSource(stateID: .hidSystemState) else { throw NSError(domain: "TinyPlay", code: 1) }
+		switch action {
+		case "move":
+			guard let current = CGEvent(source: source) else { throw NSError(domain: "TinyPlay", code: 2) }
+			let point = CGPoint(x: current.location.x + CGFloat(dx), y: current.location.y + CGFloat(dy))
+			CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+		case "left_click", "right_click":
+			guard let current = CGEvent(source: source) else { throw NSError(domain: "TinyPlay", code: 3) }
+			let right = action == "right_click"
+			CGEvent(mouseEventSource: source, mouseType: right ? .rightMouseDown : .leftMouseDown, mouseCursorPosition: current.location, mouseButton: right ? .right : .left)?.post(tap: .cghidEventTap)
+			CGEvent(mouseEventSource: source, mouseType: right ? .rightMouseUp : .leftMouseUp, mouseCursorPosition: current.location, mouseButton: right ? .right : .left)?.post(tap: .cghidEventTap)
+		case "scroll":
+			CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 1, wheel1: Int32(dy), wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+		case "key":
+			guard let code = keyCode(text) else { throw NSError(domain: "TinyPlay", code: 4) }
+			CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
+			CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
+		case "type":
+			guard !text.isEmpty else { return }
+			let units = Array(text.utf16)
+			let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+			down?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+			down?.post(tap: .cghidEventTap)
+			let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+			up?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+			up?.post(tap: .cghidEventTap)
+		default: throw NSError(domain: "TinyPlay", code: 5)
+		}
+	}
+
+	private func keyCode(_ key: String) -> CGKeyCode? {
+		switch key {
+		case "escape": return 53
+		case "enter": return 36
+		case "left": return 123
+		case "right": return 124
+		case "down": return 125
+		case "up": return 126
+		default: return nil
+		}
+	}
+}
+
 /// Native website playback window: persistent cookies via default data store,
 /// native AppKit full-screen Space, shared controller.js injection.
 /// Website mode owns exactly one window and one WKWebView. Selecting a catalog
@@ -997,13 +1144,17 @@ final class WebsiteShellController: NSObject, WKNavigationDelegate, WKUIDelegate
 			webView?.load(URLRequest(url: destination))
 			report(["open": true, "status": "home", "action": "home", "command_id": id])
 		case "login":
-			// Broker-supplied fixed login route only; never phone-provided free-form URL.
-			guard let destination = URL(string: url), !url.isEmpty else {
-				report(["status": "error", "error": "login_unavailable", "action": "login", "command_id": id])
-				return
+			if let destination = URL(string: url), !url.isEmpty {
+				// Broker-supplied fixed login route only; never phone-provided free-form URL.
+				webView?.load(URLRequest(url: destination))
+				report(["open": true, "status": "login", "action": "login", "command_id": id])
+			} else if webView != nil {
+				// A catalog site may use an in-page login modal instead of a fixed
+				// login URL. The shared controller finds the visible control.
+				runDOMAction(action: action, text: text, label: label, commandID: id)
+			} else {
+				report(["status": "error", "error": "window_not_open", "action": "login", "command_id": id])
 			}
-			webView?.load(URLRequest(url: destination))
-			report(["open": true, "status": "login", "action": "login", "command_id": id])
 		case "refresh":
 			webView?.reload()
 			report(["open": true, "status": "refresh", "action": "refresh", "command_id": id])
@@ -1256,6 +1407,9 @@ final class WebsiteShellController: NSObject, WKNavigationDelegate, WKUIDelegate
 					}
 					if let labels = dict["labels"] as? [String] {
 						body["hint_labels"] = labels
+					}
+					if let actions = dict["actions"] as? [String] {
+						body["more_actions"] = actions
 					}
 				} else {
 					body["status"] = "ok"

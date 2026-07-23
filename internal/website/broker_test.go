@@ -16,7 +16,7 @@ func TestBrokerDefaultState(t *testing.T) {
 	if snap.DesiredOpen || snap.ReportedOpen {
 		t.Fatalf("window should start closed: %+v", snap)
 	}
-	if len(snap.Catalog) != 4 {
+	if len(snap.Catalog) != 5 {
 		t.Fatalf("catalog missing from snapshot")
 	}
 	// Snapshot must not expose raw URLs of the live WebView.
@@ -179,6 +179,9 @@ func TestRejectUnknownActionAndText(t *testing.T) {
 	if _, err := b.EnqueueAction(ActionSpeed, "0", ""); !IsInvalid(err) || ErrorCode(err) != "invalid_number" {
 		t.Fatalf("expected out-of-range speed reject, err=%v", err)
 	}
+	if _, err := b.EnqueueAction(ActionVolume, "0", ""); !IsInvalid(err) || ErrorCode(err) != "invalid_number" {
+		t.Fatalf("expected zero volume delta reject, err=%v", err)
+	}
 }
 
 func TestHomeUsesCurrentCatalogRoot(t *testing.T) {
@@ -259,6 +262,28 @@ func TestLoginUsesFixedPerSiteRoutes(t *testing.T) {
 	}
 }
 
+func TestLoginUsesGenericControllerForDouyin(t *testing.T) {
+	b := NewBroker(nil)
+	if _, err := b.RequestOpen(SiteDouyin); err != nil {
+		t.Fatal(err)
+	}
+	open := true
+	b.ApplyReport(Report{Open: &open, CurrentURL: "https://www.douyin.com/"})
+	if _, err := b.EnqueueAction(ActionLogin, "https://evil.example/login", ""); err != nil {
+		t.Fatalf("Douyin login: %v", err)
+	}
+	var login Command
+	for id := uint64(0); id < 10; id++ {
+		if cmd, ok := b.PendingAfter(id); ok && cmd.Action == ActionLogin {
+			login = cmd
+			break
+		}
+	}
+	if login.SiteID != SiteDouyin || login.URL != "" {
+		t.Fatalf("Douyin login must remain an in-page typed command: %+v", login)
+	}
+}
+
 func TestLoginRequiresRecognizedCurrentSite(t *testing.T) {
 	b := NewBroker(nil)
 	if _, err := b.RequestOpen(SiteYouku); err != nil {
@@ -289,6 +314,92 @@ func TestRefreshQueuesOnOpenWindow(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("refresh not queued")
+	}
+}
+
+func TestMoreActionsRequireFreshApprovedCapability(t *testing.T) {
+	b := NewBroker(nil)
+	if _, err := b.RequestOpen(SiteBilibili); err != nil {
+		t.Fatal(err)
+	}
+	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.bilibili.com/video/BV1"})
+
+	// A typed special action is still unavailable until the current page probe
+	// reports it. This prevents stale profile knowledge becoming blind control.
+	unsolicited := b.ApplyReport(Report{
+		Open:        boolPtr(true),
+		Status:      "capabilities",
+		Action:      ActionCapabilities,
+		MoreActions: []string{ActionDanmakuToggle},
+	})
+	if len(unsolicited.MoreActions) != 0 {
+		t.Fatalf("unsolicited capability report accepted: %+v", unsolicited.MoreActions)
+	}
+	if _, err := b.EnqueueAction(ActionDanmakuToggle, "", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
+		t.Fatalf("unprobed danmaku action = %v", err)
+	}
+	if _, err := b.EnqueueAction(ActionCapabilities, "", ""); err != nil {
+		t.Fatalf("capability probe rejected: %v", err)
+	}
+	probe, ok := b.PendingAfter(1)
+	if !ok || probe.Action != ActionCapabilities {
+		t.Fatalf("capability command missing: %+v", probe)
+	}
+	snap := b.ApplyReport(Report{
+		Open:        boolPtr(true),
+		Status:      "capabilities",
+		Action:      ActionCapabilities,
+		CommandID:   probe.ID,
+		MoreActions: []string{"evil", ActionBilibiliLike, ActionDanmakuToggle, ActionBilibiliLike},
+	})
+	if len(snap.MoreActions) != 2 || snap.MoreActions[0].ID != ActionDanmakuToggle || snap.MoreActions[1].ID != ActionBilibiliLike {
+		t.Fatalf("filtered More actions missing: %+v", snap.MoreActions)
+	}
+	if _, err := b.EnqueueAction(ActionDanmakuToggle, "", ""); err != nil {
+		t.Fatalf("approved danmaku action rejected: %v", err)
+	}
+	if _, err := b.EnqueueAction(ActionBilibiliLike, "", ""); err != nil {
+		t.Fatalf("approved bilibili action rejected: %v", err)
+	}
+	if _, err := b.EnqueueAction(ActionBilibiliCoin, "", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
+		t.Fatalf("unreported bilibili action = %v", err)
+	}
+
+	// Any main-document navigation invalidates the page-sensitive result.
+	snap = b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.bilibili.com/"})
+	if len(snap.MoreActions) != 0 {
+		t.Fatalf("navigation retained stale More actions: %+v", snap.MoreActions)
+	}
+	if _, err := b.EnqueueAction(ActionDanmakuToggle, "", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
+		t.Fatalf("stale danmaku action = %v", err)
+	}
+}
+
+func TestMoreActionsCannotCrossSiteBoundary(t *testing.T) {
+	b := NewBroker(nil)
+	if _, err := b.RequestOpen(SiteIQIYI); err != nil {
+		t.Fatal(err)
+	}
+	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.iqiyi.com/v_1.html"})
+	if _, err := b.EnqueueAction(ActionCapabilities, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := b.PendingAfter(1)
+	if !ok || probe.Action != ActionCapabilities {
+		t.Fatalf("capability command missing: %+v", probe)
+	}
+	snap := b.ApplyReport(Report{
+		Open:        boolPtr(true),
+		Status:      "capabilities",
+		Action:      ActionCapabilities,
+		CommandID:   probe.ID,
+		MoreActions: []string{ActionDanmakuToggle},
+	})
+	if len(snap.MoreActions) != 0 {
+		t.Fatalf("iqiyi accepted bilibili capability: %+v", snap.MoreActions)
+	}
+	if _, err := b.EnqueueAction(ActionDanmakuToggle, "", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
+		t.Fatalf("cross-site special action = %v", err)
 	}
 }
 
@@ -593,8 +704,27 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 		t.Fatal("bilibili/iqiyi SITE_KEYS host tests missing")
 	}
 	// Version gate must re-inject after controller upgrades.
-	if !contains(js, "__version >= 12") {
+	if !contains(js, "__version >= 14") {
 		t.Fatal("controller version gate missing")
+	}
+	// More capability contract: only Bilibili advertises the D-key danmaku
+	// action, and the effect must be read back before success is reported.
+	if !containsAll(js, []string{
+		"danmaku_toggle: 'd'",
+		"seek_backward: 'ArrowLeft'",
+		"volume_down: 'ArrowDown'",
+		"fullscreen_exit: 'Escape'",
+		"bilibili_like: 'q'",
+		"bilibili_triple: 'r'",
+		"siteMoreActions",
+		"bilibiliDanmakuState",
+		"triggerBilibiliShortcut",
+		"bilibiliVolumeSignature",
+		"dispatchKeyHold",
+		"capabilities",
+		"after !== before",
+	}) {
+		t.Fatal("Bilibili More capability / oracle markers missing")
 	}
 	// A real DOM fullscreen transition must be forwarded to the Windows host;
 	// WebView2 does not resize its embedding HWND the way standalone Edge does.

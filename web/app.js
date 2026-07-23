@@ -91,8 +91,14 @@ let _supportedFileProtocols = null;
 let _platform = '';
 let _serviceOnline = true;
 let _serviceProbeInFlight = false;
+let _serviceRecoveryInFlight = false;
 let _lastPlaybackDebugAvailable = false;
 let _lastPlaybackDebugScope = '';
+// Desktop-only, global temporary mouse/keyboard. Feature detection keeps this
+// absent from tvOS and older backends without relying on user-agent strings.
+let _desktopInputState = null;
+let _desktopInputAvailable = false;
+let _desktopInputTouchBound = false;
 
 // Active source type drives whether the library tab shows the poster wall
 // (emby/jellyfin/plex) or the file browser (webdav/smb/local/nfs). Set by
@@ -168,15 +174,25 @@ function patchServiceOfflineForDesktop() {
 // appears in source management. Backend owns native window open state + current
 // site id (derived from the real WebView URL, never from last request).
 const WORKSPACE_STORAGE_KEY = 'tvremote.workspace';
-// Workspace is intentionally NOT persisted: every load starts in 'media' so a
-// user who once opened the website source is never silently restored into it.
-// The website source is re-chosen from the source dropdown each session.
-let _workspace = 'media'; // 'media' | 'website' — session-only, not stored
+// Workspace is NOT persisted client-side. The backend is the single source of
+// truth: on load the phone asks /api/activity/state and restores the website
+// workspace when the native window is still open or an open request is pending
+// (e.g. a reload while B站 was playing). A stale localStorage value could strand a
+// user in a workspace whose window no longer exists, so any older stored value
+// is cleared on startup.
+let _workspace = 'media'; // 'media' | 'website' — restored from backend activity
 let _websiteEndpointOK = false; // Go desktop exposes /api/website/*
 let _websiteAvailable = false;  // endpoint OK + resolved language is zh-CN
 let _websiteState = null;
 let _websitePollTimer = null;
 let _websiteCatalog = [];
+let _websiteMoreLoading = false;
+let _websiteMoreDispatching = false;
+let _websiteMoreProbeQueued = false;
+// Activity restoration is allowed until this page makes an explicit workspace
+// choice. This lets an offline-at-boot page recover when the service returns,
+// while never dragging a user back to Website after they chose Media.
+let _workspaceExplicitlySelected = false;
 
 const FALLBACK_WEBSITE_CATALOG = [
   { id: 'bilibili', name: '哔哩哔哩', url: 'https://www.bilibili.com/' },
@@ -219,11 +235,14 @@ function applyWebsiteLanguageGate() {
   paintWorkspace();
 }
 
-async function initWebsiteRemote() {
+async function initWebsiteRemote({ resetWorkspace = true } = {}) {
   // Endpoint exists only on Go desktop; 404 on other backends is fine.
-  // Always begin in media; the workspace is not restored across loads.
-  _workspace = 'media';
-  clearStoredWorkspace();
+  // Begin in media, then let the backend restore the website workspace below if
+  // its native window is still up (see restoreActivityWorkspace).
+  if (resetWorkspace) {
+    _workspace = 'media';
+    clearStoredWorkspace();
+  }
   try {
     const st = await api('GET', '/api/website/state');
     if (st && Array.isArray(st.catalog)) {
@@ -231,13 +250,27 @@ async function initWebsiteRemote() {
       applyWebsiteState(st);
       startWebsitePolling();
       applyWebsiteLanguageGate();
+      await restoreActivityWorkspace();
       return;
     }
   } catch (_) {}
   _websiteEndpointOK = false;
   _websiteAvailable = false;
-  _workspace = 'media';
+  if (resetWorkspace) _workspace = 'media';
   paintWorkspace();
+}
+
+// Restore the website workspace on (re)load when the backend still owns the
+// native window. Runs only at startup/reconnect: the 1.5s poll refreshes state
+// only while already in the website workspace (see startWebsitePolling), so a
+// user who then browses back to the media library is never dragged back to B站.
+async function restoreActivityWorkspace() {
+  if (!_websiteAvailable || _workspaceExplicitlySelected) return;
+  try {
+    const activity = await api('GET', '/api/activity/state');
+    const restoredWorkspace = activity?.surface === 'website' ? 'website' : 'media';
+    setWorkspace(restoredWorkspace, { restoringActivity: true });
+  } catch (_) {}
 }
 
 function startWebsitePolling() {
@@ -264,6 +297,7 @@ function applyWebsiteState(st) {
   maybeToastWebsiteError(st);
   paintWebsiteCatalog();
   paintWebsiteRemote();
+  paintWebsiteMoreSheet();
   paintHeaderActions();
 }
 
@@ -294,8 +328,9 @@ function websiteErrorMessage(err) {
 }
 
 // Switch phone UI workspace only — never opens/closes website or stops mpv.
-function setWorkspace(ws) {
+function setWorkspace(ws, { restoringActivity = false } = {}) {
   if (!_websiteAvailable && ws === 'website') return;
+  if (!restoringActivity) _workspaceExplicitlySelected = true;
   const next = ws === 'website' ? 'website' : 'media';
   _workspace = next;
   closeServerMenu();
@@ -409,7 +444,10 @@ function paintWebsiteRemote() {
   // explicit open/cancel/select handlers.
   syncWebsiteHintSheet(reported && hintActive);
   paintWebsiteHintPending();
-  if (!reported) closeWebsiteSearchSheet();
+  if (!reported) {
+    closeWebsiteSearchSheet();
+    closeWebsiteMoreSheet();
+  }
 
   document.querySelectorAll('.website-control-action').forEach((button) => {
     button.disabled = !reported;
@@ -452,6 +490,126 @@ async function websiteAction(action, extra = {}) {
     toast(e.message || tr('websiteActionFailed'), true);
     return false;
   }
+}
+
+/* ── Website More sheet ───────────────────────────────────────────────────── */
+function websiteMoreIsOpen() {
+  const backdrop = document.getElementById('website-more-backdrop');
+  return !!backdrop && !backdrop.classList.contains('hidden');
+}
+
+async function openWebsiteMoreSheet() {
+  if (!_websiteState?.reported_open || websiteMoreIsOpen()) return;
+  document.getElementById('website-more-backdrop')?.classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  _websiteMoreLoading = true;
+  _websiteMoreDispatching = false;
+  _websiteMoreProbeQueued = false;
+  paintWebsiteMoreSheet();
+  const queued = await websiteAction('capabilities');
+  if (queued) {
+    _websiteMoreProbeQueued = true;
+    const stillPending = _websiteState?.last_action === 'capabilities' && _websiteState?.last_status === 'pending';
+    if (!stillPending) {
+      _websiteMoreLoading = false;
+      _websiteMoreProbeQueued = false;
+    }
+    paintWebsiteMoreSheet();
+  } else {
+    _websiteMoreLoading = false;
+    paintWebsiteMoreSheet();
+  }
+}
+
+function closeWebsiteMoreSheet() {
+  document.getElementById('website-more-backdrop')?.classList.add('hidden');
+  _websiteMoreLoading = false;
+  _websiteMoreDispatching = false;
+  _websiteMoreProbeQueued = false;
+  if (!document.querySelector('.sheet-backdrop:not(.hidden)')) {
+    document.body.classList.remove('sheet-open');
+  }
+}
+
+function onWebsiteMoreBackdropClick(event) {
+  if (event.target.id === 'website-more-backdrop') closeWebsiteMoreSheet();
+}
+
+function paintWebsiteMoreSheet() {
+  if (!websiteMoreIsOpen()) return;
+  const status = document.getElementById('website-more-status');
+  const host = document.getElementById('website-more-actions');
+  if (!status || !host) return;
+
+  const probePending = _websiteState?.last_action === 'capabilities' && _websiteState?.last_status === 'pending';
+  // A main-document navigation cancels the broker's outstanding capability
+  // generation. Treat any non-pending state after the POST returns as final so
+  // the sheet cannot remain stuck on its spinner during a page transition.
+  if (_websiteMoreProbeQueued && !probePending) {
+    _websiteMoreLoading = false;
+    _websiteMoreProbeQueued = false;
+  }
+  const loading = _websiteMoreLoading || probePending;
+  const actions = Array.isArray(_websiteState?.more_actions) ? _websiteState.more_actions : [];
+
+  if (loading) {
+    status.textContent = tr('websiteMoreLoading');
+    status.classList.add('is-loading');
+    host.innerHTML = '';
+    return;
+  }
+
+  status.classList.remove('is-loading');
+  if (!actions.length) {
+    status.textContent = tr('websiteMoreEmpty');
+    host.innerHTML = '';
+    return;
+  }
+
+  status.textContent = '';
+  host.innerHTML = actions.map((action) => {
+    const id = String(action?.id || '');
+    const name = String(action?.name || id);
+    const shortcut = action?.strategy === 'site_shortcut'
+      ? `<span class="website-more-badge">${esc(tr('websiteShortcutBadge'))}</span>`
+      : '';
+    return `
+      <button type="button" class="website-more-action" data-more-action="${esc(id)}"
+              onclick="runWebsiteMoreAction('${jsStr(id)}')" ${_websiteMoreDispatching ? 'disabled' : ''}>
+        <span class="website-more-action-name">${esc(name)}</span>
+        ${shortcut}
+      </button>`;
+  }).join('');
+}
+
+async function runWebsiteMoreAction(actionID) {
+  if (_websiteMoreDispatching) return;
+  const actions = Array.isArray(_websiteState?.more_actions) ? _websiteState.more_actions : [];
+  if (!actions.some((action) => action?.id === actionID)) return;
+  _websiteMoreDispatching = true;
+  paintWebsiteMoreSheet();
+  const queued = await websiteAction(actionID);
+  if (queued) {
+    closeWebsiteMoreSheet();
+  } else {
+    _websiteMoreDispatching = false;
+    paintWebsiteMoreSheet();
+  }
+}
+
+async function websiteMoreAction(action) {
+  closeWebsiteMoreSheet();
+  await websiteAction(action);
+}
+
+function openWebsiteSearchFromMore() {
+  closeWebsiteMoreSheet();
+  openWebsiteSearchSheet();
+}
+
+function openWebsiteHintFromMore() {
+  closeWebsiteMoreSheet();
+  openWebsiteHintSheet();
 }
 
 /* ── Website search sheet ─────────────────────────────────────────────────── */
@@ -575,6 +733,94 @@ function websiteHintKey(sym) {
   });
 }
 
+/* ── Temporary desktop mouse / keyboard ─────────────────────────────────── */
+async function initDesktopInput() {
+  try {
+    const state = await api('GET', '/api/system/input/state');
+    _desktopInputState = state || {};
+    // The Go core is also used headlessly in development. Only show this
+    // desktop-app feature once a native shell has identified itself.
+    _desktopInputAvailable = !!(_desktopInputState.ready || _desktopInputState.permission_required || _desktopInputState.permission_granted);
+    paintDesktopInputEntry();
+    if (!_desktopInputAvailable) setTimeout(initDesktopInput, 1000);
+  } catch (_) {
+    _desktopInputAvailable = false;
+    _desktopInputState = null;
+    paintDesktopInputEntry();
+  }
+}
+function paintDesktopInputEntry() {
+  const entry = document.getElementById('desktop-input-entry');
+  if (!entry) return;
+  entry.classList.toggle('hidden', !_desktopInputAvailable);
+  const status = document.getElementById('desktop-input-entry-status');
+  if (!status || !_desktopInputAvailable) return;
+  status.textContent = _desktopInputState?.permission_required && !_desktopInputState?.permission_granted
+    ? tr('desktopInputPermissionNeeded') : (!_desktopInputState?.ready ? tr('desktopInputConnecting') : tr('desktopInputReady'));
+}
+async function refreshDesktopInputState() {
+  if (!_desktopInputAvailable) return;
+  try {
+    _desktopInputState = await api('GET', '/api/system/input/state');
+    _desktopInputAvailable = !!(_desktopInputState?.ready || _desktopInputState?.permission_required || _desktopInputState?.permission_granted);
+    paintDesktopInputEntry(); paintDesktopInputSheet();
+  } catch (e) { toast(e.message || tr('desktopInputUnavailable'), true); }
+}
+function openDesktopInputSheet() {
+  if (!_desktopInputAvailable) return;
+  document.getElementById('desktop-input-backdrop')?.classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  paintDesktopInputSheet(); bindDesktopInputTouchpad(); refreshDesktopInputState();
+}
+function closeDesktopInputSheet() {
+  document.getElementById('desktop-input-backdrop')?.classList.add('hidden');
+  if (!document.querySelector('.sheet-backdrop:not(.hidden)')) document.body.classList.remove('sheet-open');
+}
+function onDesktopInputBackdropClick(event) { if (event.target.id === 'desktop-input-backdrop') closeDesktopInputSheet(); }
+function paintDesktopInputSheet() {
+  const state = _desktopInputState || {};
+  const permission = !!state.permission_required && !state.permission_granted;
+  const enabled = !!state.ready && !permission;
+  document.getElementById('desktop-input-permission')?.classList.toggle('hidden', !permission);
+  document.getElementById('desktop-input-controls')?.classList.toggle('hidden', !enabled);
+  const help = document.getElementById('desktop-input-help');
+  if (help) help.textContent = permission ? tr('desktopInputPermissionNeeded') : (enabled ? tr('desktopInputHelp') : tr('desktopInputConnecting'));
+}
+async function desktopInputAction(action, extra = {}) {
+  if (!_desktopInputState?.ready || (_desktopInputState.permission_required && !_desktopInputState.permission_granted)) return;
+  try { await api('POST', '/api/system/input/action', { action, ...extra }); }
+  catch (e) { toast(e.message || tr('desktopInputUnavailable'), true); }
+}
+async function requestDesktopInputPermission() {
+  try { await api('POST', '/api/system/input/action', { action: 'request_permission' }); setTimeout(refreshDesktopInputState, 800); }
+  catch (e) { toast(e.message || tr('desktopInputUnavailable'), true); }
+}
+async function checkDesktopInputPermission() {
+  try { await api('POST', '/api/system/input/action', { action: 'request_permission' }); setTimeout(refreshDesktopInputState, 250); }
+  catch (e) { toast(e.message || tr('desktopInputUnavailable'), true); }
+}
+function sendDesktopInputText() {
+  const input = document.getElementById('desktop-input-text'); const text = input?.value || '';
+  if (!text) return; desktopInputAction('type', { text }); input.value = '';
+}
+function bindDesktopInputTouchpad() {
+  if (_desktopInputTouchBound) return;
+  const pad = document.getElementById('desktop-trackpad'); if (!pad) return;
+  _desktopInputTouchBound = true;
+  let previous = null, pending = { dx: 0, dy: 0 }, scheduled = false;
+  const flush = () => { scheduled = false; const delta = pending; pending = { dx: 0, dy: 0 }; if (delta.dx || delta.dy) desktopInputAction('move', delta); };
+  pad.addEventListener('pointerdown', (event) => { previous = { x: event.clientX, y: event.clientY }; pad.setPointerCapture?.(event.pointerId); });
+  pad.addEventListener('pointermove', (event) => {
+    if (!previous) return;
+    pending.dx = Math.max(-500, Math.min(500, pending.dx + Math.round((event.clientX - previous.x) * 1.35)));
+    pending.dy = Math.max(-500, Math.min(500, pending.dy + Math.round((event.clientY - previous.y) * 1.35)));
+    previous = { x: event.clientX, y: event.clientY };
+    if (!scheduled) { scheduled = true; requestAnimationFrame(flush); }
+  });
+  const end = () => { previous = null; if (scheduled) flush(); };
+  pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end);
+}
+
 /* ── Boot ─────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('click', onDocClick);
@@ -593,6 +839,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadActiveSource();
   await loadSettings();
   await initWebsiteRemote();
+  await initDesktopInput();
   fetchSystemVolume();
 });
 
@@ -609,9 +856,30 @@ function setupServiceReachability() {
 }
 
 function setServiceOnline(online) {
+  const recovered = !!online && !_serviceOnline;
   if (_serviceOnline === online && document.getElementById('service-offline-banner')) return;
   _serviceOnline = online;
   renderServiceOfflineBanner();
+  // Any successful API poll can be the first response after a backend restart;
+  // navigator.onLine does not change for that case. Restore state on the actual
+  // offline → online transition instead of depending only on the browser event.
+  if (recovered) queueMicrotask(() => recoverServiceState());
+}
+
+async function recoverServiceState() {
+  if (_serviceRecoveryInFlight) return;
+  _serviceRecoveryInFlight = true;
+  try {
+    await Promise.allSettled([
+      restorePlayerContext(),
+      _fetchAndUpdateProps(),
+      refreshServerSwitcher(),
+      initWebsiteRemote({ resetWorkspace: false }),
+    ]);
+    toast(tr('serviceOnlineAgain'));
+  } finally {
+    _serviceRecoveryInFlight = false;
+  }
 }
 
 function renderServiceOfflineBanner() {
@@ -640,10 +908,6 @@ async function retryServiceConnection() {
     const r = await fetch('/api/player/state', { cache: 'no-store' });
     if (r.ok) {
       setServiceOnline(true);
-      toast(tr('serviceOnlineAgain'));
-      restorePlayerContext().catch(() => {});
-      _fetchAndUpdateProps().catch(() => {});
-      refreshServerSwitcher().catch(() => {});
     } else {
       setServiceOnline(false);
     }
@@ -4320,18 +4584,19 @@ function openServerForm(serverId, sourceType = 'emby') {
     document.getElementById('form-port').value = sourceDefaultPort(sourceType || 'emby', 'http');
     document.getElementById('form-share').value = '';
     document.getElementById('form-root-path').value = '';
+    document.getElementById('form-base-path').value = '';
     document.getElementById('form-domain').value = '';
     document.getElementById('form-token').value = '';
     document.getElementById('form-username').value = '';
-    document.getElementById('form-password').value = '';
+    renderPasswordControl();
     document.getElementById('form-iptv-playlist').value = '';
     document.getElementById('form-iptv-epg').value = '';
     setBackupAddressesVisible(false);
-    resetPasswordReveal();
   };
 
   clearForm();
   if (serverId) {
+    renderPasswordControl();
     const saveButton = document.getElementById('form-save-btn');
     if (saveButton) saveButton.disabled = true;
     document.getElementById('form-status').textContent = tr('loadingSource');
@@ -4351,12 +4616,12 @@ function openServerForm(serverId, sourceType = 'emby') {
       document.getElementById('form-port').value     = s.port || 8096;
       document.getElementById('form-share').value    = s.share || '';
       document.getElementById('form-root-path').value = s.root_path || '';
+      document.getElementById('form-base-path').value = s.base_path || '';
       document.getElementById('form-domain').value   = s.domain || '';
       document.getElementById('form-username').value = s.username || '';
-      document.getElementById('form-password').value = '';
+      renderPasswordControl({ saved: !!s.password_saved });
       document.getElementById('form-iptv-playlist').value = s.playlist_url || '';
       document.getElementById('form-iptv-epg').value = s.epg_url || '';
-      resetPasswordReveal();
       onSourceTypeChange(false);
       const status = document.getElementById('form-status');
       if (status) { status.textContent = ''; status.className = 'form-status'; }
@@ -4379,26 +4644,45 @@ function openServerForm(serverId, sourceType = 'emby') {
   form.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function togglePasswordReveal() {
-  const input = document.getElementById('form-password');
-  const btn = document.getElementById('form-password-reveal');
-  if (!input || !btn) return;
-  const reveal = input.type === 'password';
-  input.type = reveal ? 'text' : 'password';
-  btn.classList.toggle('revealed', reveal);
-  btn.setAttribute('aria-pressed', reveal ? 'true' : 'false');
-  btn.setAttribute('aria-label', tr(reveal ? 'hidePassword' : 'showPassword'));
+function passwordInput() {
+  return document.getElementById('form-password');
 }
 
-function resetPasswordReveal() {
-  const input = document.getElementById('form-password');
-  const btn = document.getElementById('form-password-reveal');
-  if (input) input.type = 'password';
-  if (btn) {
-    btn.classList.remove('revealed');
-    btn.setAttribute('aria-pressed', 'false');
-    btn.setAttribute('aria-label', tr('showPassword'));
+function passwordValueForSave() {
+  const input = passwordInput();
+  return input?.dataset.savedMask === 'true' ? '' : (input?.value || '');
+}
+
+function renderPasswordControl({ saved = false } = {}) {
+  const control = document.getElementById('form-password-control');
+  if (!control) return;
+  control.replaceChildren();
+  const field = document.createElement('div');
+  field.className = 'password-field';
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.id = 'form-password';
+  input.autocomplete = 'off';
+  input.autocapitalize = 'none';
+  input.autocorrect = 'off';
+  input.spellcheck = false;
+  const type = document.getElementById('form-type')?.value || 'emby';
+  input.placeholder = type === 'plex' ? tr('plexPasswordPlaceholder') : '';
+  if (saved) {
+    // This is only a mask, never the stored password. If the user does not
+    // focus it, save omits the field and the stored credential is preserved.
+    input.value = '••••••';
+    input.dataset.savedMask = 'true';
+    input.addEventListener('focus', () => {
+      if (input.dataset.savedMask === 'true') {
+        input.value = '';
+        input.dataset.savedMask = 'false';
+      }
+    }, { once: true });
   }
+  input.addEventListener('input', () => { input.dataset.savedMask = 'false'; });
+  field.append(input);
+  control.append(field);
 }
 
 function closeServerForm() {
@@ -4437,8 +4721,8 @@ function onServerFormBackdropClick(event) {
   if (event.target.id === 'server-form-backdrop') closeServerForm();
 }
 
-function normalizeSourceInput(type, protocol, hosts, port, rootPath = '', share = '') {
-  if (!hosts.length || !/^[a-z][a-z0-9+.-]*:\/\//i.test(hosts[0])) return { protocol, hosts, port, rootPath, share };
+function normalizeSourceInput(type, protocol, hosts, port, rootPath = '', share = '', basePath = '') {
+  if (!hosts.length || !/^[a-z][a-z0-9+.-]*:\/\//i.test(hosts[0])) return { protocol, hosts, port, rootPath, share, basePath };
   try {
     const url = new URL(hosts[0]);
     protocol = type === 'smb' ? protocol : url.protocol.replace(':', '');
@@ -4450,8 +4734,47 @@ function normalizeSourceInput(type, protocol, hosts, port, rootPath = '', share 
       if (!share) share = parts.shift() || '';
       if (!rootPath) rootPath = parts.join('/');
     }
+    if (!isFileSourceType(type) && parts.length) basePath = parts.join('/');
   } catch (_) {}
-  return { protocol, hosts, port, rootPath, share };
+  return { protocol, hosts, port, rootPath, share, basePath };
+}
+
+// A full address is authoritative: turn its scheme, port, and media-server
+// path into the separate persisted fields immediately so the form never shows
+// a misleading HTTP/8096 selection beside an HTTPS URL.
+function syncPrimaryAddressInput() {
+  const input = document.getElementById('form-host0');
+  const type = document.getElementById('form-type')?.value || 'emby';
+  if (!input || !/^[a-z][a-z0-9+.-]*:\/\//i.test(input.value.trim())) return;
+  let normalized;
+  try {
+    normalized = normalizeSourceInput(
+      type,
+      document.querySelector('input[name="proto"]:checked')?.value || 'http',
+      [input.value.trim()],
+      parseInt(document.getElementById('form-port')?.value, 10) || sourceDefaultPort(type),
+      document.getElementById('form-root-path')?.value.trim() || '',
+      document.getElementById('form-share')?.value.trim() || '',
+      document.getElementById('form-base-path')?.value.trim() || ''
+    );
+  } catch (_) { return; }
+  if (!normalized.hosts.length) return;
+  input.value = normalized.hosts[0];
+  document.querySelectorAll('input[name="proto"]').forEach(r => { r.checked = r.value === normalized.protocol; });
+  document.getElementById('form-port').value = normalized.port;
+  if (document.getElementById('form-root-path')) document.getElementById('form-root-path').value = normalized.rootPath;
+  if (document.getElementById('form-share')) document.getElementById('form-share').value = normalized.share;
+  if (document.getElementById('form-base-path')) document.getElementById('form-base-path').value = normalized.basePath;
+}
+
+// Once a normalized host is edited, an old hidden base path must not silently
+// follow it to a different server. A complete URL gets its path back on blur.
+function clearBasePathForPlainAddress() {
+  const input = document.getElementById('form-host0');
+  if (input && !/^[a-z][a-z0-9+.-]*:\/\//i.test(input.value.trim())) {
+    const basePath = document.getElementById('form-base-path');
+    if (basePath) basePath.value = '';
+  }
 }
 
 async function saveAndLogin() {
@@ -4508,7 +4831,7 @@ async function saveAndLogin() {
       : [];
     let port      = networked ? (parseInt(document.getElementById('form-port').value, 10) || sourceDefaultPort(type, protocol)) : 0;
     const username  = document.getElementById('form-username').value.trim();
-    const password  = document.getElementById('form-password').value;
+    const password  = passwordValueForSave();
     // Hidden state carriers: never directly typed, only ever set by the
     // folder picker (or, for share, by SMB's share-enumeration browse step).
     let share       = document.getElementById('form-share').value.trim();
@@ -4554,12 +4877,23 @@ async function saveAndLogin() {
     .map(id => document.getElementById(id).value.trim()).filter(Boolean);
   let port     = parseInt(document.getElementById('form-port').value, 10) || sourceDefaultPort(type, protocol);
   const username = document.getElementById('form-username').value.trim();
-  const password = document.getElementById('form-password').value;
+  const password = passwordValueForSave();
   const token    = document.getElementById('form-token').value.trim();
-  ({ protocol, hosts, port } = normalizeSourceInput(type, protocol, hosts, port));
-  const hasCreds = (username && password) || (type === 'plex' && token);
+  let basePath   = document.getElementById('form-base-path').value.trim();
+  ({ protocol, hosts, port, basePath } = normalizeSourceInput(type, protocol, hosts, port, '', '', basePath));
+  // Jellyfin/Emby guest accounts may intentionally use an empty password
+  // (Jellyfin's public demo does). Plex still needs a password or token.
+  const hasCreds = (type === 'emby' || type === 'jellyfin')
+    ? !!username
+    : (type === 'plex' && (!!token || (!!username && !!password)));
 
   if (!hosts.length){ setStatus(tr('needOneHost'), 'err'); return; }
+  if ((type === 'emby' || type === 'jellyfin') && !username) {
+    const input = document.getElementById('form-username');
+    input?.focus();
+    input?.reportValidity();
+    return;
+  }
   if (!name) name = defaultSourceName(type, hosts[0]);
   const operation = beginServerFormOperation();
   setStatus(tr('saving'));
@@ -4570,7 +4904,7 @@ async function saveAndLogin() {
     if (serverId) {
       // Validate the candidate (using the supplied credential or existing
       // token) before replacing the saved source.
-      const payload = { name, type, protocol, hosts, port, username, validate: true };
+      const payload = { name, type, protocol, hosts, port, base_path: basePath, username, validate: true };
       if (password) payload.password = password;
       if (token) payload.token = token;
       await api('PUT', `/api/servers/${serverId}`, payload, { signal: operation.controller.signal });
@@ -4583,7 +4917,7 @@ async function saveAndLogin() {
       // Adding a new server: the backend only persists it if the login
       // succeeds, so a wrong address/password leaves nothing behind.
       if (hasCreds) setStatus(tr('connectingAndLoggingIn'));
-      const srv = await api('POST', '/api/servers', { name, type, protocol, hosts, port, username, password, token }, { signal: operation.controller.signal });
+      const srv = await api('POST', '/api/servers', { name, type, protocol, hosts, port, base_path: basePath, username, password, token }, { signal: operation.controller.signal });
       id = srv.id;
       setStatus(hasCreds ? tr('loginSuccess') : tr('savedNotLoggedIn'), 'ok');
     }
@@ -4674,8 +5008,14 @@ function onSourceTypeChange(updatePort = true) {
       : (type === 'webdav' ? 'dav.example.com' : tr('mediaHostPlaceholder'));
   }
   const username = document.getElementById('form-username');
-  const password = document.getElementById('form-password');
-  if (username) username.placeholder = type === 'plex' ? tr('plexUsernamePlaceholder') : '';
+  const password = passwordInput();
+  const usernameRequired = type === 'emby' || type === 'jellyfin';
+  if (username) {
+    username.placeholder = type === 'plex' ? tr('plexUsernamePlaceholder') : '';
+    username.required = usernameRequired;
+    username.setAttribute('aria-required', usernameRequired ? 'true' : 'false');
+  }
+  document.getElementById('form-username-required')?.classList.toggle('hidden', !usernameRequired);
   if (password) password.placeholder = type === 'plex' ? tr('plexPasswordPlaceholder') : '';
   _setText('form-token-hint', tr('plexTokenHint'));
   if (updatePort && !iptvSource && !networkless) {

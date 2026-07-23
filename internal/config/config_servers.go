@@ -17,6 +17,7 @@ type ServerPatch struct {
 	Protocol    *string   `json:"protocol"`
 	Hosts       *[]string `json:"hosts"`
 	Port        *int      `json:"port"`
+	BasePath    *string   `json:"base_path"`
 	Share       *string   `json:"share"`
 	Domain      *string   `json:"domain"`
 	RootPath    *string   `json:"root_path"`
@@ -41,6 +42,9 @@ func (p ServerPatch) apply(s *Server) {
 	}
 	if p.Port != nil {
 		s.Port = *p.Port
+	}
+	if p.BasePath != nil {
+		s.BasePath = strings.Trim(*p.BasePath, "/ ")
 	}
 	if p.Share != nil {
 		s.Share = strings.TrimSpace(*p.Share)
@@ -254,7 +258,10 @@ func IsFileServerType(kind string) bool {
 
 // ── URL helpers ──────────────────────────────────────────────────────────────
 
-// BuildServerURL builds protocol://host:port for the active host.
+// BuildServerURL builds the active server's HTTP(S) URL, including an optional
+// reverse-proxy base path. A legacy/direct API client may still pass a complete
+// URL in Hosts; parse that at this boundary so every caller follows the same
+// scheme, port, and path precedence as the phone form.
 func BuildServerURL(s *Server) string {
 	if s == nil || len(s.Hosts) == 0 {
 		return ""
@@ -263,19 +270,44 @@ func BuildServerURL(s *Server) string {
 	if idx < 0 || idx >= len(s.Hosts) {
 		idx = 0
 	}
+	rawHost := strings.TrimSpace(s.Hosts[idx])
 	proto := s.Protocol
 	if proto == "" {
 		proto = "http"
 	}
 	port := s.Port
+	basePath := strings.Trim(s.BasePath, "/ ")
+	if parsed, err := url.Parse(rawHost); err == nil && parsed.Scheme != "" && parsed.Hostname() != "" {
+		proto = strings.ToLower(parsed.Scheme)
+		rawHost = parsed.Hostname()
+		if parsed.Port() != "" {
+			port, _ = strconv.Atoi(parsed.Port())
+		} else if proto == "https" {
+			port = 443
+		} else if proto == "http" {
+			port = 80
+		}
+		if basePath == "" {
+			basePath = strings.Trim(parsed.EscapedPath(), "/ ")
+		}
+	}
+	if proto != "http" && proto != "https" {
+		return ""
+	}
 	if port == 0 {
-		if NormalizeServerType(s.Type) == "plex" {
+		if proto == "https" {
+			port = 443
+		} else if NormalizeServerType(s.Type) == "plex" {
 			port = 32400
 		} else {
 			port = 8096
 		}
 	}
-	return proto + "://" + s.Hosts[idx] + ":" + strconv.Itoa(port)
+	base := proto + "://" + rawHost + ":" + strconv.Itoa(port)
+	if basePath == "" {
+		return base
+	}
+	return base + "/" + basePath
 }
 
 func defaultServerName(s *Server) string {
@@ -342,6 +374,9 @@ func mergeServer(dst *Server, in Server) {
 	}
 	if in.Port != 0 {
 		dst.Port = in.Port
+	}
+	if in.BasePath != "" {
+		dst.BasePath = strings.Trim(in.BasePath, "/ ")
 	}
 	if in.Share != "" {
 		dst.Share = strings.TrimSpace(in.Share)

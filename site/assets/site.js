@@ -4,45 +4,65 @@
 
   var messages = {};
   messages[ZH] = {
-    page_title: 'TinyPlay — 榨干小主机，也把它变成客厅播放器',
-    meta_description: 'TinyPlay：把接在电视上的 Windows 电脑或 Mac 变成由手机遥控的客厅播放器。',
-    og_title: 'TinyPlay — 手机是遥控器，电脑负责播放。',
-    og_description: '把接在电视上的电脑变成由手机遥控的客厅播放器。',
+    page_title: 'TinyPlay — 闲置 PC，接管电视',
+    meta_description: 'TinyPlay：让闲置 Windows PC 或 Mac 接上电视，用手机控制 Jellyfin、NAS 文件、IPTV 和支持的网站播放。',
+    og_title: 'TinyPlay — 闲置 PC，接管电视',
+    og_description: '手机遥控，电脑接电视播放。Jellyfin、NAS 文件和 IPTV 都能接进来。',
     nav_why: '为什么',
     nav_features: '功能',
     nav_choose: '选购指南',
     nav_guide: '使用指南',
+    guide_path: 'guide/',
     nav_appletv: 'Apple TV 即将推出',
-    nav_download: '下载',
-    hero_eyebrow: '手机控制，电脑播放',
-    hero_title: '手机是遥控器，<br><em>电脑负责播放。</em>',
-    hero_lead: '让接在电视上的 Windows 电脑或 Mac 处理播放；你只管用手机选片、拖进度、切字幕。无需安装手机 App，所有操作都留在家庭局域网。',
-    btn_download_app: '下载 macOS / Windows <span>↗</span>',
+    nav_download: '下载 <span class="nav-platform">macOS / Windows</span><span class="free-badge">免费</span>',
+    hero_eyebrow: '把小主机变成客厅播放器 HTPC',
+    hero_title: '可能比<em>电视盒子</em><br>更好用',
+    hero_lead: '把闲置的 Windows 小主机或 Mac mini 接上电视。手机扫码即可选电影、拖进度、切字幕、调倍速。没有复杂的插件系统和电视端菜单。打开手机，找到想看的，剩下的交给接电视的电脑。',
+    btn_download_app: '下载 macOS / Windows <span class="free-badge">免费</span><span>↗</span>',
+    btn_read_guide: '使用指南',
     btn_view_appletv: 'Apple TV 版 · 即将推出',
-    platform_win: 'Windows x86-64',
-    platform_mac: 'macOS Apple Silicon / Intel',
+    platform_win: 'Windows 10+',
+    platform_mac: 'macOS 13+',
     platform_phone: '手机无需安装 App',
+    hero_tags_label: '支持的内容入口',
+    hero_tag_media_servers: 'Jellyfin / Emby / Plex',
+    hero_tag_local_files: '本地文件 / NFS',
+    hero_tag_network_shares: 'SMB / WebDAV',
+    hero_tag_iptv: 'IPTV',
+    hero_tag_dlna: 'DLNA',
+    hero_tag_chinese_video: 'B站 / 爱 / 优 / 腾',
     signal_lan: '局域网已连接',
     signal_room: '客厅播放器',
-    why_title: '已有的电脑，<br>也能成为好用的电视播放器。',
-    why1_title: '不必先买新硬件',
-    why1_body: '常年开着的 x86 小主机（如 NUC）、Mac，甚至闲置的 Windows 笔记本，都可能胜任。只要它能稳定输出画面，并满足你片源所需的解码能力，就能把 HDMI 接到电视。',
-    why2_title: '但"能播放"不等于"好控制"',
-    why2_body: '电脑接上电视很简单，真正麻烦的是窝在沙发里选片、拖进度、切字幕：键盘鼠标不属于客厅，远程桌面又太重。',
-    why3_title: '于是有了 TinyPlay',
-    why3_body: '选片、拖进度条、切换字幕与倍速，全部挪到手机上完成。电脑连接媒体库、文件夹或直播源，再把播放交给随应用附带的 mpv；你不需要了解 mpv，只需让电脑处理格式兼容性。',
-    features_eyebrow: 'FOUR ENTRANCES, ONE REMOTE',
-    features_title: '四种内容入口，<br>一套手机遥控器。',
-    features_lead: '无论内容在哪里，播放都留在接电视的电脑上；浏览、选择和控制都在你的手机里完成。',
-    feature1_title: '媒体库',
-    feature1_body: '连接 Emby、Jellyfin 或 Plex，浏览海报、剧集与继续观看。',
-    feature2_title: '文件夹',
-    feature2_body: '从本机、已挂载目录、SMB 或 WebDAV 中浏览和播放。',
-    feature3_title: 'IPTV',
-    feature3_body: '导入已有的 M3U/M3U8 播放列表，配合 XMLTV 查看节目。',
-    feature4_title: 'DLNA 投屏',
-    feature4_body: '让局域网内支持 DLNA 的应用把内容投到这台电脑上。',
-    product_note: '暂停、跳转、倍速、音轨、字幕和画面控制始终使用同一套遥控器。播放由随应用附带的 mpv 完成。',
+    why_title: '客厅不该在自由和好用之间<br>二选一。',
+    why1_title: '电视盒子很省心，但不一定够自由',
+    why1_body: '想用电脑端软件、NAS、媒体服务器或自己的直播源时，电视盒子往往又多了一层限制。',
+    why2_title: '小主机很自由，但不该靠键盘鼠标',
+    why2_body: '电脑接电视能做很多事，问题是它原本不是为沙发上的选片、搜索和拖进度设计的。',
+    why3_title: 'TinyPlay 补上中间这一环',
+    why3_body: '手机给你现代、顺手的控制界面；小主机继续负责内容、播放和格式兼容。',
+    feature_content_eyebrow: '内容入口，都在手机里',
+    feature_content_title: '媒体库 & IPTV',
+    feature_content_desc: '从 Emby、Jellyfin、Plex 和文件夹中找片，或导入 M3U/M3U8 直播频道。选好以后，手机接着就是遥控器。',
+    content_showcase_label: 'TinyPlay 手机界面预览',
+    content_tabs_label: '选择界面预览',
+    content_tab_library: '媒体库',
+    content_tab_iptv: 'IPTV',
+    content_tab_remote: '遥控器',
+    feature_web_eyebrow: '手机控制在线视频',
+    feature_web_beta: '中文 Beta',
+    feature_web_title: '在线视频',
+    feature_web_desc: '创新的手机 / 电脑 Vim 联动：不用鼠标，也能快速选视频、控制播放、调倍速。',
+    feature_web_note: '* 仍需在电脑端登录账号；能看什么、能不能跳广告，取决于平台和你的会员。',
+    feature_dlna_eyebrow: '接收局域网投屏',
+    feature_dlna_title: 'DLNA 接收器',
+    feature_dlna_desc: '让这台接电视的电脑，出现在局域网应用的投屏设备列表里。',
+    feature_placeholder_label: '素材待补',
+    feature_web_placeholder: '在线视频控制界面',
+    feature_iptv_placeholder: 'IPTV 频道界面',
+    feature_dlna_placeholder: 'DLNA 投屏界面',
+    iptv_image_alt: 'TinyPlay 手机上的 IPTV 频道界面',
+    dlna_image_alt: '手机选择 TinyPlay 作为 DLNA 接收器',
+    online_video_image_alt: '手机控制电脑端在线视频播放',
     hero_image_alt: '手机控制连接电视的电脑播放内容',
     remote_image_alt: 'TinyPlay 手机遥控器界面',
     library_image_alt: 'TinyPlay 手机媒体库界面',
@@ -113,18 +133,22 @@
     v4_body: '适合把本地影视播放作为主要用途、偏好独立影音设备的人。',
     guide_note: '实际 HDR、Dolby Vision 与音频能力会随芯片、操作系统、驱动、播放器、片源封装和影音设备而变化，购买前请以具体设备规格为准。',
     download_title: '让那台小主机，<br>今晚就接管电视。',
-    download_platforms: 'Windows x86-64 · macOS Apple Silicon / Intel',
+    download_platforms: 'Windows 10+ / macOS 13+',
+    download_atv_title: 'Apple TV 版',
+    download_atv_badge: '即将推出',
     footer_tagline: 'Turn the little box into the big screen.',
     footer_license: 'GPL-3.0 License',
     appletv_modal_title: 'Apple TV 版本',
-    appletv_modal_body: '正在开发中，敬请期待。',
+    appletv_modal_body: '原生 Apple TV 版本正在准备中，上线后可直接在 App Store 获取。',
     appletv_modal_close: '好的',
 
     guide_page_title: '使用指南 — TinyPlay',
     guide_meta_description: 'TinyPlay 使用指南：已有媒体服务器、直接播放文件，或搭建一个媒体库，从适合你的方式开始。',
     guide_back_home: '← 返回首页',
+    guide_doc_label: 'TINYPLAY 文档',
+    guide_toc_title: '目录',
     guide_eyebrow: 'GETTING STARTED',
-    guide_title: '从这里开始，找到适合你的接入方式',
+    guide_title: '使用指南',
     guide_lead: '无论你已经在用 NAS，还是只想播放电脑里的一个文件夹，都能很快让 TinyPlay 跑起来。先找到和你当前情况最接近的一项。',
 
     guide_nav1_tag: '情况一',
@@ -177,45 +201,65 @@
     guide_cta_button: '下载 macOS / Windows',
   };
   messages[EN] = {
-    page_title: 'TinyPlay — squeeze out your mini PC, turn it into a living-room player',
-    meta_description: 'TinyPlay turns the Windows PC or Mac connected to your TV into a phone-controlled living-room player.',
-    og_title: 'TinyPlay — Your phone is the remote. Your computer does the playing.',
-    og_description: 'Turn the computer connected to your TV into a phone-controlled living-room player.',
+    page_title: 'TinyPlay — Let an idle PC take over the TV',
+    meta_description: 'TinyPlay turns an idle Windows PC or Mac into a phone-controlled TV player for Jellyfin, NAS folders, IPTV, and more.',
+    og_title: 'TinyPlay — Let an idle PC take over the TV',
+    og_description: 'Control the computer connected to your TV from your phone. Bring Jellyfin, NAS folders, and IPTV together.',
     nav_why: 'Why',
     nav_features: 'Features',
     nav_choose: 'Buying guide',
     nav_guide: 'Getting started',
+    guide_path: 'guide/en/',
     nav_appletv: 'Apple TV coming soon',
-    nav_download: 'Download',
-    hero_eyebrow: 'Phone control, computer playback',
-    hero_title: 'Your phone is the remote.<br><em>The computer does the playing.</em>',
-    hero_lead: 'Let the Windows PC or Mac connected to your TV handle playback. Pick a title, scrub, and switch subtitles from your phone — no phone app required, all on your home LAN.',
-    btn_download_app: 'Download macOS / Windows <span>↗</span>',
+    nav_download: 'Download <span class="nav-platform">macOS / Windows</span><span class="free-badge">FREE</span>',
+    hero_eyebrow: 'TURN A MINI PC INTO AN HTPC',
+    hero_title: 'Maybe better than<br><em>a streaming box.</em>',
+    hero_lead: 'Connect a spare Windows PC or Mac mini to your TV. Scan the QR code to browse, seek, switch subtitles, and change playback speed. No plugin maze, no TV-first menus. Find what you want on your phone and let the PC handle playback.',
+    btn_download_app: 'Download macOS / Windows <span class="free-badge">FREE</span><span>↗</span>',
+    btn_read_guide: 'Getting started',
     btn_view_appletv: 'Apple TV · coming soon',
-    platform_win: 'Windows x86-64',
-    platform_mac: 'macOS Apple Silicon / Intel',
+    platform_win: 'Windows 10+',
+    platform_mac: 'macOS 13+',
     platform_phone: 'No app needed on your phone',
+    hero_tags_label: 'Supported content entry points',
+    hero_tag_media_servers: 'Jellyfin / Emby / Plex',
+    hero_tag_local_files: 'Local files / NFS',
+    hero_tag_network_shares: 'SMB / WebDAV',
+    hero_tag_iptv: 'IPTV',
+    hero_tag_dlna: 'DLNA',
+    hero_tag_chinese_video: 'Chinese online video',
     signal_lan: 'Connected on LAN',
     signal_room: 'Living-room player',
-    why_title: 'The computer you already have<br>can be a great TV player too.',
-    why1_title: 'You may not need new hardware',
-    why1_body: 'An always-on x86 mini PC (such as a NUC), Mac, or even an unused Windows laptop may be enough. If it can output reliably and decode your media, connect its HDMI port to the TV.',
-    why2_title: '"Can play" isn’t "easy to control"',
-    why2_body: 'Plugging a computer into the TV is the easy part. The annoying part is picking a title, scrubbing, switching subtitles from the couch: a keyboard and mouse don’t belong in the living room, and remote desktop is overkill.',
-    why3_title: 'So we built TinyPlay',
-    why3_body: 'Picking a title, scrubbing, switching subtitles and speed all move to your phone. The computer connects to a library, folders, or a live-TV source, then hands playback to the bundled mpv. You do not need to know what mpv is — just let the computer handle format compatibility.',
-    features_eyebrow: 'FOUR ENTRANCES, ONE REMOTE',
-    features_title: 'Four ways in.<br>One phone remote.',
-    features_lead: 'No matter where your media lives, playback stays on the computer connected to the TV; browsing, choosing, and controlling happen on your phone.',
-    feature1_title: 'Media libraries',
-    feature1_body: 'Connect Emby, Jellyfin, or Plex for posters, episodes, and continue watching.',
-    feature2_title: 'Folders',
-    feature2_body: 'Browse and play from local folders, mounted paths, SMB, or WebDAV.',
-    feature3_title: 'IPTV',
-    feature3_body: 'Import an existing M3U/M3U8 playlist and add XMLTV for programme information.',
-    feature4_title: 'DLNA casting',
-    feature4_body: 'Let DLNA-capable apps on your LAN cast directly to this computer.',
-    product_note: 'Pause, seek, speed, audio, subtitles, and picture controls always use the same remote. Playback is handled by bundled mpv.',
+    why_title: 'The living room should not make you choose<br>between freedom and ease.',
+    why1_title: 'TV boxes are simple, but not always flexible',
+    why1_body: 'When you want desktop software, NAS folders, media servers, or your own live sources, a TV box can become one limitation too many.',
+    why2_title: 'Mini PCs are flexible, but should not need a keyboard and mouse',
+    why2_body: 'A computer connected to the TV can do a lot. It just was not designed to browse, search, and scrub from the couch.',
+    why3_title: 'TinyPlay fills the gap',
+    why3_body: 'Your phone gives you a modern, familiar control surface. Your mini PC keeps handling content, playback, and format compatibility.',
+    feature_content_eyebrow: 'YOUR CONTENT, ONE PHONE',
+    feature_content_title: 'Library & IPTV',
+    feature_content_desc: 'Find something through Emby, Jellyfin, Plex, or your folders, or bring in live channels with an M3U/M3U8 playlist. Once you choose, your phone becomes the remote.',
+    content_showcase_label: 'TinyPlay phone interface preview',
+    content_tabs_label: 'Choose an interface preview',
+    content_tab_library: 'Library',
+    content_tab_iptv: 'IPTV',
+    content_tab_remote: 'Remote',
+    feature_web_eyebrow: 'CONTROL ONLINE VIDEO FROM YOUR PHONE',
+    feature_web_beta: 'Chinese beta',
+    feature_web_title: 'Online video',
+    feature_web_desc: 'An innovative Vim-style link between your phone and computer: pick videos, control playback, and change speed without reaching for the mouse.',
+    feature_web_note: '* You still sign in on the computer. What you can watch and whether ads can be skipped depend on the platform and your subscription.',
+    feature_dlna_eyebrow: 'RECEIVE LAN CASTING',
+    feature_dlna_title: 'DLNA receiver',
+    feature_dlna_desc: 'Make the computer connected to your TV appear in the casting list of DLNA-capable apps on your LAN.',
+    feature_placeholder_label: 'ARTWORK TO COME',
+    feature_web_placeholder: 'Online-video control interface',
+    feature_iptv_placeholder: 'IPTV channel interface',
+    feature_dlna_placeholder: 'DLNA casting interface',
+    iptv_image_alt: 'TinyPlay IPTV channel interface on a phone',
+    dlna_image_alt: 'A phone selecting TinyPlay as a DLNA receiver',
+    online_video_image_alt: 'A phone controlling online video on a computer',
     hero_image_alt: 'A phone controlling content played by a computer connected to a TV',
     remote_image_alt: 'TinyPlay phone remote interface',
     library_image_alt: 'TinyPlay phone media-library interface',
@@ -286,18 +330,22 @@
     v4_body: 'For people whose main use is local-media playback and who prefer a dedicated device.',
     guide_note: 'Actual HDR, Dolby Vision, and audio capabilities vary by chip, OS, driver, player, source container, and AV equipment. Check your exact hardware’s specs before buying.',
     download_title: 'Let that mini PC<br>take over the TV tonight.',
-    download_platforms: 'Windows x86-64 · macOS Apple Silicon / Intel',
+    download_platforms: 'Windows 10+ / macOS 13+',
+    download_atv_title: 'Apple TV edition',
+    download_atv_badge: 'COMING SOON',
     footer_tagline: 'Turn the little box into the big screen.',
     footer_license: 'GPL-3.0 License',
     appletv_modal_title: 'Apple TV version',
-    appletv_modal_body: 'In development — stay tuned.',
+    appletv_modal_body: 'The native Apple TV edition is in the works and will be available from the App Store.',
     appletv_modal_close: 'Got it',
 
     guide_page_title: 'Getting Started — TinyPlay',
     guide_meta_description: 'A TinyPlay getting-started guide for existing media servers, direct folder playback, and setting up a media library.',
     guide_back_home: '← Back to home',
+    guide_doc_label: 'TINYPLAY DOCS',
+    guide_toc_title: 'Contents',
     guide_eyebrow: 'GETTING STARTED',
-    guide_title: 'Start here — find the setup that fits you',
+    guide_title: 'Getting started',
     guide_lead: 'Whether you already use a NAS or only want to play one folder from your computer, TinyPlay can be running quickly. Start with the situation closest to yours.',
 
     guide_nav1_tag: 'Situation one',
@@ -432,5 +480,43 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     applyLang(detectLang());
+    document.querySelectorAll('.content-showcase').forEach(function (showcase) {
+      var section = showcase.closest('.feature-section--content');
+      var buttons = section ? section.querySelectorAll('[data-content-screen]') : [];
+
+      function setActiveScreen(screen) {
+        showcase.setAttribute('data-active-screen', screen);
+        buttons.forEach(function (item) {
+          item.setAttribute('aria-pressed', item.getAttribute('data-content-screen') === screen ? 'true' : 'false');
+        });
+      }
+
+      buttons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          setActiveScreen(button.getAttribute('data-content-screen'));
+        });
+      });
+
+      function updateOnScroll() {
+        if (!section || window.innerWidth <= 900) return;
+        var rect = section.getBoundingClientRect();
+        var scrollRange = Math.max(1, section.offsetHeight - window.innerHeight);
+        var progress = Math.min(1, Math.max(0, -rect.top / scrollRange));
+        var screens = ['library', 'iptv', 'remote'];
+        setActiveScreen(screens[Math.min(screens.length - 1, Math.floor(progress * screens.length))]);
+      }
+
+      var scrollQueued = false;
+      window.addEventListener('scroll', function () {
+        if (scrollQueued) return;
+        scrollQueued = true;
+        window.requestAnimationFrame(function () {
+          scrollQueued = false;
+          updateOnScroll();
+        });
+      }, { passive: true });
+      window.addEventListener('resize', updateOnScroll);
+      updateOnScroll();
+    });
   });
 })();

@@ -199,6 +199,12 @@
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteSeekForward"
                         onclick="websiteAction('seek', {text:'10'})">Forward</button>
               </div>
+              <div class="website-row website-row-2">
+                <button type="button" class="website-btn website-control-action" data-i18n="volumeDown"
+                        onclick="websiteAction('volume', {text:'-10'})">Volume down</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="volumeUp"
+                        onclick="websiteAction('volume', {text:'10'})">Volume up</button>
+              </div>
             </div>
 
             <!-- 倍速 -->
@@ -226,24 +232,13 @@
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteScrollDown" onclick="websiteAction('scroll_down')">Scroll Down</button>
               </div>
               <div class="website-row website-row-1">
-                <button type="button" class="website-btn website-btn-accent website-control-action" id="website-btn-hint-enter"
-                        data-i18n="websiteClickPage" onclick="openWebsiteHintSheet()">Select page element</button>
-              </div>
-            </div>
-
-            <!-- 其他 -->
-            <div class="website-section">
-              <div class="website-section-title" data-i18n="websiteOtherSection">More</div>
-              <div class="website-row website-row-3">
-                <button type="button" class="website-btn website-control-action" id="website-btn-home" data-i18n="websiteHome" onclick="websiteAction('home')">Home</button>
-                <button type="button" class="website-btn website-control-action" data-i18n="websiteBack" onclick="websiteAction('back')">Back</button>
-                <button type="button" class="website-btn website-control-action" data-i18n="websiteForward" onclick="websiteAction('forward')">Forward</button>
-              </div>
-              <div class="website-row website-row-3">
-                <button type="button" class="website-btn website-control-action" id="website-btn-login" data-i18n="websiteLogin" onclick="websiteAction('login')">Login</button>
-                <button type="button" class="website-btn website-btn-primary website-control-action" data-i18n="websiteSearch"
-                        onclick="openWebsiteSearchSheet()">Search</button>
-                <button type="button" class="website-btn website-control-action" data-i18n="websiteRefresh" onclick="websiteAction('refresh')">Refresh</button>
+                <button type="button" class="website-btn website-more-trigger website-control-action" id="website-btn-more"
+                        onclick="openWebsiteMoreSheet()" aria-haspopup="dialog">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>
+                  </svg>
+                  <span data-i18n="websiteMore">More</span>
+                </button>
               </div>
             </div>
           </div>
@@ -488,6 +483,24 @@
     <!-- Settings tab -->
     <div class="main-panel" id="tab-settings">
       <div class="settings-page">
+        <!-- Desktop-only feature: hidden automatically when a backend does not
+             expose the typed native-input endpoint (for example, tvOS). -->
+        <section class="settings-card desktop-input-entry hidden" id="desktop-input-entry">
+          <button type="button" class="desktop-input-entry-btn" onclick="openDesktopInputSheet()">
+            <span class="desktop-input-entry-icon" aria-hidden="true">
+              <!-- Lucide Mouse icon (MIT); keep Web icons local and inline. -->
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="18" height="20" x="3" y="2" rx="9"/>
+                <path d="M12 6v4"/>
+              </svg>
+            </span>
+            <span class="desktop-input-entry-copy">
+              <strong data-i18n="desktopInputTitle">Temporary mouse</strong>
+              <small id="desktop-input-entry-status" data-i18n="desktopInputReady">Control this computer's mouse and keyboard</small>
+            </span>
+            <span class="desktop-input-entry-arrow" aria-hidden="true">›</span>
+          </button>
+        </section>
         <section class="settings-card">
           <div class="settings-card-head">
             <h2 data-i18n="seekSettings">Seek time</h2>
@@ -565,6 +578,47 @@
       </div>
     </div>
 
+    <!-- Global temporary desktop-control sheet. It deliberately lives outside
+         the Website workspace: this controls the whole set-top-box desktop. -->
+    <div class="sheet-backdrop hidden" id="desktop-input-backdrop" onclick="onDesktopInputBackdropClick(event)">
+      <section class="video-sheet desktop-input-sheet sheet-tall" role="dialog" aria-modal="true" aria-labelledby="desktop-input-title">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3 id="desktop-input-title" data-i18n="desktopInputTitle">Temporary mouse</h3>
+          <p class="desktop-input-help" id="desktop-input-help"></p>
+        </div>
+        <div class="desktop-input-permission hidden" id="desktop-input-permission">
+          <p data-i18n="desktopInputPermissionHelp">Allow TinyPlay in Accessibility to control this Mac from your phone.</p>
+          <button class="website-btn website-btn-primary" type="button" onclick="requestDesktopInputPermission()" data-i18n="desktopInputOpenSettings">Open System Settings</button>
+          <button class="website-btn" type="button" onclick="checkDesktopInputPermission()" data-i18n="desktopInputCheckAgain">Check again</button>
+        </div>
+        <div class="desktop-input-controls hidden" id="desktop-input-controls">
+          <div class="desktop-trackpad" id="desktop-trackpad" aria-label="Touchpad">
+            <span data-i18n="desktopInputTrackpadHint">Slide to move the mouse</span>
+          </div>
+          <div class="desktop-input-buttons">
+            <button type="button" onclick="desktopInputAction('left_click')" data-i18n="desktopInputLeftClick">Left click</button>
+            <button type="button" onclick="desktopInputAction('right_click')" data-i18n="desktopInputRightClick">Right click</button>
+          </div>
+          <div class="desktop-input-buttons desktop-input-buttons-3">
+            <button type="button" onclick="desktopInputAction('key',{text:'escape'})">Esc</button>
+            <button type="button" onclick="desktopInputAction('key',{text:'enter'})">Enter</button>
+            <button type="button" onclick="desktopInputAction('scroll',{dy:-36})" data-i18n="desktopInputScrollUp">Scroll up</button>
+          </div>
+          <div class="desktop-input-arrow-keys" aria-label="Arrow keys">
+            <button type="button" onclick="desktopInputAction('key',{text:'up'})">↑</button>
+            <button type="button" onclick="desktopInputAction('key',{text:'left'})">←</button>
+            <button type="button" onclick="desktopInputAction('key',{text:'down'})">↓</button>
+            <button type="button" onclick="desktopInputAction('key',{text:'right'})">→</button>
+          </div>
+          <div class="desktop-input-type-row">
+            <input type="text" id="desktop-input-text" data-i18n-placeholder="desktopInputTextPlaceholder" placeholder="Type text to the focused app" enterkeyhint="send">
+            <button type="button" onclick="sendDesktopInputText()" data-i18n="desktopInputSend">Send</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
     <!-- Video detail sheet -->
     <div class="sheet-backdrop hidden" id="video-sheet-backdrop" onclick="onSheetBackdropClick(event)">
       <section class="video-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
@@ -640,6 +694,43 @@
           <button class="speed-row-btn" data-speed="2"    onclick="setSpeed(2);closeSpeedSheet()"><span>2×</span></button>
           <button class="speed-row-btn" data-speed="2.5"  onclick="setSpeed(2.5);closeSpeedSheet()"><span>2.5×</span></button>
           <button class="speed-row-btn" data-speed="3"    onclick="setSpeed(3);closeSpeedSheet()"><span>3×</span></button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Website More sheet: page-sensitive site actions + universal navigation -->
+    <div class="sheet-backdrop hidden" id="website-more-backdrop" onclick="onWebsiteMoreBackdropClick(event)">
+      <section class="video-sheet media-select-sheet website-more-sheet" role="dialog" aria-modal="true" aria-labelledby="website-more-title">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3 id="website-more-title" data-i18n="websiteMoreTitle">More controls</h3>
+        </div>
+        <div class="website-sheet-body website-more-body">
+          <p class="website-more-hint" data-i18n="websiteMoreHint">Available controls are detected from the page currently shown on TV.</p>
+
+          <div class="website-more-section">
+            <div class="website-section-title" data-i18n="websiteSiteActions">Current website</div>
+            <div class="website-more-status" id="website-more-status" aria-live="polite"></div>
+            <div class="website-more-actions" id="website-more-actions"></div>
+          </div>
+
+          <div class="website-more-section">
+            <div class="website-section-title" data-i18n="websiteNavSection">Navigation</div>
+            <div class="website-row website-row-3">
+              <button type="button" class="website-btn website-control-action" id="website-btn-home" data-i18n="websiteHome" onclick="websiteMoreAction('home')">Home</button>
+              <button type="button" class="website-btn website-control-action" data-i18n="websiteBack" onclick="websiteMoreAction('back')">Back</button>
+              <button type="button" class="website-btn website-control-action" data-i18n="websiteForward" onclick="websiteMoreAction('forward')">Forward</button>
+            </div>
+            <div class="website-row website-row-3">
+              <button type="button" class="website-btn website-control-action" id="website-btn-login" data-i18n="websiteLogin" onclick="websiteMoreAction('login')">Login</button>
+              <button type="button" class="website-btn website-btn-primary website-control-action" data-i18n="websiteSearch" onclick="openWebsiteSearchFromMore()">Search</button>
+              <button type="button" class="website-btn website-control-action" data-i18n="websiteRefresh" onclick="websiteMoreAction('refresh')">Refresh</button>
+            </div>
+            <div class="website-row website-row-1">
+              <button type="button" class="website-btn website-btn-accent website-control-action" id="website-btn-hint-enter"
+                      data-i18n="websiteClickPage" onclick="openWebsiteHintFromMore()">Select page element</button>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -851,13 +942,14 @@
         <div class="server-form-content" id="server-form">
           <input type="hidden" id="form-server-id">
           <input type="hidden" id="form-type" value="emby">
+          <input type="hidden" id="form-base-path">
           <input type="hidden" id="form-root-path">
           <div class="form-row" id="form-host0-row">
             <div class="form-row-header">
               <label>Address 1 <span class="required">*</span></label>
               <button type="button" class="btn-ghost" id="form-add-backup-btn" onclick="revealBackupAddresses()">Add backup address</button>
             </div>
-            <input type="text" id="form-host0" placeholder="192.168.1.100 or emby.example.com">
+            <input type="text" id="form-host0" placeholder="192.168.1.100 or emby.example.com" oninput="clearBasePathForPlainAddress()" onblur="syncPrimaryAddressInput()">
           </div>
           <div class="backup-addresses hidden" id="form-backup-addresses">
             <div class="form-row">
@@ -886,17 +978,12 @@
           </div>
           <div id="form-credentials-group">
             <div class="form-row">
-              <label>Username</label>
+              <label>Username <span class="required hidden" id="form-username-required">*</span></label>
               <input type="text" id="form-username" autocomplete="username">
             </div>
             <div class="form-row">
               <label>Password</label>
-              <div class="password-field">
-                <input type="password" id="form-password" autocomplete="current-password">
-                <button type="button" class="password-reveal" id="form-password-reveal"
-                        aria-label="Show password" aria-pressed="false"
-                        onclick="togglePasswordReveal()">&#128065;</button>
-              </div>
+              <div id="form-password-control"></div>
             </div>
           </div>
           <!-- Plex token: an alternative to username/password sign-in — pasting
@@ -937,7 +1024,7 @@
 
     <!-- Folder picker (network/local/NFS root path selection after connection) -->
     <div class="sheet-backdrop hidden" id="folder-picker-backdrop" onclick="onFolderPickerBackdropClick(event)">
-      <section class="video-sheet folder-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
+      <section class="video-sheet folder-picker-sheet sheet-tall" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
         <div class="sheet-handle"></div>
         <div class="sheet-header">
           <h3 id="folder-picker-title">Choose import folder</h3>

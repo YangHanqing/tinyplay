@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,7 +43,7 @@ func TestWebsiteStateFreshEmpty(t *testing.T) {
 	if snap.CurrentSiteID != "" || snap.DesiredOpen || snap.ReportedOpen {
 		t.Fatalf("fresh snapshot=%+v", snap)
 	}
-	if len(snap.Catalog) != 4 || snap.Catalog[0].ID != website.SiteBilibili {
+	if len(snap.Catalog) != 5 || snap.Catalog[0].ID != website.SiteBilibili || snap.Catalog[4].ID != website.SiteDouyin {
 		t.Fatalf("catalog=%+v", snap.Catalog)
 	}
 	var raw map[string]any
@@ -141,6 +142,34 @@ func TestWebsiteReportDerivesCurrentSiteWithoutLeakingURL(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "token=secret") || strings.Contains(rec.Body.String(), "current_url") {
 		t.Fatalf("response must not echo full URL: %s", rec.Body.String())
+	}
+
+	// Shell capability IDs are filtered through the current site's fixed
+	// profile before the phone sees or can invoke them.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/website/action", `{"action":"capabilities"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capability probe status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	probe, ok := websiteBroker.PendingAfter(1)
+	if !ok || probe.Action != website.ActionCapabilities {
+		t.Fatalf("capability command missing: %+v", probe)
+	}
+	rec = httptest.NewRecorder()
+	req = jsonReq(http.MethodPost, "/desktop/website/report",
+		fmt.Sprintf(`{"open":true,"status":"capabilities","action":"capabilities","command_id":%d,"more_actions":["evil","danmaku_toggle"]}`, probe.ID))
+	req.RemoteAddr = "127.0.0.1:9"
+	h.ServeHTTP(rec, req)
+	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.MoreActions) != 1 || snap.MoreActions[0].ID != website.ActionDanmakuToggle {
+		t.Fatalf("filtered More actions=%+v", snap.MoreActions)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/website/action", `{"action":"danmaku_toggle"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approved More action status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	// Cross-site navigation.

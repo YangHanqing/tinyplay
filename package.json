@@ -1,0 +1,12 @@
+{
+  "name": "tinyplay-site",
+  "private": true,
+  "scripts": {
+    "docs:dev": "vitepress dev docs --host 127.0.0.1",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs --host 127.0.0.1"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}
