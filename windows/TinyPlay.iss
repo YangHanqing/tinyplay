@@ -38,8 +38,11 @@ SolidCompression=yes
 WizardStyle=modern
 
 [Languages]
+; English only for now: GitHub's windows-latest Inno Setup install does not
+; ship Languages\ChineseSimplified.isl, so referencing it fails the release
+; job. Re-add a Chinese messages file (vendored under windows/) when we want
+; a dual-language installer again.
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Files]
 Source: "..\dist\TinyPlay.exe"; DestDir: "{app}"; Flags: ignoreversion
