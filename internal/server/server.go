@@ -21,7 +21,8 @@ import (
 type Server struct {
 	player         *player.Player
 	webFS          fs.FS
-	port           int // the actual bound port (may differ from config if it was taken)
+	port           int    // the actual bound port (may differ from config if it was taken)
+	version        string // build version, for the diagnostics report (see SetVersion)
 	switchMu       sync.Mutex
 	latestSwitch   map[string]int
 	playMu         sync.Mutex
@@ -81,7 +82,7 @@ func (s *Server) invalidatePlay() {
 
 // New builds the server. The player's reporters should already be wired.
 func New(p *player.Player) *Server {
-	s := &Server{player: p, webFS: web.FS(), latestSwitch: map[string]int{}, iptvRecoveries: map[string]*iptvRecovery{}}
+	s := &Server{player: p, webFS: web.FS(), version: "dev", latestSwitch: map[string]int{}, iptvRecoveries: map[string]*iptvRecovery{}}
 	s.dlna = dlna.New(p, func() int { return s.port })
 	p.PlaybackStartedReporter = s.recordIPTVPlaybackStarted
 	p.LiveInterruptionReporter = s.recoverIPTV
@@ -238,6 +239,16 @@ func (s *Server) finishIPTVRecoveryAttempt(key string, revision uint64, nextRevi
 	s.iptvRecoveryMu.Unlock()
 }
 
+// SetVersion records the build version for the diagnostics report. It is set
+// at link time in package main, which the server cannot import, so main hands
+// it over here. An unset version reports as "dev", which is the honest answer
+// for a `go run` build.
+func (s *Server) SetVersion(v string) {
+	if v != "" {
+		s.version = v
+	}
+}
+
 // SetPort records the port the HTTP server actually bound to, so the QR / intro
 // page advertise the right address even when we fell back off a busy port.
 func (s *Server) SetPort(port int) {
@@ -319,6 +330,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/player/stop", s.playerStop)
 	mux.HandleFunc("GET /api/player/props", s.playerProps)
 	mux.HandleFunc("GET /api/player/debug-report", s.playerDebugReport)
+
+	// General feedback diagnostics: always answers, playback or not.
+	mux.HandleFunc("GET /api/diagnostics/report", s.feedbackReport)
 
 	// ── Emby ──
 	mux.HandleFunc("GET /api/emby/libraries", s.embyLibraries)

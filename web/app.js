@@ -885,6 +885,16 @@ async function checkDesktopInputPermission() {
   try { await api('POST', '/api/system/input/action', { action: 'request_permission' }); setTimeout(refreshDesktopInputState, 250); }
   catch (e) { toast(e.message || tr('desktopInputUnavailable'), true); }
 }
+// macOS keeps AXIsProcessTrusted() false until the shell process relaunches.
+// The command is consumed by the macOS shell (no-op on Windows).
+async function restartDesktopApp() {
+  try {
+    await api('POST', '/api/system/input/action', { action: 'restart_app' });
+    toast(tr('desktopInputRestarting'));
+  } catch (e) {
+    toast(e.message || tr('desktopInputUnavailable'), true);
+  }
+}
 function sendDesktopInputText() {
   const input = document.getElementById('desktop-input-text'); const text = input?.value || '';
   if (!text) return; desktopInputAction('type', { text }); input.value = '';
@@ -1136,9 +1146,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   _setViewMode('home');
   startPropPolling();
   _fetchAndUpdateProps();
+  // Settle which surface owns the device before painting the library. Running
+  // this after loadActiveSource() meant a page restored into the website
+  // workspace still did a full library load — skeletons, libraries, resume,
+  // posters — whose result paintWorkspace() then immediately hid.
+  await initWebsiteRemote();
   await loadActiveSource();
   await loadSettings();
-  await initWebsiteRemote();
   await initDesktopInput();
   fetchSystemVolume();
 });
@@ -1227,6 +1241,12 @@ function offlineServiceError() {
 /* Load the active source into the library tab: poster wall for media servers,
  * file browser for file sources. */
 async function loadActiveSource() {
+  // The website workspace owns the screen and paintWorkspace() has already
+  // hidden every library view, so loading here would be discarded work. Leaving
+  // that workspace always goes through a source pick (switchServer /
+  // switchHost / switchServerHost / _onSaveSuccess), and each of those reloads
+  // the library itself — closing the site with websiteClose() stays put.
+  if (isWebsiteWorkspace()) return;
   // An unconfigured installation has a dedicated empty state. Do not probe the
   // library API in that case: its expected "no active server" response is not
   // an actionable error and must not become a first-launch toast.
@@ -1348,6 +1368,42 @@ async function api(method, path, body, extra = {}) {
   }
 }
 
+/* ── Recent client-side failures (feedback context) ───────────────────────── *
+ * The core log records what the computer did; it cannot record what the phone
+ * saw. A request that failed into a toast, or a JS exception that left a tab
+ * blank, is invisible on the desktop side — and "the screen is just empty" is
+ * exactly the report that arrives with nothing to go on. Keep the last few so
+ * the feedback report can answer it. Bounded, in memory, never persisted.     */
+const CLIENT_ERROR_LIMIT = 20;
+const _clientErrors = [];
+
+function recordClientError(entry) {
+  _clientErrors.push({ at: new Date().toISOString(), ...entry });
+  if (_clientErrors.length > CLIENT_ERROR_LIMIT) _clientErrors.shift();
+}
+
+window.addEventListener('error', (event) => {
+  recordClientError({
+    kind: 'exception',
+    message: String(event.message || ''),
+    // Path only: event.filename is an absolute URL, so keeping it whole would
+    // put this computer's LAN address in a report that promises not to carry
+    // one. The file and line are the useful half anyway.
+    source: `${_scriptPath(event.filename)}:${event.lineno || 0}`,
+  });
+});
+
+function _scriptPath(url) {
+  try {
+    return new URL(String(url), location.href).pathname;
+  } catch (_) {
+    return '';
+  }
+}
+window.addEventListener('unhandledrejection', (event) => {
+  recordClientError({ kind: 'unhandled_rejection', message: String(event.reason?.message || event.reason || '') });
+});
+
 async function _apiRequest(method, path, body, extra = {}) {
   if (method === 'GET' && path.startsWith('/api/library/') && _activeServerId && !/[?&]server_id=/.test(path)) {
     path += `${path.includes('?') ? '&' : '?'}server_id=${encodeURIComponent(_activeServerId)}`;
@@ -1361,10 +1417,12 @@ async function _apiRequest(method, path, body, extra = {}) {
     r = await fetch(path, opts);
   } catch (error) {
     if (error?.name === 'AbortError') throw error;
+    recordClientError({ kind: 'network', method, path, message: String(error?.message || error) });
     setServiceOnline(false);
     throw offlineServiceError();
   }
   if (r.status === 503 && r.headers.get('X-TVRemote-Offline') === '1') {
+    recordClientError({ kind: 'backend_offline', method, path, status: 503 });
     setServiceOnline(false);
     throw offlineServiceError();
   }
@@ -1377,6 +1435,7 @@ async function _apiRequest(method, path, body, extra = {}) {
   }
   if (!r.ok) {
     const err = await r.json().catch(() => ({ detail: r.statusText }));
+    recordClientError({ kind: 'http', method, path, status: r.status, message: String(err.detail || r.statusText || '') });
     throw new Error(err.detail || r.statusText);
   }
   return r.json().catch(() => ({}));
@@ -1928,6 +1987,8 @@ function updateLibraryEmptyState(isEmpty) {
     'hidden',
     isEmpty || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv'
   );
+  // Website is Go-desktop only; hide the secondary CTA when the endpoint is absent.
+  document.getElementById('lib-empty-website-btn')?.classList.toggle('hidden', !_websiteAvailable);
 }
 
 /* ── View mode ────────────────────────────────────────────────────────────── */
@@ -3107,19 +3168,36 @@ function _sourceMeta(s) {
   return `${host}:${s.port}`;
 }
 
+/* ── Browse source (mirrored on Apple TV — keep both copies in sync) ─────────
+ *
+ * The same three functions exist in appletv-swift/TV-Remote/WebRoot/app.js.
+ * Only these differences are intentional; everything else should stay identical:
+ *   · this side normalizes the type through _normType() and keeps no
+ *     _activeServer object, since the Go frontend reads types off _knownServers;
+ *   · the tvOS side stamps a per-tab _browseSessionId on library/file requests,
+ *     which its embedded server uses to reject stale browse responses. The Go
+ *     server has no such header, so porting it here would be dead code.
+ */
 function storedBrowseSourceId() {
   try { return localStorage.getItem(_browseSourceStorageKey) || ''; }
   catch (_) { return ''; }
 }
 
+function rememberBrowseSource(id) {
+  try {
+    if (id) localStorage.setItem(_browseSourceStorageKey, id);
+    else localStorage.removeItem(_browseSourceStorageKey);
+  } catch (_) {}
+}
+
+// A browser's source choice is local UI state. The `active` flag returned by
+// /api/servers is the desktop's own active_server_id — configuration metadata
+// for the computer — and must never overwrite this.
 function selectBrowseSource(serverId, servers = _knownServers) {
   const server = servers.find(s => s.id === serverId) || servers[0] || null;
   _activeServerId = server?.id || '';
   _activeSourceType = _normType(server?.type);
-  try {
-    if (_activeServerId) localStorage.setItem(_browseSourceStorageKey, _activeServerId);
-    else localStorage.removeItem(_browseSourceStorageKey);
-  } catch (_) {}
+  rememberBrowseSource(_activeServerId);
   return server;
 }
 
@@ -5591,13 +5669,30 @@ function closeResetConfigurationConfirm() {
   document.getElementById('reset-config-confirm-overlay')?.classList.add('hidden');
 }
 
+// Reset wipes configuration, not this device's identity. config.ResetAll()
+// deliberately keeps PairedDevices for exactly this reason: a phone-initiated
+// reset must not lock out the phone that asked for it, nor silently unpair only
+// that phone while every other paired device survives. Dropping the token here
+// would do client-side what the backend refuses to do server-side — and would
+// leave the mirrored tp_token cookie contradicting an empty localStorage.
+//
+// Preserving is an allowlist, not clearing: anything added later is wiped by
+// default, which is the safe direction for a danger-zone action.
+function clearStorageForReset() {
+  const token = readStoredToken() || _deviceToken;
+  try {
+    localStorage.clear();
+    if (token) localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch (_) {}
+  try { sessionStorage.clear(); } catch (_) {}
+}
+
 async function resetAllConfiguration() {
   const button = document.getElementById('reset-config-confirm-btn');
   if (button) button.disabled = true;
   try {
     await api('POST', '/api/settings/reset', {});
-    localStorage.clear();
-    sessionStorage.clear();
+    clearStorageForReset();
     window.location.reload();
   } catch (error) {
     if (button) button.disabled = false;
@@ -6038,7 +6133,11 @@ async function _loadPlaybackDebugReport() {
   try {
     const data = await api('GET', '/api/player/debug-report');
     if (!_playbackDebugOpen) return;
-    _lastPlaybackDebugScope = String(data.diagnostics?.report_scope || _lastPlaybackDebugScope);
+    // Go (and tvOS) put report_scope at the top level; keep diagnostics.? as a
+    // defensive fallback in case an older response shape is still in flight.
+    _lastPlaybackDebugScope = String(
+      data.report_scope || data.diagnostics?.report_scope || _lastPlaybackDebugScope
+    );
     const subtitle = document.getElementById('playback-debug-subtitle');
     if (subtitle) subtitle.textContent = _lastPlaybackDebugScope === 'last'
       ? tr('lastPlaybackDebugSubtitle') : tr('playbackDebugSubtitle');
@@ -6146,6 +6245,213 @@ function _copyTextWithTemporaryTextarea(text) {
   const copied = document.execCommand('copy');
   textarea.remove();
   if (!copied) throw new Error('copy failed');
+}
+
+/* ── Feedback (Settings → Feedback) ───────────────────────────────────────── *
+ * Why email, and only email: this page is served over plain HTTP on the LAN,
+ * which is not a secure context, so navigator.share is undefined here and
+ * navigator.clipboard usually is too (hence the execCommand fallback above).
+ * A share sheet is not a design choice we declined — the browser will not
+ * offer it at this origin. mailto:, by contrast, works everywhere.
+ *
+ * Why the diagnostics never ride in the mailto: body: handlers truncate long
+ * URLs. The body therefore carries only the short, human part (kind, onset,
+ * description) so a failed clipboard still produces a usable email, and the
+ * diagnostics go through the clipboard to be pasted at the marker.           */
+const FEEDBACK_EMAIL = 'tinyday.app@gmail.com';
+const FEEDBACK_MAIL_BODY_LIMIT = 1400; // percent-encoded characters, not source characters
+const FEEDBACK_TYPES = ['playback', 'source', 'pairing', 'ui', 'idea', 'other'];
+const FEEDBACK_ONSETS = ['always', 'afterUpdate', 'recently', 'unsure'];
+
+let _feedbackOpen = false;
+let _feedbackType = '';
+let _feedbackOnset = '';
+let _feedbackDiagnostics = '';
+
+function openFeedbackSheet() {
+  _feedbackOpen = true;
+  _feedbackDiagnostics = '';
+  _renderFeedbackChips();
+  const description = document.getElementById('feedback-description');
+  if (description) description.placeholder = tr('feedbackDescriptionPlaceholder');
+  const preview = document.getElementById('feedback-preview');
+  if (preview) preview.textContent = tr('playbackDebugLoading');
+  _setFeedbackStatus('');
+  document.getElementById('feedback-backdrop')?.classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  _loadFeedbackDiagnostics();
+}
+
+function closeFeedbackSheet() {
+  _feedbackOpen = false;
+  document.getElementById('feedback-backdrop')?.classList.add('hidden');
+  document.body.classList.remove('sheet-open');
+}
+
+function onFeedbackBackdropClick(event) {
+  if (event.target.id === 'feedback-backdrop') closeFeedbackSheet();
+}
+
+function _renderFeedbackChips() {
+  const paint = (containerId, values, selected, onPick) => {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    for (const value of values) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `feedback-chip${value === selected ? ' selected' : ''}`;
+      chip.textContent = tr(`feedback_${value}`);
+      chip.setAttribute('aria-pressed', String(value === selected));
+      chip.addEventListener('click', () => onPick(value));
+      container.appendChild(chip);
+    }
+  };
+  paint('feedback-type-chips', FEEDBACK_TYPES, _feedbackType, (value) => {
+    _feedbackType = _feedbackType === value ? '' : value;
+    _renderFeedbackChips();
+  });
+  paint('feedback-onset-chips', FEEDBACK_ONSETS, _feedbackOnset, (value) => {
+    _feedbackOnset = _feedbackOnset === value ? '' : value;
+    _renderFeedbackChips();
+  });
+}
+
+async function _loadFeedbackDiagnostics() {
+  const preview = document.getElementById('feedback-preview');
+  try {
+    const data = await api('GET', '/api/diagnostics/report');
+    if (!_feedbackOpen) return;
+    _feedbackDiagnostics = _formatFeedbackDiagnostics(data);
+  } catch (e) {
+    if (!_feedbackOpen) return;
+    // A report that is only partly available still beats no report: the user
+    // keeps both buttons, and the failure itself is a diagnostic.
+    _feedbackDiagnostics = `${tr('playbackDebugLoadFailed')}\n${String(e.message || e)}`;
+  }
+  if (preview) preview.textContent = _feedbackDiagnostics;
+}
+
+// Redaction mirrors the playback report's. Non-ASCII text is deliberately NOT
+// stripped here: a Chinese file or media name is often the whole reason a
+// title misbehaves, and dropping it would delete the context this report
+// exists to carry.
+function _formatFeedbackDiagnostics(data = {}) {
+  const report = {
+    ...data,
+    remote_client: {
+      user_agent: navigator.userAgent || '',
+      language: navigator.language || '',
+      viewport: `${window.innerWidth}x${window.innerHeight}`,
+      online: navigator.onLine !== false,
+      page_protocol: location.protocol,
+      ui_language: window.I18N?.lang || '',
+    },
+    recent_client_errors: _clientErrors,
+  };
+  return JSON.stringify(_redactPlaybackDebugData(report), null, 2);
+}
+
+function _feedbackHeaderLines() {
+  const lines = [`Type: ${_feedbackType ? tr(`feedback_${_feedbackType}`) : '(not selected)'}`];
+  if (_feedbackOnset) lines.push(`Started: ${tr(`feedback_${_feedbackOnset}`)}`);
+  return lines;
+}
+
+function _feedbackDescriptionText() {
+  return String(document.getElementById('feedback-description')?.value || '').trim();
+}
+
+// The human half of the report: short enough for a mailto: body.
+function _composeFeedbackSummary() {
+  return [
+    'TinyPlay Feedback',
+    ..._feedbackHeaderLines(),
+    '',
+    _feedbackDescriptionText() || '(no description)',
+  ].join('\n');
+}
+
+function _composeFeedbackFullText() {
+  return [
+    _composeFeedbackSummary(),
+    '',
+    '--- Diagnostics ---',
+    _feedbackDiagnostics || '(unavailable)',
+  ].join('\n');
+}
+
+// Deliberately synchronous, and deliberately not trying navigator.clipboard
+// first: that API is secure-context only (undefined at this origin), and
+// awaiting it would end the user-gesture task that the execCommand fallback
+// needs on iOS. Returns true when the text reached the clipboard.
+function _copyToClipboard(text) {
+  try {
+    _copyTextWithTemporaryTextarea(text);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function _setFeedbackStatus(text, tone = '') {
+  const status = document.getElementById('feedback-status');
+  if (!status) return;
+  status.textContent = text;
+  status.className = `feedback-status${tone ? ` ${tone}` : ''}`;
+}
+
+function _feedbackMailtoURL() {
+  const header = _feedbackHeaderLines().join('\n');
+  const marker = tr('feedbackPasteMarker');
+  const compose = (description) => `${header}\n\n${description}\n\n${marker}\n`;
+  // Not URLSearchParams: it encodes a space as "+", which is correct for a
+  // form body and wrong for mailto:, where handlers show the plus signs.
+  // encodeURIComponent gives %20, which every mail client renders as a space.
+  let description = _feedbackDescriptionText() || '(no description)';
+  // Handlers also truncate long URLs, and percent-encoding turns one CJK
+  // character into nine. Shrink the description until the encoded body fits;
+  // nothing is lost, because the clipboard carries the untruncated text.
+  while (description.length > 40 && encodeURIComponent(compose(description)).length > FEEDBACK_MAIL_BODY_LIMIT) {
+    description = `${description.slice(0, Math.floor(description.length * 0.8))}…`;
+  }
+  const subject = encodeURIComponent(tr('feedbackMailSubject'));
+  return `mailto:${FEEDBACK_EMAIL}?subject=${subject}&body=${encodeURIComponent(compose(description))}`;
+}
+
+function submitFeedback() {
+  if (!_feedbackDescriptionText()) {
+    _setFeedbackStatus(tr('feedbackNeedDescription'), 'manual');
+    document.getElementById('feedback-description')?.focus();
+    return;
+  }
+  // The clipboard gets the whole report, not just the diagnostics: the
+  // mailto: body has to stay short enough to survive the handler, so a long
+  // description is trimmed there. Pasting the full text costs a duplicated
+  // sentence at the top of the email and guarantees nothing is lost.
+  const copied = _copyToClipboard(_composeFeedbackFullText());
+  _setFeedbackStatus(copied ? tr('feedbackCopiedOpeningMail') : tr('feedbackCopyFailedMailOnly'), copied ? '' : 'manual');
+  // The email opens either way: the description is already in the body, so a
+  // blocked clipboard costs the diagnostics, not the report.
+  window.location.href = _feedbackMailtoURL();
+}
+
+function copyFeedbackAll() {
+  if (_copyToClipboard(_composeFeedbackFullText())) {
+    _setFeedbackStatus(tr('feedbackCopiedAll'));
+    return;
+  }
+  const preview = document.getElementById('feedback-preview');
+  const details = preview?.closest('details');
+  if (details) details.open = true;
+  if (preview && window.getSelection && document.createRange) {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(preview);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  _setFeedbackStatus(tr('playbackDebugCopyManual'), 'manual');
 }
 
 function toast(msg, level = false) {

@@ -203,10 +203,11 @@ func (h *toastHost) applyPending() {
 		uintptr(swpNoActivate|swpShowWindow))
 }
 
-// toastPosition centers the toast near the bottom of whichever monitor mpv
-// would appear on (same "nearest to current window" heuristic winFullscreen
-// already uses for the QR/website windows), clear of a Dock/taskbar left in
-// an auto-hide sliver state.
+// toastPosition centers the toast near the bottom of the monitor's work area
+// (same "nearest to current window" heuristic winFullscreen already uses for
+// the QR/website windows). rcWork already excludes the taskbar, so a tall
+// always-on taskbar cannot cover the pill; a small margin keeps it off the
+// edge when the taskbar is auto-hidden.
 func toastPosition(hwnd uintptr) (x, y int) {
 	x, y = 40, 40 // degenerate fallback if monitor lookup fails
 	mon, _, _ := procMonitorFromWindow.Call(hwnd, monitorDefaultToNearest)
@@ -219,9 +220,10 @@ func toastPosition(hwnd uintptr) (x, y int) {
 	if ok == 0 {
 		return
 	}
-	screenWidth := int(mi.Monitor.Right - mi.Monitor.Left)
-	x = int(mi.Monitor.Left) + (screenWidth-toastWidth)/2
-	y = int(mi.Monitor.Bottom) - toastHeight - 96
+	const margin = 28
+	workWidth := int(mi.Work.Right - mi.Work.Left)
+	x = int(mi.Work.Left) + (workWidth-toastWidth)/2
+	y = int(mi.Work.Bottom) - toastHeight - margin
 	return
 }
 

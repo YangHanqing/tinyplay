@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"tvremote/internal/config"
+	"tvremote/internal/emby"
 	"tvremote/internal/i18n"
 	"tvremote/internal/iptv"
 	"tvremote/internal/player"
@@ -201,6 +202,10 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		config.SetAuth(srv.ID, in.Username, token, userID)
 		srv = config.GetServer(srv.ID)
 	}
+	// Record what the server calls itself. The source type the user picked is
+	// only a label — the client adapts to whatever dialect answers — but a
+	// mismatch is worth having in the debug report.
+	emby.ProbeInBackground(srv)
 	if kind == "iptv" {
 		// The candidate has no id yet during provider.Authenticate above (the
 		// iptv cache is keyed by server id), so the real playlist/EPG fetch
@@ -364,6 +369,11 @@ func (s *Server) loginServer(w http.ResponseWriter, r *http.Request) {
 	}
 	if !config.IsFileServerType(srv.Type) {
 		config.SetAuth(srv.ID, username, token, userID)
+		// Sources added before the probe existed never recorded what their
+		// server calls itself, so their debug report shows a blank product and
+		// version. Signing in again is the moment to fill that in — and it is
+		// what a user does anyway when a source starts misbehaving.
+		emby.ProbeInBackground(config.GetServer(srv.ID))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": username})
 }

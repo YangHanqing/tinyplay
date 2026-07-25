@@ -16,6 +16,10 @@ const (
 	ActionKey               = "key"
 	ActionType              = "type"
 	ActionRequestPermission = "request_permission"
+	// ActionRestartApp asks the native shell to relaunch itself. macOS needs a
+	// process restart after Accessibility is granted so AXIsProcessTrusted()
+	// re-evaluates; Windows has no such gate and ignores the command.
+	ActionRestartApp = "restart_app"
 )
 
 // Command is intentionally not a script or arbitrary keycode transport.
@@ -84,7 +88,7 @@ func valid(action string, dx, dy int, text string) bool {
 		return dx >= -500 && dx <= 500 && dy >= -500 && dy <= 500 && (dx != 0 || dy != 0)
 	case ActionScroll:
 		return dy >= -120 && dy <= 120 && dy != 0
-	case ActionLeftClick, ActionRightClick, ActionRequestPermission:
+	case ActionLeftClick, ActionRightClick, ActionRequestPermission, ActionRestartApp:
 		return dx == 0 && dy == 0 && text == ""
 	case ActionKey:
 		switch text {

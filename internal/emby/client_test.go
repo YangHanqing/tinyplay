@@ -9,11 +9,21 @@ import (
 	"tvremote/internal/config"
 )
 
-func TestJellyfinUsesCanonicalAuthorizationHeader(t *testing.T) {
-	c := New(&config.Server{Type: "jellyfin", DeviceID: "device"})
-	h := c.headers("token")
-	if h.Get("Authorization") == "" || h.Get("X-Emby-Authorization") != "" {
-		t.Fatalf("headers=%v", h)
+// Both spellings go out by default, whatever the user labelled the source.
+// Emby reads X-Emby-Authorization, Jellyfin canonicalised on Authorization, and
+// each ignores the other — so the superset takes the declared type out of the
+// auth path entirely, and a reverse proxy that consumes one still leaves one.
+func TestBothAuthorizationHeadersAreSentByDefault(t *testing.T) {
+	for _, kind := range []string{"emby", "jellyfin"} {
+		srv := &config.Server{Type: kind, DeviceID: "device"}
+		c := New(srv)
+		if style := dialectFor(srv).auth; style != authBoth {
+			t.Fatalf("%s starts on %q, want the both-headers default", kind, style)
+		}
+		h := c.headersFor(authBoth, "token")
+		if h.Get("Authorization") == "" || h.Get("X-Emby-Authorization") == "" {
+			t.Fatalf("%s headers=%v", kind, h)
+		}
 	}
 }
 

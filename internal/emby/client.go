@@ -61,7 +61,7 @@ func FromActive() (*Client, error) {
 	return &Client{server: srv}, nil
 }
 
-// New builds a client for an explicit server (used by Login).
+// New builds a client for an explicit server (used by Authenticate and Probe).
 func New(s *config.Server) *Client { return &Client{server: s} }
 
 // reload re-reads the same server so token/host changes are picked up without
@@ -100,17 +100,39 @@ func (c *Client) authHeaderValue(token string) string {
 	return "MediaBrowser " + strings.Join(parts, ", ")
 }
 
-func (c *Client) headers(token string) http.Header {
+// headersFor builds the request headers for one credential channel.
+//
+// The default sends both spellings of the auth header. Emby reads
+// X-Emby-Authorization, Jellyfin canonicalised on Authorization, and each
+// ignores the other — so sending both is a strict superset that removes the
+// declared source type from the auth path entirely. The narrower styles exist
+// only for the ladder in request(), which runs after a token was rejected.
+func (c *Client) headersFor(style authStyle, token string) http.Header {
 	h := http.Header{
 		"Accept":       {"application/json"},
 		"Content-Type": {"application/json; charset=utf-8"},
 	}
-	if c.server != nil && config.NormalizeServerType(c.server.Type) == "jellyfin" {
-		h.Set("Authorization", c.authHeaderValue(token))
-	} else {
-		h.Set("X-Emby-Authorization", c.authHeaderValue(token))
+	value := c.authHeaderValue(token)
+	switch style {
+	case authEmbyOnly:
+		h.Set("X-Emby-Authorization", value)
+	case authCanonical:
+		h.Set("Authorization", value)
+	case authQuery:
+		// The credential rides in the query string instead; see makeURL.
+	default:
+		h.Set("Authorization", value)
+		h.Set("X-Emby-Authorization", value)
 	}
 	return h
+}
+
+// escalationExhausted reports whether the whole credential ladder was tried and
+// every channel was rejected. Only then is it safe to stop escalating: a
+// network failure or a 404 proves nothing about credentials, and pinning the
+// channel on that evidence would disable the ladder for good.
+func escalationExhausted(styles []authStyle, lastRejected bool) bool {
+	return len(styles) > 1 && lastRejected
 }
 
 // makeURL builds serverURL + path with query params; optionally adds api_key.
@@ -143,70 +165,91 @@ func (c *Client) makeURL(path string, addToken bool, params url.Values) (string,
 	return u, nil
 }
 
-// pathCandidates tolerates both /emby-prefixed and bare endpoints.
-func pathCandidates(path string, bareFirst bool) []string {
-	var paths []string
-	if strings.HasPrefix(path, "/emby/") {
-		paths = []string{path, strings.Replace(path, "/emby", "", 1)}
-	} else {
-		p := path
-		if !strings.HasPrefix(p, "/") {
-			p = "/" + p
-		}
-		paths = []string{"/emby" + p, p}
+// do performs exactly one attempt and returns the raw body plus status.
+func (c *Client) do(method, path string, params url.Values, body any, style authStyle) ([]byte, int, error) {
+	u, err := c.makeURL(path, style == authQuery, params)
+	if err != nil {
+		return nil, 0, err
 	}
-	if bareFirst && len(paths) == 2 {
-		paths[0], paths[1] = paths[1], paths[0]
+	var reader io.Reader
+	if body != nil {
+		buf, _ := json.Marshal(body)
+		reader = bytes.NewReader(buf)
 	}
-	return paths
+	req, err := http.NewRequest(method, u, reader)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header = c.headersFor(style, c.token())
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return data, resp.StatusCode, nil
 }
 
-// request performs the call, retrying across path candidates. Returns the raw
-// response body so proxy handlers can pass it straight through.
+// request performs the call across the learned dialect's candidates and
+// returns the raw response body so proxy handlers can pass it straight through.
+//
+// Two ladders, both of which collapse to a single attempt once the server is
+// understood: the API mount point (bare vs /emby) and — only after a token is
+// actually rejected — the credential channel. Failures are classified rather
+// than counted, so a 401 does not send us hunting for another path and a 200
+// carrying a proxy's HTML never reaches the caller as success.
 func (c *Client) request(method, path string, params url.Values, body any) ([]byte, error) {
 	c.reload()
 	if c.serverURL() == "" {
 		return nil, errf(400, "No Emby server is configured")
 	}
 
+	d := dialectFor(c.server)
+	prefixes := prefixCandidates(c.basePath(), d.prefix, d.prefixKnown, c.bareFirstHint())
+	styles := authStylesFor(d.auth, d.authSettled(c.token()), c.token() != "")
+
 	var lastErr error = errf(500, "Emby request failed")
-	bareFirst := c.server != nil && config.NormalizeServerType(c.server.Type) == "jellyfin"
-	for _, p := range pathCandidates(path, bareFirst) {
-		u, err := c.makeURL(p, false, params)
-		if err != nil {
-			lastErr = err
-			continue
+	rejected := false
+	for _, style := range styles {
+		rejected = false
+		for _, prefix := range prefixes {
+			full := joinPrefix(prefix, path)
+			data, status, err := c.do(method, full, params, body, style)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			switch classify(status, data) {
+			case outcomeSuccess:
+				c.learnPrefix(prefix)
+				if token := c.token(); token != "" {
+					c.learnAuth(style, token)
+				}
+				return data, nil
+			case outcomeUnauthorized:
+				rejected = true
+				lastErr = errf(401, "Authentication failed. Please sign in again.")
+			case outcomeMissingRoute:
+				lastErr = errf(404, "Endpoint not found: %s", full)
+			case outcomeBadShape:
+				lastErr = errf(502, "%s answered with a non-JSON body; a reverse proxy is probably intercepting the API path", full)
+			default:
+				lastErr = errf(status, "Emby returned HTTP %d", status)
+			}
 		}
-		var reader io.Reader
-		if body != nil {
-			buf, _ := json.Marshal(body)
-			reader = bytes.NewReader(buf)
+		if !rejected {
+			break // the credential channel is not what is failing
 		}
-		req, err := http.NewRequest(method, u, reader)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		req.Header = c.headers(c.token())
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		switch {
-		case resp.StatusCode == 401:
-			lastErr = errf(401, "Authentication failed. Please sign in again.")
-			continue
-		case resp.StatusCode == 404:
-			lastErr = errf(404, "Endpoint not found: %s", p)
-			continue
-		case resp.StatusCode >= 400:
-			lastErr = errf(resp.StatusCode, "Emby returned HTTP %d", resp.StatusCode)
-			continue
-		}
-		return data, nil
+	}
+	if escalationExhausted(styles, rejected) {
+		// Every channel was rejected, so this token is bad rather than the
+		// transport. Stop paying for the ladder — but pin the verdict to the
+		// token itself, so the next credential reopens it whichever code path
+		// stored it.
+		fingerprint := tokenFingerprint(c.token())
+		updateDialect(c.server, func(d *dialect) {
+			d.authKnown, d.authToken = true, fingerprint
+		})
 	}
 	return nil, lastErr
 }
@@ -214,9 +257,10 @@ func (c *Client) request(method, path string, params url.Values, body any) ([]by
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 // Authenticate verifies credentials against srv and returns (accessToken,
-// userID) WITHOUT persisting anything. It is used both by Login (which then
-// persists) and by the "add server" flow (which only persists the server if
-// this succeeds, so a wrong address/password never leaves a broken entry).
+// userID) WITHOUT persisting anything. Storing the result is the caller's job:
+// the sign-in handler persists immediately, while the "add server" flow only
+// persists once this succeeds, so a wrong address/password never leaves a
+// broken entry behind.
 func Authenticate(srv *config.Server, username, password string) (string, string, error) {
 	c := &Client{server: srv}
 	if c.serverURL() == "" {
@@ -224,18 +268,17 @@ func Authenticate(srv *config.Server, username, password string) (string, string
 	}
 
 	lastErr := "Login failed"
-	paths := []string{"/emby/Users/AuthenticateByName", "/Users/AuthenticateByName"}
-	if config.NormalizeServerType(srv.Type) == "jellyfin" {
-		paths[0], paths[1] = paths[1], paths[0]
-	}
-	for _, path := range paths {
+	// Sign-in carries no token, so only the mount-point ladder applies here.
+	// Both header spellings go out at once (see headersFor).
+	for _, prefix := range c.prefixes() {
+		path := joinPrefix(prefix, "/Users/AuthenticateByName")
 		buf, _ := json.Marshal(map[string]string{"Username": username, "Pw": password})
 		req, err := http.NewRequest("POST", c.serverURL()+path, bytes.NewReader(buf))
 		if err != nil {
 			lastErr = err.Error()
 			continue
 		}
-		req.Header = c.headers("")
+		req.Header = c.headersFor(authBoth, "")
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = err.Error()
@@ -243,15 +286,17 @@ func Authenticate(srv *config.Server, username, password string) (string, string
 		}
 		data, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		switch classify(resp.StatusCode, data) {
+		case outcomeUnauthorized:
 			lastErr = "Incorrect username or password"
 			continue
-		}
-		if resp.StatusCode == 404 {
+		case outcomeMissingRoute:
 			lastErr = "No Emby login endpoint found"
 			continue
-		}
-		if resp.StatusCode >= 400 {
+		case outcomeBadShape:
+			lastErr = "the address answered with a non-JSON body; check for a reverse proxy in front of the API"
+			continue
+		case outcomeServerError:
 			lastErr = fmt.Sprintf("HTTP %d", resp.StatusCode)
 			continue
 		}
@@ -265,23 +310,10 @@ func Authenticate(srv *config.Server, username, password string) (string, string
 		if out.AccessToken == "" || out.User.ID == "" {
 			return "", "", errf(400, "Login succeeded but AccessToken/User.Id was missing")
 		}
+		c.learnPrefix(prefix)
 		return out.AccessToken, out.User.ID, nil
 	}
 	return "", "", errf(400, "Login failed: %s", lastErr)
-}
-
-// Login authenticates and persists token + user id onto an already-saved server.
-func (c *Client) Login(serverID, username, password string) (map[string]any, error) {
-	srv := config.GetServer(serverID)
-	if srv == nil {
-		return nil, errf(404, "Media Source not found")
-	}
-	token, userID, err := Authenticate(srv, username, password)
-	if err != nil {
-		return nil, err
-	}
-	config.SetAuth(serverID, username, token, userID)
-	return map[string]any{"ok": true, "username": username}, nil
 }
 
 // ── Library (proxy: return raw JSON) ─────────────────────────────────────────
@@ -433,27 +465,25 @@ func (c *Client) BackdropBytes(itemID string, maxHeight int, index int) ([]byte,
 }
 
 func (c *Client) imageBytes(itemID string, maxHeight int, imageType string, index int) ([]byte, string) {
-	paths := []string{}
+	bare := []string{}
 	if index >= 0 {
-		idx := strconv.Itoa(index)
-		paths = append(paths,
-			"/emby/Items/"+itemID+"/Images/"+imageType+"/"+idx,
-			"/Items/"+itemID+"/Images/"+imageType+"/"+idx,
-		)
+		bare = append(bare, "/Items/"+itemID+"/Images/"+imageType+"/"+strconv.Itoa(index))
 		if index == 0 {
-			paths = append(paths,
-				"/emby/Items/"+itemID+"/Images/"+imageType,
-				"/Items/"+itemID+"/Images/"+imageType,
-			)
+			bare = append(bare, "/Items/"+itemID+"/Images/"+imageType)
 		}
 	} else {
-		paths = append(paths,
-			"/emby/Items/"+itemID+"/Images/"+imageType,
-			"/Items/"+itemID+"/Images/"+imageType,
-		)
+		bare = append(bare, "/Items/"+itemID+"/Images/"+imageType)
+	}
+	prefixes := c.prefixes()
+	style := dialectFor(c.server).auth
+	paths := make([]string, 0, len(bare)*len(prefixes))
+	for _, path := range bare {
+		for _, prefix := range prefixes {
+			paths = append(paths, joinPrefix(prefix, path))
+		}
 	}
 	for _, path := range paths {
-		u, err := c.makeURL(path, false, url.Values{
+		u, err := c.makeURL(path, style == authQuery, url.Values{
 			"maxHeight": {strconv.Itoa(maxHeight)},
 			"quality":   {"85"},
 		})
@@ -461,7 +491,7 @@ func (c *Client) imageBytes(itemID string, maxHeight int, imageType string, inde
 			continue
 		}
 		req, _ := http.NewRequest("GET", u, nil)
-		req.Header = c.headers(c.token())
+		req.Header = c.headersFor(style, c.token())
 		resp, err := imageHTTPClient.Do(req)
 		if err != nil {
 			continue
@@ -587,7 +617,9 @@ func (c *Client) ChoosePlayURL(itemID, requestedSourceID string) (PlayURLChoice,
 	}
 	sources, _ := info["MediaSources"].([]any)
 	if len(sources) == 0 {
-		u, err := c.makeURL("/emby/Videos/"+url.PathEscape(itemID)+"/stream", true, url.Values{"Static": {"true"}})
+		// mpv cannot retry a second path candidate, so this URL uses the mount
+		// point learned from the API calls that got us here.
+		u, err := c.makeURL(c.preferredPath("/Videos/"+url.PathEscape(itemID)+"/stream"), true, url.Values{"Static": {"true"}})
 		return PlayURLChoice{URL: u, MediaSourceID: itemID}, err
 	}
 	source, _ := sources[0].(map[string]any)
@@ -609,7 +641,7 @@ func (c *Client) ChoosePlayURL(itemID, requestedSourceID string) (PlayURLChoice,
 			MediaSourceID: mediaSourceID,
 		}, nil
 	}
-	u, err := c.makeURL("/emby/Videos/"+url.PathEscape(itemID)+"/stream."+container, true,
+	u, err := c.makeURL(c.preferredPath("/Videos/"+url.PathEscape(itemID)+"/stream."+container), true,
 		url.Values{"Static": {"true"}, "MediaSourceId": {mediaSourceID}})
 	return PlayURLChoice{
 		URL:           u,

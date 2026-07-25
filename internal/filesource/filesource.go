@@ -79,14 +79,17 @@ func isVideo(name string) bool { return videoExtensions[strings.ToLower(filepath
 func segments(path string) ([]string, error) {
 	out := []string{}
 	for _, raw := range strings.Split(strings.ReplaceAll(path, "\\", "/"), "/") {
-		s := strings.TrimSpace(raw)
-		if s == "" || s == "." {
+		// Do not TrimSpace segment names: network volumes (esp. Linux NAS
+		// mounts on Windows) can have leading/trailing spaces that Explorer
+		// preserves. Stripping them makes shallow-root dig-down miss folders
+		// that work when the same path is stored whole as RootPath.
+		if raw == "" || raw == "." {
 			continue
 		}
-		if s == ".." {
+		if raw == ".." {
 			return nil, errf(400, "Path traversal is not allowed")
 		}
-		out = append(out, s)
+		out = append(out, raw)
 	}
 	return out, nil
 }
@@ -167,7 +170,7 @@ func (c *Client) host() (string, error) {
 // back to osRootBase (platform-specific: roots_unix.go lists "/" directly,
 // roots_windows.go lists drive letters first).
 func (c *Client) localBase(segs []string) (base string, rest []string, drivePicker bool) {
-	root := strings.TrimSpace(c.server.RootPath)
+	root := osNormalizeConfiguredRoot(strings.TrimSpace(c.server.RootPath))
 	if root == "" {
 		return osRootBase(segs)
 	}
@@ -183,6 +186,11 @@ func (c *Client) localBase(segs []string) (base string, rest []string, drivePick
 	if err != nil {
 		return "", nil, false
 	}
+	// Windows: Abs("Z:") is drive-relative and can yield just "Z:". Force a
+	// real root directory so Join/Rel stay on the volume root.
+	if vol := filepath.VolumeName(abs); vol != "" && abs == vol {
+		abs = vol + string(filepath.Separator)
+	}
 	return abs, segs, false
 }
 
@@ -194,9 +202,19 @@ func (c *Client) localPath(segs []string) (string, error) {
 	if base == "" {
 		return "", errf(400, "Invalid root path")
 	}
-	full, e := filepath.Abs(filepath.Join(append([]string{base}, rest...)...))
-	if e != nil {
-		return "", e
+	// Prefer Clean over Abs when the base is already absolute. Abs walks
+	// GetFullPathName, which on Windows is still sensitive to the classic
+	// MAX_PATH surface for deep mapped-drive trees; Clean only normalizes
+	// separators / "." / ".." and does not re-resolve through that API.
+	full := filepath.Join(append([]string{base}, rest...)...)
+	if filepath.IsAbs(full) {
+		full = filepath.Clean(full)
+	} else {
+		var e error
+		full, e = filepath.Abs(full)
+		if e != nil {
+			return "", e
+		}
 	}
 	rel, e := filepath.Rel(base, full)
 	if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
@@ -213,12 +231,15 @@ func (c *Client) listLocal(segs []string) (Listing, error) {
 	if e != nil {
 		return Listing{}, e
 	}
-	items, e := os.ReadDir(full)
+	fsPath := osFilesystemPath(full)
+	items, e := os.ReadDir(fsPath)
+	// Some virtual / network drive roots reject the extended-length prefix on
+	// open while still listing with the classic path. Retry once.
+	if e != nil && fsPath != full {
+		items, e = os.ReadDir(full)
+	}
 	if e != nil {
-		if os.IsNotExist(e) {
-			return Listing{}, errf(404, "Folder not found")
-		}
-		return Listing{}, errf(502, "Could not list folder: %v", e)
+		return Listing{}, localListError(full, e)
 	}
 	out := []Entry{}
 	for _, item := range items {
@@ -290,9 +311,10 @@ func (c *Client) remoteURL(segs []string) (string, error) {
 func segments0(path string) []string {
 	out := []string{}
 	for _, raw := range strings.Split(strings.ReplaceAll(path, "\\", "/"), "/") {
-		if s := strings.TrimSpace(raw); s != "" && s != "." {
-			out = append(out, s)
+		if raw == "" || raw == "." {
+			continue
 		}
+		out = append(out, raw)
 	}
 	return out
 }
@@ -546,7 +568,11 @@ func (c *Client) ResolvePlayURL(path string) (string, error) {
 		if e != nil {
 			return "", e
 		}
-		if _, e = os.Stat(full); e != nil {
+		fsPath := osFilesystemPath(full)
+		if _, e = os.Stat(fsPath); e != nil && fsPath != full {
+			_, e = os.Stat(full)
+		}
+		if e != nil {
 			return "", errf(404, "File not found")
 		}
 		return full, nil
@@ -589,7 +615,11 @@ func (c *Client) Serve(w http.ResponseWriter, r *http.Request, path string) erro
 		if err != nil {
 			return err
 		}
-		f, err := os.Open(full)
+		fsPath := osFilesystemPath(full)
+		f, err := os.Open(fsPath)
+		if err != nil && fsPath != full {
+			f, err = os.Open(full)
+		}
 		if err != nil {
 			return errf(404, "File not found")
 		}
@@ -607,7 +637,8 @@ func (c *Client) Serve(w http.ResponseWriter, r *http.Request, path string) erro
 		if err != nil {
 			return err
 		}
-		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+		// Use the logical base name — extended paths can make Name() ugly.
+		http.ServeContent(w, r, filepath.Base(full), info.ModTime(), f)
 		return nil
 	case "webdav":
 		u, err := c.remoteURL(segs)

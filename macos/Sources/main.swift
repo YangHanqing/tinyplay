@@ -69,7 +69,7 @@ private func L(_ key: String) -> String {
 		"about": ("\u{5173}\u{4E8E} TinyPlay", "About TinyPlay"),
 		"version_label": ("\u{7248}\u{672C}", "Version"),
 		"third_party_notices": ("\u{67E5}\u{770B}\u{7B2C}\u{4E09}\u{65B9}\u{58F0}\u{660E}", "View Third-Party Notices"),
-		"check_updates": ("\u{68C0}\u{67E5}\u{66F4}\u{65B0}\u{2026}", "Check for Updates…"),
+		"check_updates": ("\u{68C0}\u{67E5}\u{66F4}\u{65B0}", "Check for Updates"),
 		"update_available_title": ("\u{6709}\u{65B0}\u{7248}\u{672C}\u{53EF}\u{7528}", "Update Available"),
 		"update_available_body": ("TinyPlay %@ \u{5DF2}\u{53D1}\u{5E03}\u{3002}\n\u{5F53}\u{524D}\u{7248}\u{672C}\u{FF1A}%@", "TinyPlay %@ is available.\nCurrent version: %@"),
 		"update_download": ("\u{6253}\u{5F00}\u{4E0B}\u{8F7D}\u{9875}\u{9762}", "Open Download Page"),
@@ -366,10 +366,14 @@ private final class ToastPanelController {
 		let fitting = content.fittingSize
 		let width = max(fitting.width, 160)
 		let height = max(fitting.height, 36)
-		let frame = screen.frame
-		let x = frame.midX - width / 2
-		// Above the bottom edge, clear of a Dock left in auto-hide "sliver" state.
-		let y = frame.minY + 72
+		// visibleFrame already excludes the Dock and menu bar (and shrinks when
+		// the Dock is always-on). A small margin sits the pill just above that
+		// edge — better than a fixed offset from screen.frame, which overlaps a
+		// tall Dock. Auto-hide Dock still leaves a comfortable bottom gap.
+		let visible = screen.visibleFrame
+		let margin: CGFloat = 28
+		let x = visible.midX - width / 2
+		let y = visible.minY + margin
 		panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: panel.isVisible)
 	}
 }
@@ -387,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private static let fullscreenMessageName = "tinyplaySetFullscreen"
 	private static let checkForUpdatesMessageName = "tinyplayCheckForUpdates"
 	private static let showAboutMessageName = "tinyplayShowAbout"
+	private static let restartMessageName = "tinyplayRestart"
 	private let compactContentSize = NSSize(width: 900, height: 540)
 	private var fullscreenTransitionRequested = false
 
@@ -981,6 +986,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		config.userContentController.add(self, name: Self.fullscreenMessageName)
 		config.userContentController.add(self, name: Self.checkForUpdatesMessageName)
 		config.userContentController.add(self, name: Self.showAboutMessageName)
+		config.userContentController.add(self, name: Self.restartMessageName)
 		let webView = WKWebView(frame: NSRect(origin: .zero, size: compactContentSize), configuration: config)
 		webView.navigationDelegate = self
 		// Match /desktop compact canvas (#f7f9fc) so the first paint does not
@@ -1026,8 +1032,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
 	/// Bridge from the /desktop page. Handler names match Windows Bind and the
 	/// shared page JS: tinyplaySetFullscreen, tinyplayCheckForUpdates,
-	/// tinyplayShowAbout. After an update check, both shells call
-	/// window.__tinyplayUpdateCheckDone so the footer spinner clears the same way.
+	/// tinyplayShowAbout, tinyplayRestart. After an update check, both shells
+	/// call window.__tinyplayUpdateCheckDone so the footer spinner clears the
+	/// same way.
 	func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 		switch message.name {
 		case Self.fullscreenMessageName:
@@ -1050,9 +1057,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 			}
 		case Self.showAboutMessageName:
 			showAbout()
+		case Self.restartMessageName:
+			// Accessibility trust often sticks at false until the process is new.
+			restartApp()
 		default:
 			break
 		}
+	}
+
+	/// Schedule a relaunch, then quit. TCC re-evaluates Accessibility for the
+	/// new process; opening first would just activate this still-untrusted one.
+	func restartApp() {
+		let path: String
+		let openCmd: String
+		if Bundle.main.bundleURL.pathExtension == "app" {
+			path = Bundle.main.bundlePath
+			openCmd = "/usr/bin/open"
+		} else if let exe = Bundle.main.executableURL?.path {
+			// Dev / non-bundled binary: re-exec the same path after exit.
+			path = exe
+			openCmd = ""
+		} else {
+			NSApp.terminate(nil)
+			return
+		}
+		let quoted = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+		let task = Process()
+		task.executableURL = URL(fileURLWithPath: "/bin/sh")
+		if openCmd.isEmpty {
+			task.arguments = ["-c", "sleep 0.8; exec \(quoted)"]
+		} else {
+			task.arguments = ["-c", "sleep 0.8; \(openCmd) \(quoted)"]
+		}
+		try? task.run()
+		NSApp.terminate(nil)
 	}
 
 	private func setNativeFullscreen(_ enter: Bool) {
@@ -1095,6 +1133,7 @@ extension AppDelegate: NSWindowDelegate {
 		webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.fullscreenMessageName)
 		webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.checkForUpdatesMessageName)
 		webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.showAboutMessageName)
+		webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.restartMessageName)
 		window = nil
 		webView = nil
     }
@@ -1210,6 +1249,12 @@ final class DesktopInputShellController {
 				NSWorkspace.shared.open(settings)
 			}
 			reportTrust()
+			return
+		}
+		if action == "restart_app" {
+			// Phone UI and non-native reloads cannot call the WK bridge; this
+			// command is the loopback path to the same relaunch helper.
+			(NSApp.delegate as? AppDelegate)?.restartApp()
 			return
 		}
 		guard trusted() else { reportTrust(error: "accessibility_permission_required"); return }

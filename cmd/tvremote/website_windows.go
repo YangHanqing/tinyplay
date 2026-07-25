@@ -364,6 +364,10 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 	hwnd := uintptr(w.Window())
 	if hwnd != 0 {
 		maximizeWindow(hwnd)
+		// The open was requested from the phone, so nothing about it looks like
+		// local user input to Windows and the window would otherwise be left
+		// underneath the QR window. Ask for the front explicitly.
+		bringWindowToFront(hwnd)
 	}
 
 	// Pump shell commands while the window message loop runs.
@@ -415,6 +419,10 @@ func (h *websiteHost) applyOnWindow(w webview2.WebView, cmd websiteCmd) {
 		// this same WebView2 instance; do not create a site-specific page.
 		w.Eval(`document.querySelectorAll('video,audio').forEach(function(m){try{m.pause();m.muted=true;}catch(e){}})`)
 		w.Navigate(cmd.URL)
+		// Reusing the singleton page still has to surface it: the user may have
+		// gone back to the QR window since the last site, and a Navigate on a
+		// buried window changes nothing they can see. macOS re-activates here too.
+		bringWindowToFront(uintptr(w.Window()))
 		h.report(map[string]any{"status": "open", "action": website.ActionOpen, "command_id": cmd.ID, "open": true})
 	case website.ActionBack:
 		w.Eval(`history.back()`)

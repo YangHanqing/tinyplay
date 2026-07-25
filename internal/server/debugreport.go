@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tvremote/internal/config"
+	"tvremote/internal/emby"
 	"tvremote/internal/player"
 )
 
@@ -59,11 +60,23 @@ func activeSourceSummary() map[string]any {
 	if srv == nil {
 		return map[string]any{"configured": false}
 	}
-	return map[string]any{
+	kind := config.NormalizeServerType(srv.Type)
+	summary := map[string]any{
 		"configured": true,
-		"type":       config.NormalizeServerType(srv.Type),
+		"type":       kind,
 		"protocol":   srv.Protocol,
 	}
+	// What the server turned out to be, next to what it was labelled. Product
+	// and version are the server's own words; api_mount/auth_channel are what
+	// the client learned actually works. None of it identifies the deployment.
+	if kind == "emby" || kind == "jellyfin" {
+		d := emby.LearnedDialect(srv)
+		summary["reported_product"] = d.Product
+		summary["reported_version"] = d.Version
+		summary["api_mount"] = d.Prefix
+		summary["auth_channel"] = d.Auth
+	}
+	return summary
 }
 
 // tailLines returns up to maxLines of the file's last lines, oldest first. It

@@ -59,6 +59,7 @@ func main() {
 	ln, port := listen(cfg.ListenPort)
 
 	srv := server.New(p)
+	srv.SetVersion(version)
 	srv.SetPort(port)
 	// Bound parsing before a request reaches the control handlers. Leave
 	// WriteTimeout unset because file streaming can legitimately last hours.

@@ -92,7 +92,7 @@
         </button>
       </div>
 
-      <!-- No media source configured yet -->
+      <!-- No media source configured yet (Go desktop may also offer Website) -->
       <div class="library-empty hidden" id="lib-empty-state">
         <svg class="library-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <ellipse cx="12" cy="5" rx="8" ry="3"/>
@@ -101,7 +101,10 @@
         </svg>
         <div class="library-empty-title" data-i18n="noMediaSourceYet">No Media Source yet</div>
         <div class="library-empty-hint" data-i18n="noMediaSourceHint">Add an Emby, Jellyfin, Plex, network folder, or IPTV playlist to start browsing your library</div>
-        <button class="library-empty-btn" onclick="openSourceTypePicker()" data-i18n="addMediaSource">Add Media Source</button>
+        <div class="library-empty-actions">
+          <button type="button" class="library-empty-btn library-empty-btn-primary" onclick="openSourceTypePicker()" data-i18n="addMediaSource">Add Media Source</button>
+          <button type="button" class="library-empty-btn library-empty-btn-secondary hidden" id="lib-empty-website-btn" onclick="switchToWebsiteSource()" data-i18n="viewWebBrowser">Web Browser</button>
+        </div>
       </div>
 
       <!-- Home view -->
@@ -547,7 +550,6 @@
         <section class="settings-card">
           <div class="settings-card-head">
             <h2 data-i18n="seekSettings">Seek time</h2>
-            <p data-i18n="seekSettingsHint">Applies to both the phone remote buttons and the Apple TV Siri Remote.</p>
           </div>
           <div class="seek-settings-row">
             <div class="seek-setting-item">
@@ -565,10 +567,10 @@
 
         <section class="settings-card">
           <div class="settings-card-head">
-            <h2>Playback cache</h2>
-            <p>Used for on-demand playback. IPTV uses a separate short live buffer; direct local folders use the OS cache.</p>
+            <h2 data-i18n="playbackCache">Playback cache</h2>
+            <p data-i18n="playbackCacheHint">How long to pre-buffer when playing video. Choose a longer duration if the network is unstable. Does not apply to IPTV or local folders; takes effect on the next play.</p>
           </div>
-          <label class="setting-label" for="cache-duration-select">Cache duration</label>
+          <label class="setting-label" for="cache-duration-select" data-i18n="cacheDuration">Cache duration</label>
           <select class="form-select" id="cache-duration-select" onchange="onCacheDurationChange()">
             <option value="300">5 minutes</option>
             <option value="900">15 minutes</option>
@@ -602,11 +604,9 @@
 
         <section class="settings-card">
           <div class="settings-card-head">
-            <h2 data-i18n="language">Language</h2>
-            <p data-i18n="languageHint">The page reloads after switching so all labels update.</p>
+            <h2 id="language-settings-title" data-i18n="language">Language</h2>
           </div>
-          <label class="setting-label" for="language-select" data-i18n="language">Language</label>
-          <select id="language-select" class="form-select">
+          <select id="language-select" class="form-select" aria-labelledby="language-settings-title">
             <option value="auto">Automatic</option>
             <option value="en">English</option>
             <option value="zh-CN">简体中文</option>
@@ -618,7 +618,71 @@
             <option value="de">Deutsch</option>
           </select>
         </section>
+
+        <!-- Feedback lives here, at the bottom of Settings, because the phone
+             is the only device in this product with a keyboard and a signed-in
+             mailbox: the computer running TinyPlay is usually wired to a TV
+             with no input at hand. The tray's mail entry stays for people who
+             are actually sitting at that computer. -->
+        <section class="settings-card feedback-entry">
+          <button type="button" class="feedback-entry-btn" onclick="openFeedbackSheet()">
+            <span class="feedback-entry-icon" aria-hidden="true">
+              <!-- Lucide Mail icon (MIT); Web icons stay local and inline. -->
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="20" height="16" x="2" y="4" rx="2"/>
+                <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+              </svg>
+            </span>
+            <span class="feedback-entry-copy">
+              <strong>Feedback</strong>
+              <small>Report a problem or suggest a feature</small>
+            </span>
+            <span class="feedback-entry-arrow" aria-hidden="true">›</span>
+          </button>
+        </section>
       </div>
+    </div>
+
+    <!-- Feedback sheet. Contact is email only: the phone loads this page over
+         plain HTTP on the LAN, and both navigator.share and navigator.clipboard
+         are secure-context APIs, so a share sheet is not available here at all
+         (see submitFeedback in app.js). -->
+    <div class="sheet-backdrop hidden" id="feedback-backdrop" onclick="onFeedbackBackdropClick(event)">
+      <section class="video-sheet feedback-sheet" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3 id="feedback-title">Feedback</h3>
+          <p class="feedback-sub">Describe the problem in your own words. Diagnostic details are attached for you.</p>
+        </div>
+        <div class="feedback-content">
+          <div class="feedback-field">
+            <span class="feedback-label" id="feedback-type-label">What is this about?</span>
+            <div class="feedback-chips" id="feedback-type-chips" role="group" aria-labelledby="feedback-type-label"></div>
+          </div>
+          <div class="feedback-field">
+            <label class="feedback-label" for="feedback-description">What happened?</label>
+            <textarea id="feedback-description" class="feedback-textarea" rows="5" maxlength="2000"></textarea>
+          </div>
+          <div class="feedback-field">
+            <span class="feedback-label" id="feedback-onset-label">When did it start?</span>
+            <div class="feedback-chips" id="feedback-onset-chips" role="group" aria-labelledby="feedback-onset-label"></div>
+          </div>
+          <details class="feedback-details">
+            <summary id="feedback-details-summary">What gets attached</summary>
+            <p class="feedback-privacy">The report describes this app’s version, settings, and recent log lines. Those lines can mention local network addresses or file names, but never passwords or tokens.</p>
+            <pre class="playback-debug-preview" id="feedback-preview">Generating diagnostic info...</pre>
+          </details>
+          <div class="feedback-actions">
+            <button class="feedback-primary" type="button" id="feedback-send" onclick="submitFeedback()">Copy details and write the email</button>
+            <button class="feedback-secondary" type="button" onclick="copyFeedbackAll()">Copy everything instead</button>
+          </div>
+          <p class="feedback-status" id="feedback-status" role="status" aria-live="polite"></p>
+          <p class="feedback-mail">
+            <span>Send it to</span>
+            <a href="mailto:tinyday.app@gmail.com">tinyday.app@gmail.com</a>
+          </p>
+        </div>
+      </section>
     </div>
 
     <!-- Global temporary desktop-control sheet. It deliberately lives outside
@@ -631,8 +695,9 @@
           <p class="desktop-input-help" id="desktop-input-help"></p>
         </div>
         <div class="desktop-input-permission hidden" id="desktop-input-permission">
-          <p data-i18n="desktopInputPermissionHelp">Allow TinyPlay in Accessibility to control this Mac from your phone.</p>
+          <p data-i18n="desktopInputPermissionHelp">Allow TinyPlay in Accessibility, then restart TinyPlay on the Mac for the permission to take effect.</p>
           <button class="website-btn website-btn-primary" type="button" onclick="requestDesktopInputPermission()" data-i18n="desktopInputOpenSettings">Open System Settings</button>
+          <button class="website-btn" type="button" onclick="restartDesktopApp()" data-i18n="desktopInputRestart">Restart TinyPlay</button>
           <button class="website-btn" type="button" onclick="checkDesktopInputPermission()" data-i18n="desktopInputCheckAgain">Check again</button>
         </div>
         <div class="desktop-input-controls hidden" id="desktop-input-controls">

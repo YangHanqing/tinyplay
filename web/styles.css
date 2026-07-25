@@ -577,6 +577,58 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 .playback-debug-copy:active { opacity: .76; }
 .playback-debug-copy:disabled { opacity: .4; cursor: default; }
+
+/* Feedback (Settings → Feedback) */
+.feedback-entry { padding: 0; overflow: hidden; }
+.feedback-entry-btn { display:flex; align-items:center; gap:13px; width:100%; min-height:72px; padding:14px 16px; border:0; color:inherit; text-align:left; background:transparent; font-family:inherit; cursor:pointer; }
+.feedback-entry-btn:active { background:rgba(255,255,255,.06); }
+.feedback-entry-icon { display:grid; place-items:center; width:36px; height:36px; border-radius:12px; background:rgba(55,169,255,.2); color:#8fd0ff; line-height:1; }
+.feedback-entry-icon svg { width:20px; height:20px; display:block; }
+.feedback-entry-copy { min-width:0; display:flex; flex:1; flex-direction:column; gap:4px; }
+.feedback-entry-copy strong { font-size:15px; color:rgba(255,255,255,.95); }
+.feedback-entry-copy small { color:rgba(255,255,255,.48); font-size:12px; line-height:1.35; }
+.feedback-entry-arrow { color:rgba(255,255,255,.36); font-size:26px; }
+
+.feedback-sheet { max-width: 640px; max-height: min(92dvh, 900px); padding: 0 0 20px; }
+.feedback-sub { margin: 4px 0 0; color: rgba(255,255,255,.52); font-size: 12px; line-height: 1.45; }
+.feedback-content { padding: 0 14px calc(4px + env(safe-area-inset-bottom,0px)); overflow-y: auto; }
+.feedback-field { margin-bottom: 16px; }
+.feedback-label { display: block; margin-bottom: 8px; color: rgba(255,255,255,.72); font-size: 13px; font-weight: 700; }
+.feedback-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.feedback-chip {
+  border: 1px solid rgba(255,255,255,.12); border-radius: 999px; padding: 8px 14px;
+  background: rgba(255,255,255,.05); color: rgba(255,255,255,.72);
+  font-family: inherit; font-size: 13px; cursor: pointer;
+}
+.feedback-chip.selected { border-color: var(--accent); background: rgba(124,92,252,.2); color: #fff; font-weight: 700; }
+.feedback-textarea {
+  width: 100%; padding: 12px; resize: vertical;
+  border: 1px solid rgba(255,255,255,.12); border-radius: 12px;
+  background: rgba(0,0,0,.22); color: rgba(255,255,255,.9);
+  font-family: inherit; font-size: 14px; line-height: 1.55;
+}
+.feedback-textarea::placeholder { color: rgba(255,255,255,.34); }
+.feedback-textarea:focus { outline: none; border-color: var(--accent); }
+.feedback-details { margin-bottom: 16px; }
+.feedback-details summary { color: rgba(255,255,255,.56); font-size: 12px; cursor: pointer; padding: 4px 0; }
+.feedback-privacy { margin: 8px 0; color: rgba(255,255,255,.44); font-size: 11px; line-height: 1.6; }
+.feedback-actions { display: grid; gap: 8px; }
+.feedback-primary {
+  border: none; border-radius: 999px; padding: 13px 18px;
+  background: var(--accent); color: #fff; font-family: inherit;
+  font-size: 14px; font-weight: 750; cursor: pointer;
+}
+.feedback-primary:active { opacity: .78; }
+.feedback-secondary {
+  border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 11px 18px;
+  background: transparent; color: rgba(255,255,255,.66);
+  font-family: inherit; font-size: 13px; cursor: pointer;
+}
+.feedback-secondary:active { opacity: .78; }
+.feedback-status { min-height: 16px; margin: 10px 0 0; color: #86efac; font-size: 12px; line-height: 1.5; }
+.feedback-status.manual { color: #fcd77f; }
+.feedback-mail { margin: 6px 0 0; color: rgba(255,255,255,.4); font-size: 12px; text-align: center; }
+.feedback-mail a { color: #75c7ff; text-decoration: underline; text-underline-offset: 2px; }
 #video-sheet-content { padding: 10px 14px 18px; }
 .sheet-hero { display: grid; grid-template-columns: 112px 1fr; gap: 14px; align-items: end; }
 .sheet-poster-frame { width: 112px; border-radius: var(--radius); background: var(--border); border: 1px solid var(--border); }
@@ -1202,12 +1254,60 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 /* The library's unconfigured state replaces the normal library content. It is
  * deliberately separate from the remote tab's "nothing playing" state, so the
  * onboarding prompt stays centered in the available library pane. */
-.library-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: calc(100dvh - var(--header-h) - var(--nav-h)); gap: 12px; text-align: center; padding: 24px; }
+.library-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100dvh - var(--header-h) - var(--nav-h));
+  gap: 12px;
+  text-align: center;
+  padding: 28px 24px 40px;
+}
 .library-empty-icon { width: 72px; height: 72px; color: var(--text-muted); opacity: .4; margin-bottom: 4px; }
 .library-empty-title { font-size: 18px; font-weight: 700; color: var(--text); }
-.library-empty-hint { max-width: 320px; font-size: 14px; color: var(--text-muted); line-height: 1.5; }
-.library-empty-btn { margin-top: 8px; padding: 10px 28px; border-radius: 999px; background: var(--accent); border: none; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; transition: opacity .15s; font-family: inherit; }
-.library-empty-btn:active { opacity: .8; }
+.library-empty-hint { max-width: 320px; font-size: 14px; color: var(--text-muted); line-height: 1.55; }
+/* Stacked full-width actions: primary first, secondary outline below. Reads
+ * cleaner on narrow phones than two side-by-side pills with long CJK labels. */
+.library-empty-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 10px;
+  width: min(100%, 280px);
+}
+.library-empty-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 11px 18px;
+  border-radius: 14px;
+  border: none;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity .15s, transform .12s, background .15s, border-color .15s;
+}
+.library-empty-btn:active { opacity: .85; transform: translateY(1px); }
+.library-empty-btn-primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(47, 143, 255, .22);
+}
+.library-empty-btn-secondary {
+  background: rgba(255, 255, 255, .06);
+  color: rgba(255, 255, 255, .88);
+  border: 1px solid rgba(255, 255, 255, .14);
+  font-weight: 600;
+}
+.library-empty-btn-secondary:hover {
+  background: rgba(255, 255, 255, .1);
+  border-color: rgba(255, 255, 255, .2);
+}
+.library-empty-btn.hidden { display: none !important; }
 
 /* Now playing card
  * Parent #remote-server-panel is a column flex container. Horizontal margin:auto

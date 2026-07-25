@@ -84,6 +84,10 @@ func applyDesktopInput(cmd desktopinput.Command) error {
 				return err
 			}
 		}
+	case desktopinput.ActionRequestPermission, desktopinput.ActionRestartApp:
+		// Windows SendInput needs no Accessibility consent; these macOS-only
+		// control-plane actions are accepted and ignored.
+		return nil
 	}
 	return nil
 }

@@ -160,14 +160,35 @@ func openFeedbackEmail() {
 	openWithDefaultHandler("mailto:" + feedbackMailAddress + "?" + q.Encode())
 }
 
-var windowMu sync.Mutex
+var (
+	windowMu sync.Mutex
+
+	// Handle of the live QR window, so a second tray click can raise the
+	// existing one instead of doing nothing. Guarded separately from windowMu,
+	// which is held for the whole lifetime of the window's message loop.
+	mainWindowMu   sync.Mutex
+	mainWindowHWND uintptr
+)
+
+func setMainWindowHWND(hwnd uintptr) {
+	mainWindowMu.Lock()
+	mainWindowHWND = hwnd
+	mainWindowMu.Unlock()
+}
 
 // openWindow shows the intro/QR page in a WebView2 window. Only one window is
 // allowed at a time; the call blocks (on its own OS-locked thread) until the
 // window closes.
 func openWindow(url string) {
 	if !windowMu.TryLock() {
-		return // already open
+		// Already open — raise it rather than returning silently, which makes
+		// the tray item look dead whenever the window is buried behind
+		// something else. Mirrors the macOS shell's openMainWindow().
+		mainWindowMu.Lock()
+		hwnd := mainWindowHWND
+		mainWindowMu.Unlock()
+		bringWindowToFront(hwnd)
+		return
 	}
 	defer windowMu.Unlock()
 
@@ -197,6 +218,8 @@ func openWindow(url string) {
 	// otherwise hidden window for the user to recover later.
 	hwnd := uintptr(w.Window())
 	removeMinimizeButton(hwnd)
+	setMainWindowHWND(hwnd)
+	defer setMainWindowHWND(0)
 
 	// Borderless full-screen on the monitor that currently hosts this window.
 	// Preserve style + rectangle so Exit / Escape restores the compact QR size.
@@ -335,21 +358,32 @@ func showWebView2Missing() {
 }
 
 var (
-	user32                 = syscall.NewLazyDLL("user32.dll")
-	comctl32               = syscall.NewLazyDLL("comctl32.dll")
-	shell32                = syscall.NewLazyDLL("shell32.dll")
-	procMessageBoxW        = user32.NewProc("MessageBoxW")
-	procFindWindowW        = user32.NewProc("FindWindowW")
-	procGetWindowLongPtrW  = user32.NewProc("GetWindowLongPtrW")
-	procSetWindowLongPtrW  = user32.NewProc("SetWindowLongPtrW")
-	procSetWindowPos       = user32.NewProc("SetWindowPos")
-	procGetWindowRect      = user32.NewProc("GetWindowRect")
-	procMonitorFromWindow  = user32.NewProc("MonitorFromWindow")
-	procGetMonitorInfoW    = user32.NewProc("GetMonitorInfoW")
-	procShowWindow         = user32.NewProc("ShowWindow")
-	procTaskDialogIndirect = comctl32.NewProc("TaskDialogIndirect")
-	procShellExecuteW      = shell32.NewProc("ShellExecuteW")
+	user32                       = syscall.NewLazyDLL("user32.dll")
+	comctl32                     = syscall.NewLazyDLL("comctl32.dll")
+	shell32                      = syscall.NewLazyDLL("shell32.dll")
+	procMessageBoxW              = user32.NewProc("MessageBoxW")
+	procFindWindowW              = user32.NewProc("FindWindowW")
+	procGetWindowLongPtrW        = user32.NewProc("GetWindowLongPtrW")
+	procSetWindowLongPtrW        = user32.NewProc("SetWindowLongPtrW")
+	procSetWindowPos             = user32.NewProc("SetWindowPos")
+	procGetWindowRect            = user32.NewProc("GetWindowRect")
+	procMonitorFromWindow        = user32.NewProc("MonitorFromWindow")
+	procGetMonitorInfoW          = user32.NewProc("GetMonitorInfoW")
+	procShowWindow               = user32.NewProc("ShowWindow")
+	procIsIconic                 = user32.NewProc("IsIconic")
+	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
+	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
+	procGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
+	procAttachThreadInput        = user32.NewProc("AttachThreadInput")
+	procTaskDialogIndirect       = comctl32.NewProc("TaskDialogIndirect")
+	procShellExecuteW            = shell32.NewProc("ShellExecuteW")
 )
+
+// hwndNoTopmost is HWND_NOTOPMOST (-2): drops a window out of the always-on-top
+// band and back to the head of the normal one. Paired with hwndTopmost (defined
+// in toast_windows.go) it is the standard way to raise a window without the
+// foreground lock having a say — see bringWindowToFront.
+var hwndNoTopmost = ^uintptr(1)
 
 const (
 	mbYesNo                 = 0x00000004
@@ -376,6 +410,7 @@ const (
 	swpShowWindow           = 0x0040
 	swpFrameChanged         = 0x0020
 	swShowMaximized         = 3 // SW_SHOWMAXIMIZED
+	swRestore               = 9 // SW_RESTORE
 	hwndTop                 = 0
 	monitorDefaultToNearest = 2
 )
@@ -426,6 +461,50 @@ func maximizeWindow(hwnd uintptr) {
 		return
 	}
 	_, _, _ = procShowWindow.Call(hwnd, uintptr(swShowMaximized))
+}
+
+// bringWindowToFront raises a shell window above everything else and gives it
+// input focus. Every window here is opened by a phone tap, on a background
+// thread, with no local input event behind it — exactly the case Windows'
+// foreground rules are written to refuse, so the implicit activation that
+// ShowWindow would normally perform is denied and the window is left *behind*
+// the currently active one (typically our own QR window). The macOS shell never
+// hit this because it always asks explicitly: makeKeyAndOrderFront +
+// NSApp.activate(ignoringOtherApps:) on both the create and the reuse path.
+//
+// Two steps, because they fix two different things and only one of them can
+// fail:
+//  1. HWND_TOPMOST then HWND_NOTOPMOST. Z-order is not subject to the
+//     foreground lock, so this alone guarantees the window is no longer
+//     covered. It does not leave the window always-on-top — the second call
+//     drops it back into the normal band, now at its head.
+//  2. Attaching to the foreground window's input queue lifts the lock for the
+//     duration of SetForegroundWindow, so the window also takes keyboard and
+//     mouse focus. Best-effort: if it is refused, step 1 still stands and the
+//     window is at least visible.
+func bringWindowToFront(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	// Only when actually minimized: SW_RESTORE on a maximized window would
+	// shrink the browsing window back to its pre-maximize size.
+	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
+		_, _, _ = procShowWindow.Call(hwnd, uintptr(swRestore))
+	}
+	const posFlags = uintptr(swpNoMove | swpNoSize | swpShowWindow)
+	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, posFlags)
+	_, _, _ = procSetWindowPos.Call(hwnd, hwndNoTopmost, 0, 0, 0, 0, posFlags)
+
+	target, _, _ := procGetWindowThreadProcessId.Call(hwnd, 0)
+	var current uintptr
+	if foreground, _, _ := procGetForegroundWindow.Call(); foreground != 0 && foreground != hwnd {
+		current, _, _ = procGetWindowThreadProcessId.Call(foreground, 0)
+	}
+	if current != 0 && target != 0 && current != target {
+		_, _, _ = procAttachThreadInput.Call(current, target, 1)
+		defer procAttachThreadInput.Call(current, target, 0)
+	}
+	_, _, _ = procSetForegroundWindow.Call(hwnd)
 }
 
 // removeMinimizeButton adjusts the native WebView2 host window after the

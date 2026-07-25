@@ -63,6 +63,7 @@ func (s *Server) phoneURL() string {
 //       tinyplayShowAbout          — version footer click
 //       tinyplayCheckForUpdates    — footer; both shells then call
 //                                    window.__tinyplayUpdateCheckDone()
+//       tinyplayRestart            — macOS: relaunch after Accessibility grant
 //   • macOS-only: ?local_network=denied for Local Network permission help.
 //
 // Compact is the default; Full Screen expands the same window into an HTPC
@@ -264,6 +265,11 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
   .switch.on:hover { background: #22ab62; }
   .aux-action {
     font-size: 12px; font-weight: 600; padding: 6px 12px; flex-shrink: 0;
+  }
+  .aux-actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+  .aux-hint {
+    padding: 0 14px 11px; margin-top: -4px;
+    font-size: 12px; line-height: 1.45; color: var(--muted);
   }
   .footer-row {
     display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -1046,7 +1052,32 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
             body: JSON.stringify({ action: 'request_permission' }),
           });
         } catch (_) {}
-        setTimeout(() => location.reload(), 900);
+        // Keep the page up so the restart hint/button stay visible while the
+        // person flips the Accessibility toggle; only re-enable the button.
+        setTimeout(() => { e.currentTarget.disabled = false; }, 900);
+      });
+      document.getElementById('input-restart')?.addEventListener('click', async (e) => {
+        e.currentTarget.disabled = true;
+        // Prefer the shell bridge (immediate). Fall back to the input command
+        // queue so a plain browser tab on loopback still reaches the shell.
+        if (typeof window.tinyplayRestart === 'function') {
+          window.tinyplayRestart();
+          return;
+        }
+        const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.tinyplayRestart;
+        if (handler) {
+          handler.postMessage(null);
+          return;
+        }
+        try {
+          await fetch('/api/system/input/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'restart_app' }),
+          });
+        } catch (_) {
+          e.currentTarget.disabled = false;
+        }
       });
       document.getElementById('btn-open-logs')?.addEventListener('click', () => {
         fetch('/desktop/open-logs').catch(() => {});
@@ -1190,9 +1221,9 @@ func (s *Server) desktopDLNASection(lang string) string {
 // guard app.js uses for its own copy of this feature — so the row simply
 // never appears until the next reload once a shell is attached. On macOS,
 // where AXIsProcessTrusted() gates real injection, an unauthorized state gets
-// an explicit "go authorize" action that fires the request_permission
-// command; Windows has no such gate (SendInput needs no OS consent) and is
-// always reported ready, so it never shows the button.
+// "Authorize" + "Restart" plus a short hint: macOS often keeps the current
+// process untrusted until relaunch. Windows has no such gate (SendInput needs
+// no OS consent) and is always reported ready, so it never shows the buttons.
 func desktopInputSection(lang string) string {
 	snap := desktopinput.Default.Snapshot()
 	available := snap.Ready || snap.PermissionRequired || snap.PermissionGranted
@@ -1200,17 +1231,19 @@ func desktopInputSection(lang string) string {
 		return ""
 	}
 	granted := !snap.PermissionRequired || snap.PermissionGranted
-	status, label, action := "unavailable", i18n.T(lang, "desktop_input_unauthorized"),
-		fmt.Sprintf(`<button type="button" class="aux-action" id="input-authorize">%s</button>`, i18n.T(lang, "desktop_input_authorize"))
+	status, label, actions, hint := "unavailable", i18n.T(lang, "desktop_input_unauthorized"),
+		fmt.Sprintf(`<span class="aux-actions"><button type="button" class="aux-action" id="input-authorize">%s</button><button type="button" class="aux-action" id="input-restart">%s</button></span>`,
+			i18n.T(lang, "desktop_input_authorize"), i18n.T(lang, "desktop_input_restart")),
+		fmt.Sprintf(`<p class="aux-hint">%s</p>`, i18n.T(lang, "desktop_input_restart_hint"))
 	if granted {
-		status, label, action = "available", i18n.T(lang, "desktop_input_ready"), ""
+		status, label, actions, hint = "available", i18n.T(lang, "desktop_input_ready"), "", ""
 	}
 	return fmt.Sprintf(`<div class="aux-row">
             <span class="aux-label">%s</span>
             <span class="aux-spacer" aria-hidden="true"></span>
             <span class="status-pill %s" role="status"><span class="status-dot"></span>%s</span>
             %s
-          </div>`, i18n.T(lang, "desktop_input_label"), status, label, action)
+          </div>%s`, i18n.T(lang, "desktop_input_label"), status, label, actions, hint)
 }
 
 // desktopFooterSection groups the low-frequency actions that used to live
