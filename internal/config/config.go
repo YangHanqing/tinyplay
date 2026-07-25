@@ -89,16 +89,27 @@ type Config struct {
 	SeekBackwardSecs     int                  `json:"seek_backward_secs,omitempty"`
 	SeekForwardSecs      int                  `json:"seek_forward_secs,omitempty"`
 	Language             string               `json:"language,omitempty"`
+	WebsiteCustomSites   []WebsiteCustomSite  `json:"website_custom_sites,omitempty"`
 	DLNAReceiverEnabled  bool                 `json:"dlna_receiver_enabled"`
 	DLNAReceiverID       string               `json:"dlna_receiver_id,omitempty"`
 	LocalPlaybackHistory []LocalPlaybackEntry `json:"local_playback_history,omitempty"`
 	AutoplayNextEpisode  bool                 `json:"autoplay_next_episode"`
+	PairedDevices        []PairedDevice       `json:"paired_devices,omitempty"`
 	// Desktop update prompts are intentionally small, local preferences. A
 	// skipped version never suppresses a newer release, while RemindAfter keeps
 	// an app restart from immediately asking the same question again.
 	UpdateSkippedVersion string `json:"update_skipped_version,omitempty"`
 	UpdateRemindVersion  string `json:"update_remind_version,omitempty"`
 	UpdateRemindAfter    string `json:"update_remind_after,omitempty"`
+}
+
+// WebsiteCustomSite is one shared, user-saved URL in the desktop Website
+// Library. It intentionally contains no credentials; browser sessions remain
+// in the platform WebView profile.
+type WebsiteCustomSite struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 type LocalPlaybackEntry struct {
@@ -229,6 +240,9 @@ func loadLocked() (*Config, bool) {
 	}
 	if cfg.Servers == nil {
 		cfg.Servers = []*Server{}
+	}
+	if cfg.WebsiteCustomSites == nil {
+		cfg.WebsiteCustomSites = []WebsiteCustomSite{}
 	}
 	migrated := false
 	for _, srv := range cfg.Servers {

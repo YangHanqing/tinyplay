@@ -24,9 +24,14 @@ import (
 //
 // /dlna/ and the frontend/static routes are intentionally exempt: DLNA senders
 // are not browsers and speak SOAP, and GET navigation must stay open.
+//
+// /desktop/ is included even though it is loopback-only, because "loopback" also
+// describes any web page open in a browser on this computer: without the guard,
+// a random site could POST to /desktop/pairing/unpair-all. Every native shell
+// already sends application/json, so nothing legitimate is affected.
 func withGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isMutatingMethod(r.Method) && strings.HasPrefix(r.URL.Path, "/api/") {
+		if isMutatingMethod(r.Method) && isGuardedPath(r.URL.Path) {
 			if !hasJSONContentType(r) {
 				rejectCrossSite(w, r)
 				return
@@ -38,6 +43,10 @@ func withGuard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isGuardedPath(path string) bool {
+	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/desktop/")
 }
 
 func isMutatingMethod(method string) bool {

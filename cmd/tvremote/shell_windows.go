@@ -3,16 +3,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -30,11 +27,27 @@ import (
 //go:embed icon.ico
 var trayIcon []byte
 
+// feedbackMailAddress is the product support inbox. Keep it in one place so the
+// tray "Send Feedback" action and any future shell entry points stay aligned.
+const feedbackMailAddress = "tinyday.app@gmail.com"
+
 // runShell on Windows: a tray icon that sits silently in the notification area.
 // The mpv player window only appears when the user triggers playback from
 // their phone.
+//
+// The tray menu is intentionally small: open the main QR window, pick a
+// language, send feedback, and quit. Logs / updates / about / DLNA live on the
+// main window (and phone settings where relevant) so the tray does not mirror
+// the whole surface.
 func runShell(localURL string, httpSrv *http.Server) {
-	desktopURL := func() string { return localURL + "/desktop?lang=" + url.QueryEscape(i18n.SystemLang()) }
+	// Every shell→core call goes over loopback. /desktop/* is loopback-only
+	// because the QR image carries the pairing secret, and /api/* needs a device
+	// token from anyone who is not on this machine. The LAN address stays a
+	// display detail, rendered by the core on the /desktop page itself.
+	coreURL := loopbackCoreURL(localURL)
+	desktopURL := func() string {
+		return coreURL + "/desktop?lang=" + url.QueryEscape(i18n.SystemLang()) + "&version=" + url.QueryEscape(version)
+	}
 
 	onReady := func() {
 		// Runs separately from the website WebView: the temporary mouse is a
@@ -45,7 +58,6 @@ func runShell(localURL string, httpSrv *http.Server) {
 		systray.SetTooltip(i18n.System("tooltip"))
 
 		mOpen := systray.AddMenuItem(i18n.System("open_main"), i18n.System("open_main_tip"))
-		mLogs := systray.AddMenuItem(i18n.System("open_logs"), i18n.System("open_logs_tip"))
 		mLanguage := systray.AddMenuItem(i18n.System("language"), "")
 		selected := config.Load().Language
 		languageNames := []struct{ value, title string }{
@@ -57,29 +69,19 @@ func runShell(localURL string, httpSrv *http.Server) {
 		for _, entry := range languageNames {
 			languageItems[entry.value] = mLanguage.AddSubMenuItemCheckbox(entry.title, "", selected == entry.value)
 		}
-		mSettings := systray.AddMenuItem(i18n.System("settings"), "")
-		dlnaEnabled := config.Load().DLNAReceiverEnabled
-		mDLNA := mSettings.AddSubMenuItemCheckbox(i18n.System("dlna_receiver"), i18n.System("dlna_receiver_tip"), dlnaEnabled)
 		systray.AddSeparator()
-		mCheckUpdates := systray.AddMenuItem(i18n.System("check_updates"), i18n.System("check_updates_tip"))
-		mAbout := systray.AddMenuItem(i18n.System("about"), i18n.System("about_tip"))
+		mFeedback := systray.AddMenuItem(i18n.System("feedback"), i18n.System("feedback_tip"))
+		systray.AddSeparator()
 		mQuit := systray.AddMenuItem(i18n.System("quit"), i18n.System("quit_tip"))
 
 		applyLanguage := func(language string) {
 			config.SetLanguage(language)
 			mOpen.SetTitle(i18n.System("open_main"))
 			mOpen.SetTooltip(i18n.System("open_main_tip"))
-			mLogs.SetTitle(i18n.System("open_logs"))
-			mLogs.SetTooltip(i18n.System("open_logs_tip"))
 			mLanguage.SetTitle(i18n.System("language"))
 			languageItems["auto"].SetTitle(i18n.System("language_auto"))
-			mSettings.SetTitle(i18n.System("settings"))
-			mDLNA.SetTitle(i18n.System("dlna_receiver"))
-			mDLNA.SetTooltip(i18n.System("dlna_receiver_tip"))
-			mCheckUpdates.SetTitle(i18n.System("check_updates"))
-			mCheckUpdates.SetTooltip(i18n.System("check_updates_tip"))
-			mAbout.SetTitle(i18n.System("about"))
-			mAbout.SetTooltip(i18n.System("about_tip"))
+			mFeedback.SetTitle(i18n.System("feedback"))
+			mFeedback.SetTooltip(i18n.System("feedback_tip"))
 			mQuit.SetTitle(i18n.System("quit"))
 			mQuit.SetTooltip(i18n.System("quit_tip"))
 			systray.SetTooltip(i18n.System("tooltip"))
@@ -97,14 +99,8 @@ func runShell(localURL string, httpSrv *http.Server) {
 				select {
 				case <-mOpen.ClickedCh:
 					openWindow(desktopURL())
-				case <-mAbout.ClickedCh:
-					showAbout()
-				case <-mCheckUpdates.ClickedCh:
-					go checkForTinyPlayUpdates(true)
-				case <-mLogs.ClickedCh:
-					if resp, err := http.Get(localURL + "/desktop/open-logs"); err == nil {
-						resp.Body.Close()
-					}
+				case <-mFeedback.ClickedCh:
+					openFeedbackEmail()
 				case <-mQuit.ClickedCh:
 					systray.Quit()
 					return
@@ -126,22 +122,14 @@ func runShell(localURL string, httpSrv *http.Server) {
 					applyLanguage("fr")
 				case <-languageItems["de"].ClickedCh:
 					applyLanguage("de")
-				case <-mDLNA.ClickedCh:
-					next := !dlnaEnabled
-					if setDLNAReceiverEnabled(localURL, next) {
-						dlnaEnabled = next
-						if next {
-							mDLNA.Check()
-						} else {
-							mDLNA.Uncheck()
-						}
-					}
 				}
 			}
 		}()
 
 		// Website playback shell: dedicated singleton WebView2, separate from QR.
-		go startWebsiteShell(localURL)
+		go startWebsiteShell(coreURL)
+		// "Connecting…" / next-episode-countdown indicator; see toast_windows.go.
+		go startToastShell(coreURL)
 		// Update discovery is deliberately late and asynchronous: a slow or
 		// blocked GitHub connection must never delay the tray or QR window.
 		go func() {
@@ -162,24 +150,14 @@ func runShell(localURL string, httpSrv *http.Server) {
 	systray.Run(onReady, onExit)
 }
 
-// setDLNAReceiverEnabled goes through the core's settings endpoint so a tray
-// click updates both persisted configuration and the live SSDP socket.
-func setDLNAReceiverEnabled(localURL string, enabled bool) bool {
-	body, err := json.Marshal(map[string]bool{"dlna_receiver_enabled": enabled})
-	if err != nil {
-		return false
-	}
-	req, err := http.NewRequest(http.MethodPut, localURL+"/api/settings", bytes.NewReader(body))
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices
+// openFeedbackEmail launches the user's default mail client with a prefilled
+// support address and a short prompt: feature ideas can be free-form; bugs
+// should include the app logs from the main window.
+func openFeedbackEmail() {
+	q := url.Values{}
+	q.Set("subject", i18n.System("feedback_mail_subject"))
+	q.Set("body", i18n.System("feedback_mail_body"))
+	openWithDefaultHandler("mailto:" + feedbackMailAddress + "?" + q.Encode())
 }
 
 var windowMu sync.Mutex
@@ -199,9 +177,13 @@ func openWindow(url string) {
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug: false,
 		WindowOptions: webview2.WindowOptions{
-			Title:  "TinyPlay",
-			Width:  360,
-			Height: 560,
+			Title: "TinyPlay",
+			// Outer window size, not the WebView's content area — the title
+			// bar eats a slice of the height (see desktop.go's compact-page
+			// comment). 900x540 is the content area the compact page's CSS
+			// targets; the +36 below is a rough allowance for that title bar.
+			Width:  900,
+			Height: 576,
 			Center: true,
 		},
 	})
@@ -248,6 +230,20 @@ func openWindow(url string) {
 	// Lets a reloaded page rediscover borderless standby after DLNA/lang refresh.
 	_ = w.Bind("tinyplayIsFullscreen", func() (bool, error) {
 		return fs.active, nil
+	})
+	// Footer bridges — same names as macOS messageHandlers / page JS:
+	//   tinyplayShowAbout, tinyplayCheckForUpdates (+ __tinyplayUpdateCheckDone)
+	// Check-for-updates runs on this call (not a background goroutine) so the
+	// page can await the Bind promise; we also post the shared done callback so
+	// both shells clear the spinner the same way.
+	_ = w.Bind("tinyplayCheckForUpdates", func() error {
+		checkForTinyPlayUpdates(true)
+		w.Eval(`window.__tinyplayUpdateCheckDone && window.__tinyplayUpdateCheckDone()`)
+		return nil
+	})
+	_ = w.Bind("tinyplayShowAbout", func() error {
+		showAbout()
+		return nil
 	})
 
 	w.Navigate(url)
@@ -341,6 +337,7 @@ func showWebView2Missing() {
 var (
 	user32                 = syscall.NewLazyDLL("user32.dll")
 	comctl32               = syscall.NewLazyDLL("comctl32.dll")
+	shell32                = syscall.NewLazyDLL("shell32.dll")
 	procMessageBoxW        = user32.NewProc("MessageBoxW")
 	procFindWindowW        = user32.NewProc("FindWindowW")
 	procGetWindowLongPtrW  = user32.NewProc("GetWindowLongPtrW")
@@ -351,6 +348,7 @@ var (
 	procGetMonitorInfoW    = user32.NewProc("GetMonitorInfoW")
 	procShowWindow         = user32.NewProc("ShowWindow")
 	procTaskDialogIndirect = comctl32.NewProc("TaskDialogIndirect")
+	procShellExecuteW      = shell32.NewProc("ShellExecuteW")
 )
 
 const (
@@ -560,7 +558,27 @@ func openThirdPartyNotices() {
 }
 
 // openWithDefaultHandler opens a local path or URL with whatever the OS
-// associates it with (a browser for URLs, the registered app for a file path).
+// associates it with (a browser for URLs, the registered app for a file path;
+// mailto: URLs go to whatever the user has set as their mailto handler, which
+// is usually a desktop mail client but can be a webmail handler if they
+// configured one).
+//
+// This calls ShellExecuteW directly rather than shelling out via "cmd /C
+// start": Go's argv escaping for Windows only quotes an argument when it
+// contains a space or tab (see syscall.EscapeArg), so a target with an
+// unquoted "&" — e.g. a mailto: URL with more than one query parameter, or a
+// GitHub release URL with a query string — reaches cmd.exe unquoted and gets
+// split into two commands there, silently truncating the target and running
+// the remainder as a bogus command.
 func openWithDefaultHandler(target string) {
-	_ = exec.Command("cmd", "/C", "start", "", target).Start()
+	verb, err := syscall.UTF16PtrFromString("open")
+	if err != nil {
+		return
+	}
+	path, err := syscall.UTF16PtrFromString(target)
+	if err != nil {
+		return
+	}
+	const swShowNormal = 1
+	_, _, _ = procShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(path)), 0, 0, swShowNormal)
 }

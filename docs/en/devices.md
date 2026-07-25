@@ -4,10 +4,10 @@ There is no single best option. The right choice depends on what you already own
 
 ## Quick comparison
 
-| Dimension | Windows mini PC / laptop | M-series Mac mini | Apple TV 4K | Dedicated local-media player (e.g. Zidoo) |
+| Dimension | Windows mini PC / laptop | M-series Mac mini | Apple TV 4K | Professional Blu-ray media player |
 | --- | --- | --- | --- | --- |
-| Core role | Configurable computer player | Computer + player | Streaming box | Dedicated local-media player |
-| Downloads / Docker | Possible | Possible | Not suited | Not supported |
+| Core role | Configurable computer player | Computer + player | Streaming box | Purpose-built local high-spec player |
+| Downloads / Docker | Possible | Possible | Not suited | Download apps often possible; Docker usually not supported |
 | Local media / NAS | Wide software and format choice | Wide software choice | Usually needs a third-party app | Built for local playback |
 | Streaming | Browser and desktop apps | Browser and desktop apps | Works out of the box | Depends on the apps |
 | HD audio passthrough | Depends on hardware, OS, and setup | Not known for bitstreaming | Not known for local HD passthrough | Depends on model and audio format |
@@ -27,9 +27,9 @@ The Mac mini suits people who want one device for playback, browsing, work, and 
 
 If you mainly stream and want an easy remote-control experience for the whole household, Apple TV 4K is a mature, low-maintenance choice. It serves a different role from using an existing computer as the player, and the two can coexist.
 
-## Dedicated local-media player
+## Professional Blu-ray media player
 
-If local video playback is the main use and you prefer a purpose-built device, a dedicated local-media player can be a good fit. Check the exact model for supported containers, HDR, Dolby Vision, and audio formats.
+If local video playback is the main use and you prefer a purpose-built device, a professional Blu-ray media player can be a good fit. Many current models run app-installable systems, so download clients are often available; a full Docker-style container environment is still usually outside what these devices are built for. Check the exact model for supported containers, HDR, Dolby Vision, and audio formats.
 
 ::: warning Check before buying
 Actual playback capabilities vary with the chip, operating system, drivers, player, source container, TV, and audio equipment. Check the manufacturer's specifications against your own media before buying.

@@ -17,6 +17,7 @@ build/
 dist/
 mpvstage/
 mpv_extract/
+.cache/
 mpv.7z
 *.app
 *.dmg

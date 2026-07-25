@@ -25,7 +25,7 @@ func TestFileSourceCRUDAndBrowseContract(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(media, "demo.mkv"), []byte("video"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h := New(player.New()).Handler()
+	h := testHandler(New(player.New()))
 	body := `{"name":"Local","type":"local","root_path":` + jsonString(media) + `}`
 	req := jsonReq(http.MethodPost, "/api/servers", body)
 	rec := httptest.NewRecorder()
@@ -81,7 +81,7 @@ func TestJellyfinEmptyPasswordAuthenticatesOnCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(player.New()).Handler()
+	h := testHandler(New(player.New()))
 	body, err := json.Marshal(map[string]any{
 		"name": "Jellyfin demo", "type": "jellyfin", "protocol": demoURL.Scheme,
 		"hosts": []string{demoURL.Hostname()}, "port": port,
@@ -111,7 +111,7 @@ func TestJellyfinEmptyPasswordAuthenticatesOnCreate(t *testing.T) {
 func TestLocalFolderPickerCanBrowseBeforeSourceExists(t *testing.T) {
 	data := t.TempDir()
 	t.Setenv("TVREMOTE_DATA_DIR", data)
-	h := New(player.New()).Handler()
+	h := testHandler(New(player.New()))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/files/list?source_type=local", nil)
 	rec := httptest.NewRecorder()
@@ -143,7 +143,7 @@ https://stream.example/live.m3u8?token=stream-secret|User-Agent=PrivateAgent&Coo
 	}))
 	defer playlist.Close()
 
-	h := New(player.New()).Handler()
+	h := testHandler(New(player.New()))
 	body, err := json.Marshal(map[string]any{
 		"name": "Private playlist", "type": "iptv", "playlist_url": playlist.URL,
 	})
@@ -204,7 +204,7 @@ func TestFileSourceCreateThenBrowseByServerIDThenFinalize(t *testing.T) {
 
 	data := t.TempDir()
 	t.Setenv("TVREMOTE_DATA_DIR", data)
-	h := New(player.New()).Handler()
+	h := testHandler(New(player.New()))
 
 	createBody, _ := json.Marshal(map[string]any{
 		"name": "DAV", "type": "webdav", "protocol": tsURL.Scheme,
@@ -261,7 +261,7 @@ func TestValidatedEditKeepsWorkingFileSourceOnFailure(t *testing.T) {
 	if err := os.Mkdir(media, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := New(player.New()).Handler()
+	h := testHandler(New(player.New()))
 
 	req := jsonReq(http.MethodPost, "/api/servers", `{"name":"Local","type":"local","root_path":`+jsonString(media)+`}`)
 	rec := httptest.NewRecorder()
@@ -307,7 +307,7 @@ func TestFileListHonorsExplicitServerID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(second, "second.mkv"), []byte("second"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h := New(player.New()).Handler()
+	h := testHandler(New(player.New()))
 
 	create := func(name, root string) string {
 		req := jsonReq(http.MethodPost, "/api/servers", `{"name":`+jsonString(name)+`,"type":"local","root_path":`+jsonString(root)+`}`)
@@ -336,7 +336,7 @@ func TestFileListHonorsExplicitServerID(t *testing.T) {
 func TestSettingsReset(t *testing.T) {
 	data := t.TempDir()
 	t.Setenv("TVREMOTE_DATA_DIR", data)
-	h := New(player.New()).Handler()
+	h := testHandler(New(player.New()))
 
 	body := `{"name":"Home","type":"emby","hosts":["nas.local"]}`
 	req := jsonReq(http.MethodPost, "/api/servers", body)

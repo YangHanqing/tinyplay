@@ -1,51 +1,66 @@
 # Third-party notices
 
-This file is a pre-release inventory, not yet a complete binary distribution
-notice. The final release must record exact versions, source URLs, license texts,
-and source-availability obligations for every bundled component.
+TinyPlay is licensed under the GNU GPL v3.0 (see [LICENSE](LICENSE)).
+The components below are used by the desktop app and remain under their own
+licenses. Exact Go module versions are pinned in `go.mod` / `go.sum`.
 
-## Bundled at runtime
+## Bundled player (binary packages)
 
-- mpv — GPL-2.0-or-later by default, or LGPL-2.1-or-later when built with the
-  corresponding GPL-disabled configuration. The exact downloaded build and its
-  configuration must be recorded for each release.
-- FFmpeg and codec libraries pulled into the selected mpv build — licensing
-  depends on the exact build configuration.
+Release packages may ship **mpv** and libraries it links, commonly including
+**FFmpeg** and related codecs:
 
-## Bundled desktop imagery
+| Component | Typical license | Upstream |
+|---|---|---|
+| mpv | GPL-2.0-or-later (some builds LGPL-2.1-or-later) | https://mpv.io |
+| FFmpeg and linked codec libraries | LGPL and/or GPL, per build | https://ffmpeg.org |
 
-- **Carina Nebula “Cosmic Cliffs”** (NASA ID: `carina_nebula`) — James Webb Space
-  Telescope NIRCam image of the “Cosmic Cliffs” in the Carina Nebula.
-  - Credit: **NASA, ESA, CSA, STScI**
-  - Source record: https://images.nasa.gov/details/carina_nebula
-  - Bundled asset: `desktop-go/internal/server/assets/carina_nebula.jpg`
-    (served at `/desktop/background.jpg` for the desktop intro/standby window)
-  - NASA image and media guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/
-  - This distribution does **not** include a NASA logo and does **not** imply
-    NASA endorsement of TinyPlay.
-- **NGC 6000** (`Hubble_NGC6000_potw2539a`) — spiral galaxy observed by the
-  Hubble Space Telescope.
-  - Credit: **ESA/Hubble & NASA, A. Filippenko**; acknowledgment:
-    **M. H. Özsaraç**.
-  - Source record:
-    https://science.nasa.gov/missions/hubble/hubble-studies-star-ages-in-colorful-galaxy/
-  - Bundled derivative: `desktop-go/internal/server/assets/ngc6000.jpg`
-- **LRO Earthrise** (`earth_and_limb_m1199291564l_color_2stretch_mask_0`) —
-  Earth above the lunar horizon, captured by the Lunar Reconnaissance Orbiter.
-  - Credit: **NASA/Goddard Space Flight Center/Arizona State University**.
-  - Source record:
-    https://svs.gsfc.nasa.gov/hyperwall/index/data/events/2018/2018-earthday/thaller/LRO_earthrise.hwshow.html
-  - Bundled derivative: `desktop-go/internal/server/assets/earthrise_lro.jpg`
-- These assets contain no NASA logo and do not imply NASA endorsement of
-  TinyPlay. Their use remains subject to NASA's image and media guidance.
+- **Windows:** CI currently downloads an x86_64 build from
+  [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild).
+- **macOS:** release packaging stages a self-contained mpv from the build host
+  (for example Homebrew + dylibbundler).
 
-## Go source dependencies
+Corresponding source for those components is available from the upstream
+projects and the specific mpv build used for each release.
 
-- fyne.io/systray
-- github.com/Microsoft/go-winio
-- github.com/jchv/go-webview2
-- github.com/skip2/go-qrcode
-- their transitive dependencies recorded in `desktop-go/go.sum`
+## Go modules
 
-Do not treat this inventory as a substitute for shipping the required license
-texts with binary releases.
+Direct dependencies:
+
+| Module | License |
+|---|---|
+| [fyne.io/systray](https://github.com/fyne-io/systray) | Apache-2.0 |
+| [github.com/Microsoft/go-winio](https://github.com/microsoft/go-winio) | MIT |
+| [github.com/hirochachacha/go-smb2](https://github.com/hirochachacha/go-smb2) | BSD-2-Clause |
+| [github.com/itchyny/volume-go](https://github.com/itchyny/volume-go) | MIT |
+| [github.com/jchv/go-webview2](https://github.com/jchv/go-webview2) | MIT |
+| [github.com/skip2/go-qrcode](https://github.com/skip2/go-qrcode) | MIT |
+| [golang.org/x/net](https://pkg.go.dev/golang.org/x/net) | BSD-3-Clause |
+| [golang.org/x/text](https://pkg.go.dev/golang.org/x/text) | BSD-3-Clause |
+
+Transitive modules (also pinned in `go.sum`) include, among others:
+`github.com/geoffgarside/ber` (BSD), `github.com/go-ole/go-ole` (MIT),
+`github.com/godbus/dbus/v5` (BSD-2-Clause), `github.com/jchv/go-winloader` (ISC),
+`github.com/moutend/go-wca` (MIT), `golang.org/x/crypto` and `golang.org/x/sys`
+(BSD-3-Clause). License texts are in each module’s upstream repository.
+
+## Web UI icons
+
+- **[Lucide Icons](https://lucide.dev)** — MIT. Inline SVG path data in `web/`.
+
+## System components (not redistributed here)
+
+- **Microsoft Edge WebView2 Runtime** (Windows) — installed with Windows / by
+  Microsoft; TinyPlay links it at runtime and does not ship the runtime in this
+  source tree.
+
+## Desktop imagery
+
+Background images under `internal/server/assets/` are used by the desktop intro
+window. No NASA logo is included; use does not imply NASA endorsement. See
+[NASA Images and Media](https://www.nasa.gov/nasa-brand-center/images-and-media/).
+
+| Asset | Credit | Source |
+|---|---|---|
+| `carina_nebula.jpg` | NASA, ESA, CSA, STScI | https://images.nasa.gov/details/carina_nebula |
+| `ngc6000.jpg` | ESA/Hubble & NASA, A. Filippenko; ack. M. H. Özsaraç | https://science.nasa.gov/missions/hubble/hubble-studies-star-ages-in-colorful-galaxy/ |
+| `earthrise_lro.jpg` | NASA/Goddard Space Flight Center/Arizona State University | https://svs.gsfc.nasa.gov/hyperwall/index/data/events/2018/2018-earthday/thaller/LRO_earthrise.hwshow.html |

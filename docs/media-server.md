@@ -2,19 +2,27 @@
 
 如果你的 NAS 或电脑上已经运行 Emby、Jellyfin 或 Plex，只需将它作为内容源添加到 TinyPlay。媒体库会以海报墙形式呈现，选集、搜索、最近观看和续播也会一并可用；不需要为了播放再折腾另一套电视端界面。
 
+<div class="phone-shot-pair">
+  <figure>
+    <img src="/screenshot-library.png" alt="TinyPlay 手机媒体库海报墙" width="360" height="780" loading="lazy">
+    <figcaption>媒体库</figcaption>
+  </figure>
+  <figure>
+    <img src="/screenshot-remote.png" alt="TinyPlay 手机遥控器界面" width="360" height="780" loading="lazy">
+    <figcaption>遥控器</figcaption>
+  </figure>
+</div>
+
 ## 添加内容源
 
-1. 在手机浏览器中打开 TinyPlay，进入“设置”。
-2. 选择“添加内容源”，再选择 Emby、Jellyfin 或 Plex。
-3. 填入服务器地址、端口和账号信息。
-4. 连接成功后，返回“媒体库”开始浏览。
+1. 选择“添加内容源”，再选择 Emby、Jellyfin 或 Plex。
+2. 填入服务器地址、端口和账号信息。
+3. 连接成功后，返回“媒体库”开始浏览。
 
 服务器地址通常是 NAS 或电脑在局域网内的 IP 地址，例如 `192.168.1.100`。请确认手机、TinyPlay 所在电脑和媒体服务器处于同一局域网。
 
-## 极空间
-
-::: tip 极空间用户
-极空间自带的媒体服务兼容 Emby 接口协议。添加内容源时选择“Emby”类型，再填写极空间提供的连接信息即可。
+::: tip
+极空间自带的媒体服务兼容 Emby 接口协议。添加内容源时选择「Emby」类型，再填写极空间提供的连接信息即可。
 :::
 
 ## 连接后能做什么

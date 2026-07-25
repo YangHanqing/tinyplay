@@ -79,6 +79,10 @@ func startWebsiteShell(coreURL string) {
 	go h.pollLoop()
 }
 
+// loopbackCoreURL keeps the advertised port but points at 127.0.0.1. Reaching
+// the core through this machine's own LAN address arrives as a non-loopback
+// request, which /desktop/* rejects and /api/* treats — correctly — as an
+// unpaired device on the network. Every shell→core call goes through here.
 func loopbackCoreURL(localURL string) string {
 	u, err := url.Parse(localURL)
 	if err != nil || u.Port() == "" {
@@ -426,17 +430,6 @@ func (h *websiteHost) applyOnWindow(w webview2.WebView, cmd websiteCmd) {
 		}
 		w.Navigate(cmd.URL)
 		h.report(map[string]any{"status": "home", "action": website.ActionHome, "command_id": cmd.ID, "open": true})
-	case website.ActionLogin:
-		if cmd.URL != "" {
-			// Broker-supplied fixed login route only; never phone-provided URL text.
-			w.Navigate(cmd.URL)
-			h.report(map[string]any{"status": "login", "action": website.ActionLogin, "command_id": cmd.ID, "open": true})
-			return
-		}
-		// Some catalog sites expose login only as an in-page modal. Their
-		// allowlisted blank-URL command is handled by the generic controller;
-		// it finds a visible login control and never accepts a caller URL.
-		h.runDOMAction(w, cmd)
 	case website.ActionRefresh:
 		w.Eval(`window.location.reload()`)
 		h.report(map[string]any{"status": "refresh", "action": website.ActionRefresh, "command_id": cmd.ID, "open": true})

@@ -2,12 +2,22 @@
 
 If Emby, Jellyfin, or Plex is already running on your NAS or computer, add it to TinyPlay as a media source. Your library appears as a poster wall with episode browsing, search, recently watched, and resume playback.
 
+<div class="phone-shot-pair">
+  <figure>
+    <img src="/screenshot-library.png" alt="TinyPlay phone media library" width="360" height="780" loading="lazy">
+    <figcaption>Library</figcaption>
+  </figure>
+  <figure>
+    <img src="/screenshot-remote.png" alt="TinyPlay phone remote" width="360" height="780" loading="lazy">
+    <figcaption>Remote</figcaption>
+  </figure>
+</div>
+
 ## Add a media source
 
-1. Open TinyPlay in your phone browser and go to **Settings**.
-2. Choose **Add media source**, then choose Emby, Jellyfin, or Plex.
-3. Enter the server address, port, and account details.
-4. After the connection succeeds, return to **Library** and start browsing.
+1. Choose **Add media source**, then choose Emby, Jellyfin, or Plex.
+2. Enter the server address, port, and account details.
+3. After the connection succeeds, return to **Library** and start browsing.
 
 The server address is usually the NAS or computer's local-network IP address, such as `192.168.1.100`. Make sure your phone, the computer running TinyPlay, and the media server are on the same local network.
 

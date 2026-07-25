@@ -2,6 +2,7 @@ package website
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,16 +22,31 @@ type Command struct {
 // Workspace choice (Media/Website) is a phone-local UI preference and is never
 // part of this snapshot. Full current URLs are never exposed here.
 type Snapshot struct {
-	CurrentSiteID string       `json:"current_site_id"`
-	DesiredOpen   bool         `json:"desired_open"`
-	ReportedOpen  bool         `json:"reported_open"`
-	HintActive    bool         `json:"hint_active"`
-	HintLabels    []string     `json:"hint_labels"`
+	CurrentSiteID string   `json:"current_site_id"`
+	GenericSite   bool     `json:"generic_site"`
+	DesiredOpen   bool     `json:"desired_open"`
+	ReportedOpen  bool     `json:"reported_open"`
+	HintActive    bool     `json:"hint_active"`
+	HintLabels    []string `json:"hint_labels"`
+	// SearchAvailable is true only for a recognized site with a verified search
+	// route. Generic/custom URLs intentionally never get a guessed search form.
+	SearchAvailable bool `json:"search_available"`
+	// MoreAvailable means the recognized site has a fixed, site-specific
+	// extension profile. It does not assert that the current page supports an
+	// action; MoreActions remains the result of the page-level capability probe.
+	MoreAvailable bool         `json:"more_available"`
 	MoreActions   []MoreAction `json:"more_actions"`
-	LastStatus    string       `json:"last_status"`
-	LastError     string       `json:"last_error,omitempty"`
-	LastAction    string       `json:"last_action,omitempty"`
-	Catalog       []Site       `json:"catalog"`
+	// SpeedMode tells the phone which speed control (if any) the recognized
+	// current site supports: SpeedModeRate, SpeedModeStep, or SpeedModeNone.
+	SpeedMode string `json:"speed_mode"`
+	// ArrowNavAvailable is true only for a recognized site where ArrowUp/
+	// ArrowDown does something a viewer would recognize (Douyin feed nav,
+	// YouTube volume). See ArrowNavAvailableForSite.
+	ArrowNavAvailable bool   `json:"arrow_nav_available"`
+	LastStatus        string `json:"last_status"`
+	LastError         string `json:"last_error,omitempty"`
+	LastAction        string `json:"last_action,omitempty"`
+	Catalog           []Site `json:"catalog"`
 }
 
 // Report is what a native shell posts after applying a command, navigating, or
@@ -52,6 +68,8 @@ type Report struct {
 type Broker struct {
 	mu             sync.Mutex
 	currentSite    string
+	homeURL        string
+	genericSite    bool
 	desiredOpen    bool
 	reportedOpen   bool
 	hintActive     bool
@@ -106,6 +124,8 @@ func (b *Broker) Reset() Snapshot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.currentSite = ""
+	b.homeURL = ""
+	b.genericSite = false
 	b.hintActive = false
 	b.hintLabels = nil
 	b.moreActions = nil
@@ -138,17 +158,43 @@ func (b *Broker) snapshotLocked() Snapshot {
 	cat := make([]Site, len(Catalog))
 	copy(cat, Catalog)
 	return Snapshot{
-		CurrentSiteID: b.currentSite,
-		DesiredOpen:   b.desiredOpen,
-		ReportedOpen:  b.reportedOpen,
-		HintActive:    b.hintActive,
-		HintLabels:    append([]string(nil), b.hintLabels...),
-		MoreActions:   append([]MoreAction(nil), b.moreActions...),
-		LastStatus:    b.lastStatus,
-		LastError:     b.lastError,
-		LastAction:    b.lastAction,
-		Catalog:       cat,
+		CurrentSiteID:     b.currentSite,
+		GenericSite:       b.genericSite,
+		DesiredOpen:       b.desiredOpen,
+		ReportedOpen:      b.reportedOpen,
+		HintActive:        b.hintActive,
+		HintLabels:        append([]string(nil), b.hintLabels...),
+		SearchAvailable:   b.searchAvailableLocked(),
+		MoreAvailable:     len(MoreActionsForSite(b.currentSite)) > 0,
+		MoreActions:       append([]MoreAction(nil), b.moreActions...),
+		SpeedMode:         b.speedModeLocked(),
+		ArrowNavAvailable: b.arrowNavAvailableLocked(),
+		LastStatus:        b.lastStatus,
+		LastError:         b.lastError,
+		LastAction:        b.lastAction,
+		Catalog:           cat,
 	}
+}
+
+func (b *Broker) searchAvailableLocked() bool {
+	return !b.genericSite && SearchAvailableForSite(b.currentSite)
+}
+
+// speedModeLocked resolves the speed capability of the site actually being
+// displayed. A generic custom entry never derives a current site, so it reports
+// no speed control even when it happens to be pointed at a catalog host.
+func (b *Broker) speedModeLocked() string {
+	if b.genericSite {
+		return SpeedModeNone
+	}
+	return SpeedModeForSite(b.currentSite)
+}
+
+// arrowNavAvailableLocked mirrors speedModeLocked: a generic custom entry
+// never derives a current site, so it never gets a raw ArrowUp/ArrowDown key
+// dispatch either.
+func (b *Broker) arrowNavAvailableLocked() bool {
+	return !b.genericSite && ArrowNavAvailableForSite(b.currentSite)
 }
 
 // RequestOpen opens (or navigates) the singleton native WebView to an
@@ -157,6 +203,16 @@ func (b *Broker) snapshotLocked() Snapshot {
 func (b *Broker) RequestOpen(siteID string) (Snapshot, error) {
 	site, ok := SiteByID(siteID)
 	if !ok {
+		return Snapshot{}, errInvalid("unknown_site")
+	}
+	return b.RequestOpenSite(site)
+}
+
+// RequestOpenSite opens either an approved built-in entry or a persisted
+// generic custom entry resolved by the server. The URL never comes from a
+// phone action after this boundary.
+func (b *Broker) RequestOpenSite(site Site) (Snapshot, error) {
+	if strings.TrimSpace(site.ID) == "" || strings.TrimSpace(site.URL) == "" {
 		return Snapshot{}, errInvalid("unknown_site")
 	}
 	b.mu.Lock()
@@ -172,6 +228,8 @@ func (b *Broker) RequestOpen(siteID string) (Snapshot, error) {
 	// Clearing current site until a real navigation report arrives keeps the
 	// phone UI honest during the brief opening window.
 	b.currentSite = ""
+	b.homeURL = site.URL
+	b.genericSite = site.GenericOnly
 	b.hintActive = false
 	b.hintLabels = nil
 	b.moreActions = nil
@@ -194,6 +252,8 @@ func (b *Broker) RequestClose() Snapshot {
 	b.desiredOpen = false
 	b.reportedOpen = false
 	b.currentSite = ""
+	b.homeURL = ""
+	b.genericSite = false
 	b.hintActive = false
 	b.hintLabels = nil
 	b.moreActions = nil
@@ -248,12 +308,6 @@ func (b *Broker) EnqueueAction(action, text, label string) (Snapshot, error) {
 			return Snapshot{}, errInvalid("invalid_number")
 		}
 		cmd.Text = clean
-	case ActionVolume:
-		clean, ok := ValidateNumber(text, MinWebsiteVolumeDelta, MaxWebsiteVolumeDelta)
-		if !ok || clean == "0" {
-			return Snapshot{}, errInvalid("invalid_number")
-		}
-		cmd.Text = clean
 	case ActionHintLabel:
 		clean, ok := ValidateHintLabel(label)
 		if !ok {
@@ -270,27 +324,35 @@ func (b *Broker) EnqueueAction(action, text, label string) (Snapshot, error) {
 	if isSiteMoreAction(action) && !hasMoreAction(b.moreActions, action) {
 		return b.snapshotLocked(), errInvalid("action_unavailable")
 	}
+	// Speed is per-site, and the two forms are not interchangeable: a rate-mode
+	// site must not receive a step command and vice versa.
+	switch action {
+	case ActionSpeed:
+		if b.speedModeLocked() != SpeedModeRate {
+			return b.snapshotLocked(), errInvalid("action_unavailable")
+		}
+	case ActionSpeedUp, ActionSpeedDown:
+		if b.speedModeLocked() != SpeedModeStep {
+			return b.snapshotLocked(), errInvalid("action_unavailable")
+		}
+	case ActionArrowUp, ActionArrowDown:
+		if !b.arrowNavAvailableLocked() {
+			return b.snapshotLocked(), errInvalid("action_unavailable")
+		}
+	}
+	if action == ActionSearch && !b.searchAvailableLocked() {
+		// Search is offered only where we own a verified route. Otherwise the
+		// controller would have to guess a page input and submit its form.
+		return b.snapshotLocked(), errInvalid("search_unavailable")
+	}
 	if action == ActionHome {
-		// Root URLs come only from the fixed catalog, never from a phone request.
-		site, ok := SiteByID(b.currentSite)
-		if !ok {
+		// The root is captured only when a catalog/custom entry is opened, never
+		// supplied by a phone action. It remains stable through cross-site hops.
+		if b.homeURL == "" {
 			return b.snapshotLocked(), errInvalid("home_unavailable")
 		}
-		cmd.SiteID = site.ID
-		cmd.URL = site.URL
-	}
-	if action == ActionLogin {
-		// Prefer a fixed route where we have verified one. A catalog site with
-		// no fixed route (currently Douyin) is still allowed to invoke the
-		// controller's generic visible-login control; neither path accepts a
-		// phone-provided URL.
-		if _, ok := SiteByID(b.currentSite); !ok {
-			return b.snapshotLocked(), errInvalid("login_unavailable")
-		}
 		cmd.SiteID = b.currentSite
-		if loginURL, ok := LoginURL(b.currentSite); ok {
-			cmd.URL = loginURL
-		}
+		cmd.URL = b.homeURL
 	}
 	if action == ActionHintEnter {
 		b.hintActive = true
@@ -350,6 +412,8 @@ func (b *Broker) ApplyReport(r Report) Snapshot {
 		} else {
 			b.reportedOpen = false
 			b.currentSite = ""
+			b.homeURL = ""
+			b.genericSite = false
 			b.hintActive = false
 			b.hintLabels = nil
 			b.moreActions = nil
@@ -368,7 +432,9 @@ func (b *Broker) ApplyReport(r Report) Snapshot {
 
 	if r.CurrentURL != "" {
 		if acceptOpenState {
-			b.currentSite = SiteIDFromURL(r.CurrentURL)
+			if !b.genericSite {
+				b.currentSite = SiteIDFromURL(r.CurrentURL)
+			}
 			// Every main-document navigation invalidates page-level capabilities.
 			b.moreActions = nil
 			b.moreProbeCmdID = 0

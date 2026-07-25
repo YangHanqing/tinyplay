@@ -30,7 +30,26 @@ func (s *Server) playerState(w http.ResponseWriter, r *http.Request) {
 		// Malformed after_revision is ignored: fall through to an immediate
 		// state snapshot so ordinary clients stay compatible.
 	}
-	writeJSON(w, http.StatusOK, s.mergeAutoplayState(s.player.State()))
+	writeJSON(w, http.StatusOK, desktopToastState(s.mergeAutoplayState(s.player.State())))
+}
+
+// desktopToastState adds desktop_toast_mode to an already-built player state
+// map. The native desktop shells (macOS/Windows) long-poll this same
+// endpoint to drive a small on-screen indicator — otherwise a slow remote
+// source leaves the monitor blank/frozen with no sign the phone's tap
+// registered. "connecting" and "autoplay" never overlap in time: the former
+// spans a single Play() attempt, the latter only exists in the gap between
+// one title's natural end and the next one's Play() call.
+func desktopToastState(state map[string]any) map[string]any {
+	mode := ""
+	if starting, _ := state["player_starting"].(bool); starting {
+		mode = "connecting"
+	}
+	if status, _ := state["autoplay_status"].(string); status == autoplayStatusNextAvailable {
+		mode = "autoplay"
+	}
+	state["desktop_toast_mode"] = mode
+	return state
 }
 
 func (s *Server) playerCommand(w http.ResponseWriter, r *http.Request) {

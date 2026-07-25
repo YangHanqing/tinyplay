@@ -14,6 +14,12 @@ import (
 // without hunting through ~/Library/Application Support. The core runs on the
 // same machine, so launching Finder / Explorer from here is fine.
 func (s *Server) openLogs(w http.ResponseWriter, r *http.Request) {
+	// Loopback only: this launches a process on the desktop, so it belongs to
+	// the native shell's menu item and not to anything on the network.
+	if !isLoopbackRequest(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"detail": "loopback only"})
+		return
+	}
 	dir := config.LogDir()
 	_ = os.MkdirAll(dir, 0o755)
 

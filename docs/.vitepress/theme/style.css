@@ -91,6 +91,78 @@ body {
   color: var(--vp-c-text-1);
 }
 
+.VPDoc img {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  margin: 20px 0 8px;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 14px;
+  background: #0f1714;
+  box-shadow: 0 12px 36px rgba(16, 28, 24, .08);
+}
+
+.VPDoc p > img {
+  margin-top: 8px;
+}
+
+.VPDoc figure {
+  margin: 24px 0;
+}
+
+.VPDoc figcaption {
+  margin-top: 8px;
+  color: var(--vp-c-text-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Side-by-side phone screenshots (portrait, constrained height). */
+.VPDoc .phone-shot-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px 20px;
+  margin: 20px 0 28px;
+  max-width: 520px;
+}
+
+.VPDoc .phone-shot-pair figure {
+  margin: 0;
+  min-width: 0;
+}
+
+.VPDoc .phone-shot-pair img {
+  width: 100%;
+  max-width: none;
+  max-height: 420px;
+  height: auto;
+  margin: 0;
+  object-fit: contain;
+  object-position: top center;
+  border-radius: 18px;
+  background: #101816;
+}
+
+.VPDoc .phone-shot-pair figcaption {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+@media (max-width: 640px) {
+  .VPDoc .phone-shot-pair {
+    max-width: 100%;
+    gap: 12px;
+  }
+
+  .VPDoc .phone-shot-pair img {
+    max-height: 340px;
+  }
+}
+
 .VPDoc table {
   display: table;
   width: 100%;

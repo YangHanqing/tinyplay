@@ -182,10 +182,16 @@ const WORKSPACE_STORAGE_KEY = 'tvremote.workspace';
 // is cleared on startup.
 let _workspace = 'media'; // 'media' | 'website' — restored from backend activity
 let _websiteEndpointOK = false; // Go desktop exposes /api/website/*
-let _websiteAvailable = false;  // endpoint OK + resolved language is zh-CN
+let _websiteAvailable = false;  // endpoint available on this desktop backend
 let _websiteState = null;
 let _websitePollTimer = null;
 let _websiteCatalog = [];
+// The site id passed to the last websiteOpenSite() call. Only used as a
+// fallback header label for generic/custom entries, whose current_site_id the
+// server deliberately never echoes (see broker.go's genericSite privacy note)
+// — this is not new information leaked, the client already knows it because
+// it initiated the open.
+let _lastOpenedWebsiteSiteId = '';
 let _websiteMoreLoading = false;
 let _websiteMoreDispatching = false;
 let _websiteMoreProbeQueued = false;
@@ -195,10 +201,13 @@ let _websiteMoreProbeQueued = false;
 let _workspaceExplicitlySelected = false;
 
 const FALLBACK_WEBSITE_CATALOG = [
-  { id: 'bilibili', name: '哔哩哔哩', url: 'https://www.bilibili.com/' },
-  { id: 'iqiyi', name: '爱奇艺', url: 'https://www.iqiyi.com/' },
-  { id: 'tencent', name: '腾讯视频', url: 'https://v.qq.com/' },
-  { id: 'youku', name: '优酷', url: 'https://www.youku.com/' },
+  { id: 'bilibili', name: '哔哩哔哩', url: 'https://www.bilibili.com/', chinese_only: true },
+  { id: 'iqiyi', name: '爱奇艺', url: 'https://www.iqiyi.com/', chinese_only: true },
+  { id: 'tencent', name: '腾讯视频', url: 'https://v.qq.com/', chinese_only: true },
+  { id: 'youku', name: '优酷', url: 'https://www.youku.com/', chinese_only: true },
+  { id: 'douyin', name: '抖音精选', url: 'https://www.douyin.com/jingxuan', chinese_only: true },
+  { id: 'youtube', name: 'YouTube', url: 'https://www.youtube.com/' },
+  { id: 'netflix', name: 'Netflix', url: 'https://www.netflix.com/' },
 ];
 
 // Clear any workspace value persisted by older builds so users previously
@@ -217,14 +226,15 @@ function isWebsiteWorkspace() {
 }
 
 function applyWebsiteLanguageGate() {
-  // Until feature detection finishes, language alone is not enough to decide
-  // whether the virtual Website source should be exposed.
+  // Website is available in every supported UI language. Language only filters
+  // the Chinese built-in cards below; YouTube, Netflix, and personal URLs are
+  // always present.
   if (!_websiteEndpointOK) {
     _websiteAvailable = false;
     paintWorkspace();
     return;
   }
-  const nextAvailable = _websiteEndpointOK && isSimplifiedChineseWebsiteLanguage();
+  const nextAvailable = _websiteEndpointOK;
   if (!nextAvailable && _workspace === 'website') {
     _workspace = 'media';
   }
@@ -299,6 +309,9 @@ function applyWebsiteState(st) {
   paintWebsiteRemote();
   paintWebsiteMoreSheet();
   paintHeaderActions();
+  // Keep the topbar domain label live as navigation reports come in, not just
+  // on the initial workspace switch.
+  if (isWebsiteWorkspace()) paintSourceSwitcher();
 }
 
 // Controller results are asynchronous (shell report → next state poll), so
@@ -322,6 +335,10 @@ function websiteErrorMessage(err) {
       // Honest degradation: this page doesn't expose a controllable player —
       // point at the hint flow instead of failing silently.
       return tr('websiteControlUnavailable');
+    case 'navigation_failed':
+      // The TV window opened but the page never loaded (bad address, refused
+      // connection, TLS). Without this the window just sits black.
+      return tr('websiteOpenFailed');
     default:
       return tr('websiteActionFailed');
   }
@@ -373,6 +390,7 @@ function paintHeaderActions() {
   const onLibrary = _activeTab === 'library';
   const onRemote = _activeTab === 'remote';
   const websiteClose = document.getElementById('btn-website-close');
+  const websiteAdd = document.getElementById('btn-website-add');
   if (website) {
     document.getElementById('search-toggle')?.classList.add('hidden');
     document.getElementById('btn-iptv-refresh')?.classList.add('hidden');
@@ -384,9 +402,15 @@ function paintHeaderActions() {
       websiteClose.setAttribute('aria-label', tr('websiteClose'));
       websiteClose.setAttribute('title', tr('websiteClose'));
     }
+    websiteAdd?.classList.toggle('hidden', !onLibrary);
+    if (websiteAdd) {
+      websiteAdd.setAttribute('aria-label', tr('websiteAddUrl'));
+      websiteAdd.setAttribute('title', tr('websiteAddUrl'));
+    }
     return;
   }
   websiteClose?.classList.add('hidden');
+  websiteAdd?.classList.add('hidden');
   document.getElementById('search-toggle')?.classList.toggle(
     'hidden',
     !onLibrary || isFileSourceType(_activeSourceType) || _activeSourceType === 'iptv' || !_hasAnyServer
@@ -410,7 +434,8 @@ function updateNavLabels() {
 }
 
 function websiteCatalogSites() {
-  return _websiteCatalog.length ? _websiteCatalog : FALLBACK_WEBSITE_CATALOG;
+  const sites = _websiteCatalog.length ? _websiteCatalog : FALLBACK_WEBSITE_CATALOG;
+  return sites.filter((site) => !site?.chinese_only || isSimplifiedChineseWebsiteLanguage());
 }
 
 function paintWebsiteCatalog() {
@@ -419,12 +444,18 @@ function paintWebsiteCatalog() {
   const sites = websiteCatalogSites();
   host.innerHTML = sites.map((s) => {
     const url = s.url || '';
-    return `
+    const card = `
       <button type="button" class="website-card" data-site-id="${esc(s.id)}"
               onclick="websiteOpenSite('${jsStr(s.id)}')">
-        <span class="website-card-name">${esc(s.name || s.id)}</span>
-        <span class="website-card-url">${esc(url)}</span>
+        <span class="website-card-main"><span class="website-card-name">${esc(s.name || s.id)}</span>
+        <span class="website-card-url">${esc(url)}</span></span>
       </button>`;
+    if (!s.generic_only) return card;
+    return `<div class="website-card-row">${card}
+      <button type="button" class="website-card-delete" aria-label="${esc(tr('websiteRemoveUrl'))}"
+              title="${esc(tr('websiteRemoveUrl'))}" onclick="websiteDeleteCustomSite('${jsStr(s.id)}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+      </button></div>`;
   }).join('');
 }
 
@@ -452,21 +483,87 @@ function paintWebsiteRemote() {
   document.querySelectorAll('.website-control-action').forEach((button) => {
     button.disabled = !reported;
   });
-  // Home is a fixed catalog-root action, so it is meaningful only while the
-  // current document still maps to one of the recognized Website sources.
-  const needsRecognizedSite = !reported || !_websiteState?.current_site_id;
+  // Every opened catalog card, including a personal URL, owns a captured home
+  // URL. Search and More are explicit server capabilities, so neither appears
+  // as a dead control for a site without a supported implementation.
   const home = document.getElementById('website-btn-home');
-  if (home) home.disabled = needsRecognizedSite;
-  const login = document.getElementById('website-btn-login');
-  if (login) login.disabled = needsRecognizedSite;
+  if (home) home.disabled = !reported;
+  const searchAvailable = reported && !!_websiteState?.search_available;
+  const moreAvailable = reported && !!_websiteState?.more_available;
+  document.getElementById('website-btn-search')?.classList.toggle('hidden', !searchAvailable);
+  document.getElementById('website-btn-more')?.classList.toggle('hidden', !moreAvailable);
+  const searchMoreRow = document.getElementById('website-search-more-row');
+  searchMoreRow?.classList.toggle('hidden', !searchAvailable && !moreAvailable);
+  searchMoreRow?.classList.toggle('only-search', searchAvailable && !moreAvailable);
+  searchMoreRow?.classList.toggle('only-more', !searchAvailable && moreAvailable);
+  if (!searchAvailable && websiteSearchIsOpen()) closeWebsiteSearchSheet();
+  // Speed is an allowlisted per-site capability, not a universal control: the
+  // server names the mode for the site actually on screen and the phone shows
+  // only that form. Anything else (iQIYI, Youku, Douyin, Netflix, personal
+  // URLs) gets no speed section at all.
+  const speedMode = reported ? (_websiteState?.speed_mode || '') : '';
+  document.getElementById('website-speed-section')?.classList.toggle('hidden', !speedMode);
+  document.getElementById('website-speed-rate-row')?.classList.toggle('hidden', speedMode !== 'rate');
+  document.getElementById('website-speed-step-row')?.classList.toggle('hidden', speedMode !== 'step');
+  // Real ArrowUp/ArrowDown keypress row: only Douyin (feed nav) and YouTube
+  // (volume) react to it, so it stays hidden everywhere else — same allowlist
+  // shape as speed_mode above.
+  const arrowNavAvailable = reported && !!_websiteState?.arrow_nav_available;
+  document.getElementById('website-arrow-nav-row')?.classList.toggle('hidden', !arrowNavAvailable);
+  // “More” is reserved for sites with an explicit extension profile. Generic
+  // fallback sites never expose an empty sheet just because the control plane
+  // can technically run a capability probe.
+  if (!moreAvailable && websiteMoreIsOpen()) closeWebsiteMoreSheet();
 }
 
 // Catalog card tap: atomically open allowlisted site and jump to Remote.
 async function websiteOpenSite(siteId) {
   try {
     const st = await api('POST', '/api/website/open', { site_id: siteId });
+    _lastOpenedWebsiteSiteId = siteId;
     if (st) applyWebsiteState(st);
     switchTab('remote');
+  } catch (e) {
+    toast(e.message || tr('websiteActionFailed'), true);
+  }
+}
+
+function openWebsiteAddSheet() {
+  document.getElementById('website-add-backdrop')?.classList.remove('hidden');
+  document.body.classList.add('sheet-open');
+  const input = document.getElementById('website-add-input');
+  if (input) { input.value = ''; setTimeout(() => input.focus(), 60); }
+}
+
+function closeWebsiteAddSheet() {
+  document.getElementById('website-add-backdrop')?.classList.add('hidden');
+  if (!document.querySelector('.sheet-backdrop:not(.hidden)')) document.body.classList.remove('sheet-open');
+}
+
+function onWebsiteAddBackdropClick(event) {
+  if (event.target.id === 'website-add-backdrop') closeWebsiteAddSheet();
+}
+
+async function websiteAddCustomSite() {
+  const input = document.getElementById('website-add-input');
+  const url = (input?.value || '').trim();
+  if (!url) {
+    toast(tr('websiteUrlRequired'), true);
+    return;
+  }
+  try {
+    const st = await api('POST', '/api/website/custom', { url });
+    if (st) applyWebsiteState(st);
+    closeWebsiteAddSheet();
+  } catch (e) {
+    toast(e.message || tr('websiteInvalidUrl'), true);
+  }
+}
+
+async function websiteDeleteCustomSite(siteID) {
+  try {
+    const st = await api('DELETE', `/api/website/custom/${encodeURIComponent(siteID)}`);
+    if (st) applyWebsiteState(st);
   } catch (e) {
     toast(e.message || tr('websiteActionFailed'), true);
   }
@@ -499,7 +596,7 @@ function websiteMoreIsOpen() {
 }
 
 async function openWebsiteMoreSheet() {
-  if (!_websiteState?.reported_open || websiteMoreIsOpen()) return;
+  if (!_websiteState?.reported_open || !_websiteState?.more_available || websiteMoreIsOpen()) return;
   document.getElementById('website-more-backdrop')?.classList.remove('hidden');
   document.body.classList.add('sheet-open');
   _websiteMoreLoading = true;
@@ -597,24 +694,13 @@ async function runWebsiteMoreAction(actionID) {
   }
 }
 
-async function websiteMoreAction(action) {
-  closeWebsiteMoreSheet();
-  await websiteAction(action);
-}
-
-function openWebsiteSearchFromMore() {
-  closeWebsiteMoreSheet();
-  openWebsiteSearchSheet();
-}
-
-function openWebsiteHintFromMore() {
-  closeWebsiteMoreSheet();
-  openWebsiteHintSheet();
-}
-
 /* ── Website search sheet ─────────────────────────────────────────────────── */
+function websiteSearchIsOpen() {
+  const backdrop = document.getElementById('website-search-backdrop');
+  return !!backdrop && !backdrop.classList.contains('hidden');
+}
 function openWebsiteSearchSheet() {
-  if (!_websiteState?.reported_open) return;
+  if (!_websiteState?.reported_open || !_websiteState?.search_available) return;
   document.getElementById('website-search-backdrop')?.classList.remove('hidden');
   document.body.classList.add('sheet-open');
   const input = document.getElementById('website-search-input');
@@ -821,6 +907,218 @@ function bindDesktopInputTouchpad() {
   pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end);
 }
 
+/* ── Pairing ──────────────────────────────────────────────────────────────────
+   The remote is reachable by anything on the same network, so the backend only
+   answers /api/ calls from a paired device. Two ways in, both proving the person
+   is standing at the computer:
+
+     · Scanning the QR code, which carries a high-entropy secret in the URL
+       fragment. Handled silently on first load — the phone never sees a prompt.
+     · Typing the address by hand, which asks for on-screen approval: the phone
+       shows four digits and the person allows that exact code on the computer.
+
+   Either way the phone ends up with one long-lived token in localStorage. If it
+   is ever lost — Safari clears script storage after seven days without a visit
+   unless the site is on the Home Screen — the user lands on the consent flow
+   below instead of a broken screen. Re-pairing is one scan.
+*/
+const TOKEN_STORAGE_KEY = 'tinyplay.token';
+const PAIRING_POLL_MS = 2000;
+let _deviceToken = '';
+let _pairingScreenOpen = false;
+
+function readStoredToken() {
+  try { return localStorage.getItem(TOKEN_STORAGE_KEY) || ''; } catch (_) { return ''; }
+}
+
+function storeDeviceToken(token) {
+  _deviceToken = token || '';
+  try {
+    if (token) localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    else localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch (_) {}
+  writeTokenCookie(token);
+}
+
+// Poster artwork is loaded through <img src>, which cannot carry a header, so the
+// cookie is the only way those requests reach an authenticated endpoint. It
+// mirrors localStorage rather than replacing it; SameSite=Strict plus the
+// backend's cross-site guard keep another site from riding on it.
+function writeTokenCookie(token) {
+  try {
+    if (token) {
+      document.cookie = `tp_token=${encodeURIComponent(token)}; path=/; max-age=31536000; SameSite=Strict`;
+    } else {
+      document.cookie = 'tp_token=; path=/; max-age=0; SameSite=Strict';
+    }
+  } catch (_) {}
+}
+
+// The secret arrives in the fragment (never sent to a server, never logged) and
+// is removed from the address bar as soon as it has been read, so a shared or
+// bookmarked URL does not carry it around.
+function takePairingSecretFromURL() {
+  const hash = String(location.hash || '');
+  const match = hash.match(/[#&]p=([A-Za-z0-9]+)/);
+  if (!match) return '';
+  history.replaceState(null, '', location.pathname + location.search);
+  return match[1];
+}
+
+async function pairingFetch(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify(body || {}),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const error = new Error(data.detail || r.statusText);
+    error.code = data.code || '';
+    throw error;
+  }
+  return data;
+}
+
+// ensurePaired resolves once this phone holds a token. It owns the screen while
+// pairing is unfinished, so boot can simply wait for it.
+async function ensurePaired() {
+  _deviceToken = readStoredToken();
+  if (_deviceToken) writeTokenCookie(_deviceToken);
+
+  const secret = takePairingSecretFromURL();
+  if (secret) {
+    // Re-scanning the QR from a browser that already holds a working token
+    // must not mint (and register) a second device — trust the existing
+    // token if the API still accepts it, and only spend the secret when it
+    // doesn't.
+    if (_deviceToken && await apiAcceptsUsUnpaired()) return true;
+    try {
+      const { token } = await pairingFetch('/api/pair/qr', { secret });
+      if (token) {
+        storeDeviceToken(token);
+        return true;
+      }
+    } catch (error) {
+      // A stale QR photo or a locked-out code lands here; the consent flow is
+      // still available, so explain and offer it rather than dead-ending.
+      openPairingScreen(error.message);
+      return false;
+    }
+  }
+  if (_deviceToken) return true;
+  // No token yet. The backend exempts callers on the computer itself, so a
+  // browser opened there must not be asked to pair with the machine it is
+  // already sitting on — ask the API before assuming a prompt is needed.
+  if (await apiAcceptsUsUnpaired()) return true;
+  openPairingScreen();
+  return false;
+}
+
+async function apiAcceptsUsUnpaired() {
+  try {
+    const r = await fetch('/api/settings', { cache: 'no-store' });
+    return r.ok;
+  } catch (_) {
+    // Unreachable backend is a different problem, handled by the offline
+    // banner. Do not turn it into a pairing prompt.
+    return true;
+  }
+}
+
+function openPairingScreen(message = '') {
+  if (_pairingScreenOpen) return;
+  _pairingScreenOpen = true;
+  const screen = document.createElement('div');
+  screen.className = 'pairing-screen';
+  screen.id = 'pairing-screen';
+  document.body.appendChild(screen);
+  paintPairingIntro(screen, message);
+}
+
+const PAIRING_SHIELD_ICON = `<svg class="pairing-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>`;
+
+function paintPairingIntro(screen, message = '') {
+  screen.innerHTML = `
+    <div class="pairing-card" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+      ${PAIRING_SHIELD_ICON}
+      <h2 id="pairing-title">${esc(tr('pairTitle'))}</h2>
+      <p>${esc(tr('pairIntro'))}</p>
+      ${message ? `<p class="pairing-error" role="alert">${esc(message)}</p>` : ''}
+      <button type="button" class="pairing-primary" id="pairing-start">${esc(tr('pairStart'))}</button>
+      <p class="pairing-hint">${esc(tr('pairScanHint'))}</p>
+    </div>`;
+  screen.querySelector('#pairing-start').addEventListener('click', () => startConsentPairing(screen));
+}
+
+async function startConsentPairing(screen) {
+  screen.innerHTML = `<div class="pairing-card"><div class="pairing-spinner" aria-hidden="true"></div><p>${esc(tr('pairRequesting'))}</p></div>`;
+  let request;
+  try {
+    request = await pairingFetch('/api/pair/request');
+  } catch (error) {
+    paintPairingIntro(screen, error.message);
+    return;
+  }
+  paintPairingWaiting(screen, request.code);
+  pollPairingApproval(screen, request.nonce);
+}
+
+function paintPairingWaiting(screen, code) {
+  screen.innerHTML = `
+    <div class="pairing-card" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+      <h2 id="pairing-title">${esc(tr('pairWaitingTitle'))}</h2>
+      <p>${esc(tr('pairWaitingBody'))}</p>
+      <div class="pairing-code" aria-live="polite">${esc(code)}</div>
+      <div class="pairing-waiting"><span class="pairing-spinner" aria-hidden="true"></span>${esc(tr('pairWaitingHint'))}</div>
+      <button type="button" class="pairing-secondary" id="pairing-cancel">${esc(tr('cancel'))}</button>
+    </div>`;
+  screen.querySelector('#pairing-cancel').addEventListener('click', () => {
+    screen.dataset.cancelled = '1';
+    paintPairingIntro(screen);
+  });
+}
+
+function pollPairingApproval(screen, nonce) {
+  const tick = async () => {
+    if (screen.dataset.cancelled === '1') return;
+    let result;
+    try {
+      result = await pairingFetch('/api/pair/claim', { nonce });
+    } catch (_) {
+      setTimeout(tick, PAIRING_POLL_MS);
+      return;
+    }
+    if (result.state === 'approved' && result.token) {
+      storeDeviceToken(result.token);
+      finishPairing(screen);
+      return;
+    }
+    if (result.state === 'pending') {
+      setTimeout(tick, PAIRING_POLL_MS);
+      return;
+    }
+    // Expired, or denied on the computer.
+    paintPairingIntro(screen, tr(result.state === 'expired' ? 'pairExpired' : 'pairDenied'));
+  };
+  setTimeout(tick, PAIRING_POLL_MS);
+}
+
+function finishPairing(screen) {
+  screen.innerHTML = `<div class="pairing-card"><div class="pairing-ok" aria-hidden="true">✓</div><p>${esc(tr('pairDone'))}</p></div>`;
+  // Reload rather than resuming: every view was built while the API was refusing
+  // requests, so a clean boot is both simpler and less surprising.
+  setTimeout(() => location.reload(), 700);
+}
+
+// Called when a request comes back 401 mid-session — a revoked device, or a
+// token that outlived the computer's paired list.
+function onPairingRequired() {
+  storeDeviceToken('');
+  openPairingScreen(tr('pairAgainNeeded'));
+}
+
 /* ── Boot ─────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('click', onDocClick);
@@ -830,6 +1128,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   registerPWA();
   detectPlatformAndPatchI18n();
   setupServiceReachability();
+
+  if (!(await ensurePaired())) return;
 
   await refreshServerSwitcher();
   await restorePlayerContext();
@@ -905,7 +1205,7 @@ async function retryServiceConnection() {
   if (_serviceProbeInFlight) return;
   _serviceProbeInFlight = true;
   try {
-    const r = await fetch('/api/player/state', { cache: 'no-store' });
+    const r = await fetch('/api/player/state', { cache: 'no-store', headers: authHeaders() });
     if (r.ok) {
       setServiceOnline(true);
     } else {
@@ -1029,6 +1329,12 @@ function updateLastPlaybackDebugEntry(state = {}) {
 }
 
 /* ── API helper ───────────────────────────────────────────────────────────── */
+// A custom header rather than a cookie for fetches: it forces a CORS preflight,
+// so another site cannot make the browser send an authenticated request at all.
+function authHeaders() {
+  return _deviceToken ? { 'X-TinyPlay-Token': _deviceToken } : {};
+}
+
 async function api(method, path, body, extra = {}) {
   const isPlayRequest = method === 'POST' && path === '/api/player/play';
   if (isPlayRequest) {
@@ -1047,7 +1353,7 @@ async function _apiRequest(method, path, body, extra = {}) {
     path += `${path.includes('?') ? '&' : '?'}server_id=${encodeURIComponent(_activeServerId)}`;
     if (!extra.signal) extra.signal = _libraryAbortController.signal;
   }
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const opts = { method, headers: { 'Content-Type': 'application/json', ...authHeaders() } };
   if (extra.signal) opts.signal = extra.signal;
   if (body !== undefined) opts.body = JSON.stringify(body);
   let r;
@@ -1063,6 +1369,12 @@ async function _apiRequest(method, path, body, extra = {}) {
     throw offlineServiceError();
   }
   setServiceOnline(true);
+  // The computer no longer recognises this device (unpaired there, or the config
+  // was reset). Ask for pairing again instead of surfacing a bare error.
+  if (r.status === 401 && r.headers.get('X-TinyPlay-Pairing') === 'required') {
+    onPairingRequired();
+    throw new Error(tr('pairAgainNeeded'));
+  }
   if (!r.ok) {
     const err = await r.json().catch(() => ({ detail: r.statusText }));
     throw new Error(err.detail || r.statusText);
@@ -1134,7 +1446,9 @@ async function pushSystemVolume(body) {
 
 function _renderSystemVolumeUi() {
   const safeVol = Math.max(0, Math.min(100, Math.round(_systemVolume.volume)));
-  _setText('volume-current', _systemVolume.muted ? tr('muted') : `${safeVol}%`);
+  const volumeText = _systemVolume.muted ? tr('muted') : `${safeVol}%`;
+  _setText('volume-current', volumeText);
+  _setText('website-volume-current', volumeText);
   updateVolumeUi(safeVol);
   const muteBtn = document.getElementById('btn-mute');
   if (muteBtn) {
@@ -1156,7 +1470,7 @@ function setVolume(value) {
 
 function onVolumePointer(event) {
   if (event.type === 'pointermove' && event.buttons === 0) return;
-  const track = document.querySelector('.volume-track');
+  const track = event.currentTarget;
   if (!track) return;
   const rect = track.getBoundingClientRect();
   if (!rect.width) return;
@@ -1939,15 +2253,14 @@ function updateProgressUi(percent, seconds) {
 
 function updateVolumeUi(volume) {
   const safeVol = Number.isFinite(Number(volume)) ? Math.max(0, Math.min(100, Number(volume))) : 0;
-  const fill = document.getElementById('volume-fill');
-  const thumb = document.getElementById('volume-thumb');
-  const track = document.querySelector('.volume-track');
-  if (fill) fill.style.width = safeVol + '%';
-  if (thumb) thumb.style.left = safeVol + '%';
-  if (track) {
+  document.querySelectorAll('[data-volume-control]').forEach((track) => {
+    const fill = track.querySelector('.volume-fill');
+    const thumb = track.querySelector('.volume-thumb');
+    if (fill) fill.style.width = safeVol + '%';
+    if (thumb) thumb.style.left = safeVol + '%';
     track.setAttribute('aria-valuenow', String(Math.round(safeVol)));
     track.setAttribute('aria-valuetext', `${Math.round(safeVol)}%`);
-  }
+  });
 }
 
 function progressEventToTime(event) {
@@ -2820,13 +3133,35 @@ function _sourceMenuCheckHtml() {
   </span>`;
 }
 
+// Domain of the site actually open, e.g. "youtube.com" — falls back to the
+// fixed "Web Browser" title before a site is open, or when we genuinely don't
+// know the current one (a generic/custom entry the phone never asked about,
+// see _lastOpenedWebsiteSiteId).
+function websiteHeaderLabel() {
+  if (!_websiteState?.reported_open) return tr('websiteSourceTitle');
+  const siteId = _websiteState.current_site_id
+    || (_websiteState.generic_site ? _lastOpenedWebsiteSiteId : '');
+  const entry = siteId && _websiteCatalog.find((s) => s.id === siteId);
+  const domain = entry && websiteDomainFromURL(entry.url);
+  return domain || tr('websiteSourceTitle');
+}
+
+function websiteDomainFromURL(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.startsWith('www.') ? host.slice(4) : host;
+  } catch (_) {
+    return '';
+  }
+}
+
 function paintSourceSwitcher() {
   const active = _knownServers.find(s => s.id === _activeServerId) || null;
   const website = isWebsiteWorkspace();
   const label = document.getElementById('active-server-label');
   const dot = document.getElementById('server-dot');
   if (website) {
-    if (label) label.textContent = tr('websiteSourceTitle');
+    if (label) label.textContent = websiteHeaderLabel();
     dot?.classList.add('online');
   } else if (active) {
     if (label) label.textContent = active.name || tr('server');
@@ -2875,7 +3210,9 @@ function renderSourceDropdown() {
   if (_websiteAvailable) {
     html += `<div class="server-menu-entry website-source-entry ${website ? 'active' : ''}">
       <button class="server-menu-item" type="button" onclick="switchToWebsiteSource()">
-        <span class="smi-avatar st-website">网</span>
+        <span class="smi-avatar st-website" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+        </span>
         <span class="smi-body">
           <span class="smi-name">${esc(tr('websiteSourceTitle'))}</span>
           <span class="smi-host">${esc(tr('websiteSourceSubtitle'))}</span>

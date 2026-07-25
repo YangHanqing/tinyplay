@@ -8,7 +8,9 @@ import (
 
 	"github.com/skip2/go-qrcode"
 
+	"tvremote/internal/auth"
 	"tvremote/internal/config"
+	"tvremote/internal/desktopinput"
 	"tvremote/internal/dlna"
 	"tvremote/internal/i18n"
 	"tvremote/internal/netutil"
@@ -49,8 +51,21 @@ func (s *Server) phoneURL() string {
 }
 
 // desktopPage is the intro + QR shown in the native shell's window. The macOS
-// AppKit shell and the Windows WebView2 shell both load this page. Compact is
-// the default; a Full Screen control expands the same window into an HTPC
+// AppKit shell and the Windows WebView2 shell both load this exact page (same
+// HTML/CSS/JS) over loopback with ?lang=&version=. Platform differences stay
+// in the shells only:
+//
+//   • Window chrome size: both target ~900×540 content (Windows outer height
+//     is larger by the title-bar allowance).
+//   • Native bridges (same names on both sides):
+//       tinyplaySetFullscreen      — Win Bind / mac messageHandler
+//       tinyplayIsFullscreen       — Win Bind; mac re-syncs via didFinish instead
+//       tinyplayShowAbout          — version footer click
+//       tinyplayCheckForUpdates    — footer; both shells then call
+//                                    window.__tinyplayUpdateCheckDone()
+//   • macOS-only: ?local_network=denied for Local Network permission help.
+//
+// Compact is the default; Full Screen expands the same window into an HTPC
 // standby idle screen.
 func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
 	url := s.phoneURL()
@@ -59,104 +74,363 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
 	denied := runtime.GOOS == "darwin" && r.URL.Query().Get("local_network") == "denied"
 	notices := desktopNotices(lang, denied, player.DetectMPV().Available)
 	standbyDLNA := s.desktopStandbyDLNA(lang)
+	dlnaSection := s.desktopDLNASection(lang)
+	inputSection := desktopInputSection(lang)
+	footerSection := desktopFooterSection(lang, r.URL.Query().Get("version"))
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="%s"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TinyPlay</title>
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <style>
+  /* Compact defaults to a bright, simple surface. Standby re-scopes to a
+     night palette when body.mode-standby is active (see below). */
   :root {
-    color-scheme: light dark;
-    --fg: CanvasText;
-    --muted: color-mix(in srgb, CanvasText 70%%, transparent);
-    --panel: rgba(127,127,127,.12);
-    --panel-strong: rgba(0,0,0,.42);
-    --accent: #8ec8ff;
-    --btn-bg: rgba(127,127,127,.16);
-    --btn-border: rgba(127,127,127,.28);
+    color-scheme: light;
+    --bg: #f7f9fc;
+    --fg: #141820;
+    --muted: #5b6574;
+    --muted-soft: #8a93a3;
+    --panel: #ffffff;
+    --panel-border: rgba(20,24,32,.10);
+    --panel-border-soft: rgba(20,24,32,.07);
+    --divider: rgba(20,24,32,.12);
+    --accent: #2f8fff;
+    --accent-ink: #ffffff;
+    --btn-bg: #ffffff;
+    --btn-border: rgba(20,24,32,.14);
+    --success: #1f9d57;
+    --success-text: #167442;
+    --danger: #dc2626;
+    --danger-text: #b42318;
+    --shadow: 0 10px 28px rgba(20,24,32,.06);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%%; }
   body {
     font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
     margin: 0; min-height: 100vh; color: var(--fg);
-    background: Canvas;
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
   }
   button {
     font: inherit; cursor: pointer; color: inherit;
     border: 1px solid var(--btn-border); background: var(--btn-bg);
     border-radius: 999px; padding: 9px 16px;
+    transition: background .15s ease, border-color .15s ease, color .15s ease, transform .12s ease;
   }
-  button:hover { filter: brightness(1.08); }
+  button:hover { background: #f1f4f8; border-color: rgba(20,24,32,.20); }
   button:active { transform: translateY(1px); }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .5; cursor: default; }
 
   /* —— Compact mode (default intro/QR) —— */
   .compact {
-    min-height: 100vh; display: flex; flex-direction: column;
-    align-items: center; justify-content: flex-start; gap: 12px;
-    text-align: center; padding: 20px 16px 12px;
+    position: relative;
+    /* Fill the fixed shell window; avoid a floating island with empty bands. */
+    min-height: 100vh; height: 100%%; display: flex; flex-direction: column;
+    align-items: stretch; justify-content: stretch;
+    padding: 20px 28px 14px;
+    background: var(--bg);
   }
-  .compact-title {
-    width: 100%%; min-height: 32px;
+  .compact-columns {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; align-items: stretch;
+    width: 100%%; max-width: none;
+  }
+  .compact-side {
+    flex: 0 0 168px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-width: 0; min-height: 0;
+    padding-right: 28px;
+    border-right: 1px solid var(--divider);
+  }
+  /* Left column is logo-only, always centered. */
+  .brand-core {
     display: flex; align-items: center; justify-content: center;
+    width: 100%%;
   }
-  .compact h1 { font-size: 22px; margin: 0; letter-spacing: .01em; }
-  .compact .intro { margin: 0; opacity: .68; max-width: 340px; line-height: 1.45; font-size: 14px; }
-  .compact .qr {
-    width: 220px; height: 220px; border-radius: 12px; background: #fff; padding: 12px;
+  .compact-main {
+    flex: 1 1 auto; min-width: 0; min-height: 0;
+    display: flex; flex-direction: column; gap: 14px;
+    text-align: left; justify-content: flex-start;
+    padding-left: 28px;
   }
-  .compact-qr-stage {
-    flex: 1 1 220px; min-height: 220px; width: 100%%;
-    display: flex; align-items: center; justify-content: center;
+  .brand-logo {
+    width: 108px; height: 108px; display: block;
+    border-radius: 26px;
+    box-shadow:
+      0 8px 22px rgba(20,24,32,.10),
+      0 0 0 1px rgba(20,24,32,.06);
   }
-  .compact code {
-    font-size: 14px; padding: 4px 10px; border-radius: 6px;
-    background: rgba(127,127,127,.15); word-break: break-all;
+  /* Ready beside the URL reuses the same pill + status-dot language as DLNA. */
+  .status-pill.compact-ready {
+    flex-shrink: 0;
+    letter-spacing: .06em;
   }
-  .notice {
-    width: min(320px, calc(100vw - 40px)); text-align: left; border-radius: 10px;
-    padding: 12px 14px; background: var(--panel); font-size: 13px; line-height: 1.5;
+  .compact .intro {
+    margin: 0; color: var(--muted); max-width: 36ch;
+    line-height: 1.5; font-size: 13.5px; font-weight: 500;
   }
-  .notice { display: grid; gap: 5px; }
-  .notice.error { background: rgba(218,54,51,.16); color: #a61b1b; }
-  .notice strong { font-size: 14px; }
-  .status-pill {
-    display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px;
-    border: 1px solid rgba(127,127,127,.24); border-radius: 999px;
-    font-size: 13px; font-weight: 600;
+  .connect-qr-col {
+    flex: 0 0 auto;
+    display: flex; flex-direction: column;
+    align-items: center; gap: 12px;
   }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%%; background: #86868b; }
-  .status-pill.available { color: #167442; }
-  .status-pill.available .status-dot { background: #24a461; box-shadow: 0 0 0 3px rgba(36,164,97,.16); }
-  .status-pill.unavailable { color: #b42318; }
-  .status-pill.unavailable .status-dot { background: #dc2626; box-shadow: 0 0 0 3px rgba(220,38,38,.14); }
   .fullscreen-action {
-    width: 100%%; display: flex; align-items: center; justify-content: center;
+    flex: 0 0 auto; width: 100%%;
+    display: flex; align-items: center; justify-content: center;
   }
   .fs-enter {
-    font-size: 14px; font-weight: 600; min-width: 148px;
+    font-size: 13px; font-weight: 600; min-width: 0;
+    background: var(--btn-bg); border-color: var(--btn-border);
+    color: var(--fg); white-space: nowrap;
+  }
+  .url-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    width: 100%%;
+  }
+  .connect-card {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column;
+    border-radius: 18px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+    padding: 22px 22px 18px;
+  }
+  .connect {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; align-items: center; gap: 22px;
+  }
+  .connect-info {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; flex-direction: column; gap: 12px; justify-content: center;
+  }
+  .compact-qr-stage {
+    /* Fixed plate size: pairing UI swaps in place so the rest of the card
+       does not reflow when a phone asks to pair. */
+    flex: 0 0 auto; width: 188px; height: 188px;
+    display: flex; align-items: stretch; justify-content: stretch;
+    position: relative;
+  }
+  .compact .qr {
+    width: 100%%; height: 100%%; border-radius: 14px; background: #fff;
+    /* Padding halved from 12px so the code fills more of the white plate. */
+    padding: 6px; flex-shrink: 0; display: block;
+    box-shadow: 0 6px 18px rgba(20,24,32,.08);
+    border: 1px solid var(--panel-border-soft);
+  }
+  .url-row code, .compact code {
+    font-size: 13px; padding: 8px 12px; border-radius: 10px;
+    background: #f1f4f8; border: 1px solid var(--panel-border-soft);
+    color: var(--fg); word-break: break-all;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: .01em;
+  }
+  .url-row code { min-width: 0; }
+  .aux-list {
+    display: flex; flex-direction: column;
+    border-radius: 16px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .aux-list:empty { display: none; }
+  .aux-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 14px; border-bottom: 1px solid var(--panel-border-soft);
+    font-size: 13px;
+  }
+  .aux-row:last-child { border-bottom: none; }
+  .aux-row .aux-label { flex: 0 0 auto; font-weight: 600; color: var(--fg); }
+  .aux-spacer { flex: 1 1 auto; min-width: 12px; }
+  .aux-row .status-pill { flex-shrink: 0; }
+  .switch {
+    flex-shrink: 0; width: 38px; height: 22px; border-radius: 999px;
+    background: #d5dae3; position: relative; border: none; padding: 0;
+    cursor: pointer;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    border-radius: 50%%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.18);
+    transition: transform .15s ease;
+  }
+  .switch.on { background: var(--success); }
+  .switch.on::after { transform: translateX(16px); }
+  .switch:disabled { opacity: .5; cursor: default; }
+  .switch:hover { background: #c8ced9; border-color: transparent; }
+  .switch.on:hover { background: #22ab62; }
+  .aux-action {
+    font-size: 12px; font-weight: 600; padding: 6px 12px; flex-shrink: 0;
+  }
+  .footer-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    /* Pin under the two main blocks; flex:1 on connect-card fills the middle. */
+    margin-top: auto; flex-shrink: 0;
+    padding: 10px 4px 0; font-size: 12px; color: var(--muted-soft);
+  }
+  .footer-group { display: flex; align-items: center; gap: 14px; }
+  .footer-link {
+    border: none; background: none; padding: 0; font-size: 12px;
+    color: var(--muted-soft); border-radius: 0; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .footer-link:hover { color: var(--fg); text-decoration: underline; background: none; border-color: transparent; }
+  .footer-link:disabled, .footer-link.is-checking {
+    opacity: .55; cursor: default; text-decoration: none; pointer-events: none;
+  }
+  .footer-spinner {
+    display: none; width: 11px; height: 11px; border-radius: 50%%;
+    border: 1.5px solid rgba(20,24,32,.18);
+    border-top-color: var(--muted);
+    animation: footer-spin .7s linear infinite;
+  }
+  .footer-link.is-checking .footer-spinner { display: inline-block; }
+  @keyframes footer-spin { to { transform: rotate(360deg); } }
+  .notice {
+    width: 100%%; text-align: left; border-radius: 14px;
+    padding: 12px 14px; background: var(--panel);
+    border: 1px solid var(--panel-border);
+    font-size: 13px; line-height: 1.5;
+    display: grid; gap: 5px;
+  }
+  .notice.error {
+    background: rgba(220,38,38,.06);
+    border-color: rgba(220,38,38,.18);
+    color: var(--danger-text);
+  }
+  .notice strong { font-size: 14px; color: var(--fg); }
+  .notice.error strong { color: #9f1239; }
+
+  /* —— Pairing: replace the QR plate in place (no page reflow) —— */
+  .compact-qr-stage.has-card {
+    /* Same footprint as the QR plate; grow only if the copy needs a line more. */
+    width: 200px; height: auto; min-height: 188px;
+  }
+  .compact-qr-stage.has-card .qr { display: none; }
+  .pair-card {
+    display: none;
+    width: 100%%; min-height: 188px;
+    box-sizing: border-box;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    text-align: center;
+    border-radius: 14px;
+    padding: 12px 10px 10px;
+    background: #fff;
+    border: 1px solid var(--panel-border-soft);
+    box-shadow: 0 6px 18px rgba(20,24,32,.08);
+    font-size: 12px; line-height: 1.35;
+  }
+  .pair-card.is-visible {
+    display: flex;
+    animation: pair-card-in .22s ease both;
+  }
+  @keyframes pair-card-in {
+    from { opacity: 0; transform: scale(.97); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .pair-card-title {
+    margin: 0; font-size: 13px; font-weight: 700; color: var(--fg);
+    letter-spacing: .01em;
+  }
+  .pair-card-hint {
+    margin: 0; color: var(--muted); font-size: 11px; font-weight: 500;
+    line-height: 1.35; max-width: 16em;
+  }
+  .pair-code {
+    margin: 2px 0 0;
+    font-size: 34px; font-weight: 700; letter-spacing: .24em;
+    font-variant-numeric: tabular-nums; color: var(--fg);
+    line-height: 1; padding-left: .24em; /* balance letter-spacing on last digit */
+  }
+  .pair-actions {
+    display: flex; gap: 6px; justify-content: center;
+    width: 100%%; margin-top: 4px;
+  }
+  .pair-actions button {
+    flex: 1 1 0; min-width: 0;
+    padding: 7px 8px; font-size: 12px; font-weight: 600;
+    border-radius: 999px;
+  }
+  .pair-primary {
+    color: var(--accent-ink);
+    background: var(--accent); border-color: transparent;
+  }
+  .pair-primary:hover { background: #4a9fff; border-color: transparent; color: var(--accent-ink); }
+  .pair-secondary {
+    color: var(--muted); background: #f1f4f8; border-color: transparent;
+  }
+  .pair-secondary:hover { color: var(--fg); background: #e7ebf1; border-color: transparent; }
+  .pair-card.is-locked .pair-actions button { flex: 1 1 auto; }
+  .pair-row {
+    display: flex; align-items: center; justify-content: flex-start;
+    gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted);
+    min-height: 18px;
+  }
+  /* A class rule outranks the UA stylesheet's [hidden] { display: none }. */
+  .pair-row[hidden] { display: none; }
+  .pair-link {
+    border: none; background: none; padding: 2px 4px; font-size: 12px;
+    color: var(--muted); text-decoration: underline; border-radius: 5px;
+  }
+  .pair-link:hover { color: var(--fg); background: none; border-color: transparent; }
+  .pair-link.danger { color: var(--danger-text); }
+  .pair-link.danger:hover { color: #9f1239; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px;
+    border: 1px solid var(--panel-border); border-radius: 999px;
+    background: #f7f9fc;
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    /* Latin "Ready" / "Listo" match the capsule; CJK is unaffected. */
+    text-transform: uppercase;
+  }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%%; background: #a0a8b5; flex-shrink: 0; }
+  .status-pill.available { color: var(--success-text); border-color: rgba(31,157,87,.28); background: rgba(31,157,87,.08); }
+  .status-pill.available .status-dot {
+    background: var(--success); box-shadow: 0 0 0 3px rgba(31,157,87,.14);
+  }
+  .status-pill.unavailable { color: var(--danger-text); border-color: rgba(220,38,38,.24); background: rgba(220,38,38,.06); }
+  .status-pill.unavailable .status-dot {
+    background: var(--danger); box-shadow: 0 0 0 3px rgba(220,38,38,.12);
   }
   .network-help {
-    width: auto; max-width: min(320px, calc(100vw - 40px));
-    padding: 0; overflow: hidden; color: var(--muted);
-    font-size: 11px; line-height: 1.35; opacity: .62;
+    width: 100%%; max-width: none;
+    padding: 0; overflow: hidden; color: var(--muted-soft);
+    font-size: 11px; line-height: 1.35;
   }
   .network-help summary {
-    cursor: pointer; list-style: none; padding: 2px 8px; font-weight: 500;
-    text-align: center;
+    cursor: pointer; list-style: none; padding: 2px 0; font-weight: 500;
+    text-align: left;
   }
   .network-help summary::-webkit-details-marker { display: none; }
   .network-help summary::marker { content: ""; }
   .network-help summary:hover { color: var(--fg); text-decoration: underline; }
   .network-help[open] {
-    width: min(320px, calc(100vw - 40px)); padding: 8px 10px 10px;
-    border-radius: 10px; background: var(--panel); opacity: .82;
+    width: 100%%; padding: 10px 12px 12px;
+    border-radius: 12px; background: #f7f9fc;
+    border: 1px solid var(--panel-border);
   }
-  .network-help[open] summary { padding: 0 4px 6px; font-size: 12px; }
-  .network-help p { max-width: none; margin: 0; font-size: 12px; line-height: 1.45; }
+  .network-help[open] summary { padding: 0 2px 6px; font-size: 12px; color: var(--muted); }
+  .network-help p { max-width: none; margin: 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
 
-  /* —— Standby / full-screen mode —— */
+  /* —— Standby / full-screen mode (night surface, independent of compact) —— */
+  body.mode-standby {
+    color-scheme: dark;
+    --bg: #05070c;
+    --fg: #f4f7fb;
+    --muted: rgba(232,240,255,.72);
+    --muted-soft: rgba(232,240,255,.48);
+    --panel-border: rgba(255,255,255,.12);
+    --success: #35c777;
+    --danger: #ff665d;
+    --danger-text: #ffc9c5;
+    background: #05070c;
+  }
   .standby {
     display: none; position: fixed; inset: 0; overflow: hidden;
     color: #f4f7fb;
@@ -204,25 +478,30 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
   .brand-name {
     font-size: clamp(22px, 2.4vw, 34px); font-weight: 700; letter-spacing: .02em; margin: 0;
   }
-  .brand-ready {
-    margin: 0; font-size: clamp(13px, 1.2vw, 16px); letter-spacing: .14em;
-    text-transform: uppercase; color: rgba(232,240,255,.72); font-weight: 600;
+  .standby .brand-ready {
+    margin: 0; display: inline-flex; align-items: center; gap: 8px;
+    font-size: clamp(13px, 1.2vw, 16px); letter-spacing: .14em;
+    text-transform: uppercase; color: #35c777; font-weight: 700;
+  }
+  .standby .brand-ready .status-dot {
+    background: #35c777; box-shadow: 0 0 0 3px rgba(53,199,119,.16);
   }
   .standby-dlna {
     display: inline-flex; align-items: center; gap: 8px; width: fit-content;
     padding: 7px 11px; border: 1px solid rgba(255,255,255,.14);
     border-radius: 999px; background: rgba(5,9,16,.24);
-    color: rgba(241,246,255,.82); backdrop-filter: blur(10px);
+    color: rgba(241,246,255,.82); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     font-size: clamp(12px, 1.05vw, 15px); font-weight: 600;
   }
   .standby-dlna .status-dot { background: #35c777; box-shadow: 0 0 0 3px rgba(53,199,119,.16); }
-  .standby-dlna.unavailable { color: rgba(255,222,219,.9); }
+  .standby-dlna.unavailable { color: #ffc9c5; }
   .standby-dlna.unavailable .status-dot { background: #ff665d; box-shadow: 0 0 0 3px rgba(255,102,93,.16); }
   .fs-exit {
+    font-size: 13px; font-weight: 600; min-width: 0; white-space: nowrap;
     background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.18);
-    color: #f4f7fb; backdrop-filter: blur(8px); font-weight: 600;
-    white-space: nowrap;
+    color: #f4f7fb; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
   }
+  .fs-exit:hover { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.28); }
   .standby-main {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     text-align: center; min-height: 0;
@@ -241,7 +520,7 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
   }
   .standby-qr {
     display: block; width: clamp(112px, 9vw, 156px); height: clamp(112px, 9vw, 156px);
-    border-radius: 12px; background: #fff; padding: 8px;
+    border-radius: 14px; background: #fff; padding: 8px;
     box-shadow: 0 12px 40px rgba(0,0,0,.28);
   }
   .photo-credit {
@@ -249,7 +528,6 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
     color: rgba(232,240,255,.48); text-shadow: 0 1px 8px rgba(0,0,0,.4);
   }
 
-  body.mode-standby { background: #05070c; }
   body.mode-standby .compact { display: none; }
   body.mode-standby .standby { display: block; }
   .standby.hud-hidden .standby-inner { opacity: 0; pointer-events: none; }
@@ -261,41 +539,100 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
     .standby-top { flex-wrap: wrap; }
     .standby-qr { width: 96px; height: 96px; }
   }
-  /* The Windows host's compact content area is shorter than its 360x560
-     outer window because of the title bar. Keep the new full-screen action
-     visible without making the intro window itself larger. */
-  @media (max-width: 500px) and (max-height: 620px) {
-    .compact { justify-content: flex-start; gap: 8px; padding: 12px 12px 14px; }
-    .compact h1 { font-size: 20px; }
-    .compact .intro { font-size: 14px; line-height: 1.5; }
-    .compact .qr { width: 200px; height: 200px; padding: 10px; }
-    .compact code { font-size: 12px; }
-    .status-pill { padding: 5px 9px; font-size: 12px; }
-    .notice { font-size: 12px; }
-    .compact-qr-stage { min-height: 200px; }
-    .fs-enter { padding: 8px 14px; }
+  /* Narrow window / browser-tab fallback: stack brand above connect. */
+  @media (max-width: 760px) {
+    .compact { padding: 16px; height: auto; min-height: 100vh; }
+    .compact-columns { flex-direction: column; align-items: center; text-align: center; gap: 0; }
+    .compact-side {
+      flex: none; width: 100%%; max-width: 420px; align-items: center;
+      padding-right: 0; padding-bottom: 16px;
+      border-right: none; border-bottom: 1px solid var(--divider);
+    }
+    .brand-core { padding: 8px 0; }
+    .compact-main {
+      width: 100%%; max-width: 420px; text-align: center;
+      padding-left: 0; padding-top: 16px;
+    }
+    .connect-card { flex: 0 0 auto; }
+    .connect { flex-direction: column; align-items: center; }
+    .connect-qr-col { width: 100%%; }
+    .connect-info { align-items: center; }
+    .compact .intro { max-width: 36ch; text-align: center; }
+    .url-row { justify-content: center; }
+    .pair-row { justify-content: center; }
+    .network-help summary, .network-help[open] summary { text-align: center; }
+    .footer-row { flex-direction: column; gap: 8px; margin-top: 16px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .standby-bg { animation: none !important; transition-duration: .01ms; }
     .standby-blackout, .standby-inner { transition-duration: .01ms; }
+    button { transition: none; }
+    .footer-spinner { animation: none; border-top-color: var(--muted); opacity: .7; }
+    .pair-card.is-visible { animation: none; }
   }
 </style></head>
 <body class="mode-compact">
   <div class="compact">
-    <div class="compact-title">
-      <h1>TinyPlay</h1>
+    <div class="compact-columns">
+      <div class="compact-side">
+        <div class="brand-core">
+          <img class="brand-logo" src="/static/pwa-icon-512.png" alt="TinyPlay" width="108" height="108">
+        </div>
+      </div>
+      <div class="compact-main">
+        <section class="connect-card">
+          <div class="connect">
+            <div class="connect-qr-col">
+              <div class="compact-qr-stage" id="qr-stage">
+                <img class="qr" id="qr-image" src="/desktop/qr.png" alt="QR" width="188" height="188">
+                <section class="pair-card is-locked" id="pair-locked" role="alert">
+                  <p class="pair-card-title">%s</p>
+                  <p class="pair-card-hint">%s</p>
+                  <div class="pair-actions">
+                    <button type="button" class="pair-primary" id="pair-refresh">%s</button>
+                  </div>
+                </section>
+                <section class="pair-card is-consent" id="pair-consent" aria-live="polite">
+                  <p class="pair-card-title">%s</p>
+                  <div class="pair-code" id="pair-code">····</div>
+                  <p class="pair-card-hint">%s</p>
+                  <div class="pair-actions">
+                    <button type="button" class="pair-primary" id="pair-approve">%s</button>
+                    <button type="button" class="pair-secondary" id="pair-deny">%s</button>
+                  </div>
+                </section>
+              </div>
+              <div class="fullscreen-action">
+                <button type="button" class="fs-enter" id="fs-enter" aria-pressed="false">%s</button>
+              </div>
+            </div>
+            <div class="connect-info">
+              <p class="intro">%s</p>
+              <div class="url-row">
+                <code id="url-compact">%s</code>
+                <span class="status-pill available compact-ready" role="status"><span class="status-dot"></span>%s</span>
+              </div>
+              <div class="pair-row" id="pair-devices" hidden>
+                <span id="pair-devices-text" data-template="%s"></span>
+                <button type="button" class="pair-link" id="pair-unpair">%s</button>
+              </div>
+              <div class="pair-row" id="pair-unpair-confirm" hidden>
+                <span>%s</span>
+                <button type="button" class="pair-link danger" id="pair-unpair-yes">%s</button>
+                <button type="button" class="pair-link" id="pair-unpair-no">%s</button>
+              </div>
+              %s
+            </div>
+          </div>
+        </section>
+        <div class="aux-list">
+          %s
+          %s
+        </div>
+        %s
+        %s
+      </div>
     </div>
-    <p class="intro">%s</p>
-    <div class="compact-qr-stage">
-      <img class="qr" src="/desktop/qr.png" alt="QR" width="220" height="220">
-    </div>
-    <code id="url-compact">%s</code>
-    <div id="dlna-status">%s</div>
-    %s
-    <div class="fullscreen-action">
-      <button type="button" class="fs-enter" id="fs-enter" aria-pressed="false">%s</button>
-    </div>
-    %s
   </div>
 
   <div class="standby" id="standby" aria-hidden="true">
@@ -308,7 +645,7 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
         <div class="brand">
           <div class="brand-heading">
             <h1 class="brand-name">TinyPlay</h1>
-            <p class="brand-ready">%s</p>
+            <p class="brand-ready"><span class="status-dot" aria-hidden="true"></span>%s</p>
           </div>
           %s
         </div>
@@ -582,6 +919,100 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
         }
       })();
 
+      /* —— Pairing: consent prompts and QR lockout —— */
+      const qrStage = document.getElementById('qr-stage');
+      const qrImage = document.getElementById('qr-image');
+      const lockedCard = document.getElementById('pair-locked');
+      const consentCard = document.getElementById('pair-consent');
+      const codeEl = document.getElementById('pair-code');
+      const devicesRow = document.getElementById('pair-devices');
+      const devicesText = document.getElementById('pair-devices-text');
+      const unpairConfirm = document.getElementById('pair-unpair-confirm');
+      let pendingNonce = '';
+      let busy = false;
+
+      const reloadQR = () => {
+        // Cache-bust so a refreshed secret shows up as a new image.
+        qrImage.src = '/desktop/qr.png?t=' + Date.now();
+      };
+
+      const pairingPost = async (path, body) => {
+        if (busy) return;
+        busy = true;
+        try {
+          await fetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body || {}),
+          });
+        } catch (_) {
+        } finally {
+          busy = false;
+        }
+        pollPairing();
+      };
+
+      const paintPairing = (state) => {
+        const pending = state.pending || null;
+        const locked = state.locked === true && !pending;
+        pendingNonce = pending ? pending.nonce : '';
+        if (pending) {
+          codeEl.textContent = pending.code;
+          codeEl.setAttribute('aria-label', pending.code);
+        } else {
+          codeEl.removeAttribute('aria-label');
+        }
+        consentCard.classList.toggle('is-visible', !!pending);
+        lockedCard.classList.toggle('is-visible', locked);
+        // Only the QR plate swaps; keep the rest of the connect card stable.
+        qrStage.classList.toggle('has-card', !!pending || locked);
+        qrStage.setAttribute('aria-busy', (!!pending || locked) ? 'true' : 'false');
+
+        const count = Number(state.device_count || 0);
+        devicesRow.hidden = count === 0 || !unpairConfirm.hidden;
+        devicesText.textContent = devicesText.dataset.template.replace('{n}', String(count));
+        if (count === 0) unpairConfirm.hidden = true;
+      };
+
+      const pollPairing = async () => {
+        try {
+          const state = await fetch('/desktop/pairing', { cache: 'no-store' }).then(r => r.ok ? r.json() : null);
+          if (state) paintPairing(state);
+        } catch (_) {}
+      };
+
+      document.getElementById('pair-refresh').addEventListener('click', async () => {
+        await pairingPost('/desktop/pairing/refresh');
+        reloadQR();
+      });
+      document.getElementById('pair-approve').addEventListener('click', () => {
+        // Send the nonce whose code is on screen, so the click can only ever
+        // approve the request the person actually compared.
+        if (pendingNonce) pairingPost('/desktop/pairing/approve', { nonce: pendingNonce });
+      });
+      document.getElementById('pair-deny').addEventListener('click', () => {
+        if (pendingNonce) pairingPost('/desktop/pairing/deny', { nonce: pendingNonce });
+      });
+      document.getElementById('pair-unpair').addEventListener('click', () => {
+        // Inline confirmation instead of window.confirm(): native WebViews do
+        // not always present JS dialogs, and a silently-dropped confirm would
+        // turn into a silently-ignored button.
+        devicesRow.hidden = true;
+        unpairConfirm.hidden = false;
+      });
+      document.getElementById('pair-unpair-no').addEventListener('click', () => {
+        unpairConfirm.hidden = true;
+        devicesRow.hidden = false;
+      });
+      document.getElementById('pair-unpair-yes').addEventListener('click', async () => {
+        unpairConfirm.hidden = true;
+        await pairingPost('/desktop/pairing/unpair-all');
+        reloadQR();
+      });
+
+      pollPairing();
+      setInterval(pollPairing, 2000);
+
       const status = document.getElementById('dlna-status');
       let enabled = status.childElementCount > 0;
       setInterval(async () => {
@@ -591,16 +1022,103 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
           if (next !== enabled) location.reload();
         } catch (_) {}
       }, 3000);
+
+      /* —— Aux rows: DLNA toggle, desktop-input authorize, footer actions —— */
+      document.getElementById('dlna-toggle')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const next = btn.getAttribute('aria-checked') !== 'true';
+        btn.disabled = true;
+        try {
+          await fetch('/api/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dlna_receiver_enabled: next }),
+          });
+        } catch (_) {}
+        location.reload();
+      });
+      document.getElementById('input-authorize')?.addEventListener('click', async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          await fetch('/api/system/input/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'request_permission' }),
+          });
+        } catch (_) {}
+        setTimeout(() => location.reload(), 900);
+      });
+      document.getElementById('btn-open-logs')?.addEventListener('click', () => {
+        fetch('/desktop/open-logs').catch(() => {});
+      });
+      const nativeCall = (name) => {
+        if (typeof window[name] === 'function') { return window[name](); }
+        const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name];
+        if (handler) { handler.postMessage(null); return true; }
+        return false;
+      };
+      // Version label opens the native About dialog (replaces a separate About link).
+      document.getElementById('btn-about')?.addEventListener('click', () => { nativeCall('tinyplayShowAbout'); });
+
+      /* Check for Updates: disable + spinner until the native shell finishes
+         (Windows Bind awaits; macOS posts __tinyplayUpdateCheckDone). */
+      const updateBtn = document.getElementById('btn-check-updates');
+      let updateCheckTimer;
+      const setUpdateChecking = (on) => {
+        if (!updateBtn) return;
+        updateBtn.disabled = !!on;
+        updateBtn.classList.toggle('is-checking', !!on);
+        updateBtn.setAttribute('aria-busy', on ? 'true' : 'false');
+        if (!on && updateCheckTimer) {
+          clearTimeout(updateCheckTimer);
+          updateCheckTimer = undefined;
+        }
+      };
+      window.__tinyplayUpdateCheckDone = () => setUpdateChecking(false);
+      updateBtn?.addEventListener('click', async () => {
+        if (!updateBtn || updateBtn.disabled) return;
+        setUpdateChecking(true);
+        // Safety net if a shell never signals completion (e.g. plain browser tab).
+        updateCheckTimer = setTimeout(() => setUpdateChecking(false), 20000);
+        try {
+          if (typeof window.tinyplayCheckForUpdates === 'function') {
+            await window.tinyplayCheckForUpdates();
+            setUpdateChecking(false);
+            return;
+          }
+          if (!nativeCall('tinyplayCheckForUpdates')) {
+            setUpdateChecking(false);
+          }
+          // macOS: shell calls __tinyplayUpdateCheckDone when the check ends.
+        } catch (_) {
+          setUpdateChecking(false);
+        }
+      });
     })();
   </script>
 </body></html>`,
 		lang,
+		i18n.T(lang, "pair_locked_title"),
+		i18n.T(lang, "pair_locked_body"),
+		i18n.T(lang, "pair_refresh"),
+		i18n.T(lang, "pair_consent_title"),
+		i18n.T(lang, "pair_consent_body"),
+		i18n.T(lang, "pair_approve"),
+		i18n.T(lang, "pair_deny"),
+		i18n.T(lang, "desktop_fullscreen"),
 		i18n.T(lang, "desktop_intro"),
 		url,
-		s.desktopDLNAStatus(lang),
-		notices,
-		i18n.T(lang, "desktop_fullscreen"),
+		i18n.T(lang, "desktop_standby_ready"),
+		i18n.T(lang, "pair_devices_template"),
+		i18n.T(lang, "pair_unpair_all"),
+		i18n.T(lang, "pair_unpair_warning"),
+		i18n.T(lang, "pair_unpair_yes"),
+		i18n.T(lang, "pair_unpair_cancel"),
 		desktopNetworkHelp(denied, lang, help),
+		dlnaSection,
+		inputSection,
+		notices,
+		footerSection,
 		i18n.T(lang, "desktop_standby_ready"),
 		standbyDLNA,
 		i18n.T(lang, "desktop_exit_fullscreen"),
@@ -643,6 +1161,73 @@ func (s *Server) desktopDLNAStatus(lang string) string {
 		label = i18n.T(lang, "desktop_dlna_available", dlna.FriendlyName())
 	}
 	return fmt.Sprintf(`<span class="status-pill %s" role="status"><span class="status-dot"></span>%s</span>`, status, label)
+}
+
+// desktopDLNASection is the "DLNA 接收器" row in the compact window's aux
+// list: a label, the same status pill desktopDLNAStatus renders (which
+// already embeds dlna.FriendlyName() so the user knows which device to pick
+// when casting), and a toggle that moves the on/off switch out of the tray
+// menu. #dlna-status keeps its id so the page's existing "settings changed
+// elsewhere, reload" poll keeps working unchanged.
+func (s *Server) desktopDLNASection(lang string) string {
+	enabled := config.Load().DLNAReceiverEnabled
+	toggleClass := ""
+	if enabled {
+		toggleClass = " on"
+	}
+	return fmt.Sprintf(`<div class="aux-row">
+            <span class="aux-label">%s</span>
+            <span class="aux-spacer" aria-hidden="true"></span>
+            <span id="dlna-status">%s</span>
+            <button type="button" class="switch%s" id="dlna-toggle" role="switch" aria-checked="%t" aria-label="%s"></button>
+          </div>`,
+		i18n.T(lang, "dlna_receiver"), s.desktopDLNAStatus(lang), toggleClass, enabled, i18n.T(lang, "dlna_receiver"))
+}
+
+// desktopInputSection is the "模拟键鼠" row: a temporary air-mouse/keyboard
+// bridge the phone can drive (see internal/desktopinput). It renders nothing
+// at all when no native shell has ever reported in — the same headless-dev
+// guard app.js uses for its own copy of this feature — so the row simply
+// never appears until the next reload once a shell is attached. On macOS,
+// where AXIsProcessTrusted() gates real injection, an unauthorized state gets
+// an explicit "go authorize" action that fires the request_permission
+// command; Windows has no such gate (SendInput needs no OS consent) and is
+// always reported ready, so it never shows the button.
+func desktopInputSection(lang string) string {
+	snap := desktopinput.Default.Snapshot()
+	available := snap.Ready || snap.PermissionRequired || snap.PermissionGranted
+	if !available {
+		return ""
+	}
+	granted := !snap.PermissionRequired || snap.PermissionGranted
+	status, label, action := "unavailable", i18n.T(lang, "desktop_input_unauthorized"),
+		fmt.Sprintf(`<button type="button" class="aux-action" id="input-authorize">%s</button>`, i18n.T(lang, "desktop_input_authorize"))
+	if granted {
+		status, label, action = "available", i18n.T(lang, "desktop_input_ready"), ""
+	}
+	return fmt.Sprintf(`<div class="aux-row">
+            <span class="aux-label">%s</span>
+            <span class="aux-spacer" aria-hidden="true"></span>
+            <span class="status-pill %s" role="status"><span class="status-dot"></span>%s</span>
+            %s
+          </div>`, i18n.T(lang, "desktop_input_label"), status, label, action)
+}
+
+// desktopFooterSection groups the low-frequency actions that used to live
+// only in the tray menu. The version label doubles as the About entry
+// (click → native about dialog). Check-for-updates and open-logs keep the
+// same Bind/postMessage bridges as the full-screen toggle.
+func desktopFooterSection(lang, version string) string {
+	// Outside a packaged shell there is no ?version=; keep a clickable About
+	// affordance so the dialog is still reachable during `go run` development.
+	aboutLabel := i18n.T(lang, "about")
+	if version != "" {
+		aboutLabel = "v" + version
+	}
+	return fmt.Sprintf(`<div class="footer-row">
+          <div class="footer-group"><button type="button" class="footer-link" id="btn-about" title="%s">%s</button><button type="button" class="footer-link" id="btn-check-updates" aria-busy="false">%s<span class="footer-spinner" aria-hidden="true"></span></button></div>
+          <div class="footer-group"><button type="button" class="footer-link" id="btn-open-logs">%s</button></div>
+        </div>`, i18n.T(lang, "about"), aboutLabel, i18n.T(lang, "check_updates"), i18n.T(lang, "open_logs"))
 }
 
 // desktopStandbyDLNA mirrors the receiver name shown in phone casting menus.
@@ -700,13 +1285,33 @@ func desktopNetworkHelpKey() string {
 	}
 }
 
-// desktopQR renders the phone URL as a PNG QR code.
+// desktopQR renders the pairing URL as a PNG QR code.
+//
+// The image carries the pairing secret, so it is loopback-only: it must be
+// readable by the native window on this computer and by nobody on the network.
+// The secret rides in the URL fragment, which browsers never send to a server —
+// it stays out of access logs and Referer headers, and the frontend strips it
+// from the address bar as soon as it has been exchanged for a token.
 func (s *Server) desktopQR(w http.ResponseWriter, r *http.Request) {
-	png, err := qrcode.Encode(s.phoneURL(), qrcode.Medium, 480)
+	if !isLoopbackRequest(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"detail": "loopback only"})
+		return
+	}
+	png, err := qrcode.Encode(s.pairingURL(), qrcode.Medium, 480)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Write(png)
+}
+
+// pairingURL is what the QR code encodes. While pairing is locked the secret is
+// left out entirely, so a photo taken during a lockout cannot be used later.
+func (s *Server) pairingURL() string {
+	if auth.Default.Locked() {
+		return s.phoneURL()
+	}
+	return s.phoneURL() + "/#p=" + auth.Default.Secret()
 }

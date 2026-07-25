@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"tvremote/internal/config"
 	"tvremote/internal/player"
 	"tvremote/internal/website"
 )
@@ -16,11 +17,17 @@ func websiteTestServer(t *testing.T) (*Server, http.Handler) {
 	t.Helper()
 	// Isolate global broker for this test package run.
 	websiteBroker = website.NewBroker(func() {})
+	// The Website Library reads/writes persisted custom sites through config, so
+	// without an isolated data dir these tests would see (and mutate) the real
+	// per-user config of whoever runs them.
+	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
 	s := &Server{player: player.New(), webFS: nil, latestSwitch: map[string]int{}, iptvRecoveries: map[string]*iptvRecovery{}}
 	// Minimal router with only website routes + guard.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/website/state", s.websiteState)
 	mux.HandleFunc("POST /api/website/open", s.websiteOpen)
+	mux.HandleFunc("POST /api/website/custom", s.websiteCustomAdd)
+	mux.HandleFunc("DELETE /api/website/custom/{id}", s.websiteCustomDelete)
 	mux.HandleFunc("POST /api/website/close", s.websiteClose)
 	mux.HandleFunc("POST /api/website/action", s.websiteAction)
 	mux.HandleFunc("GET /desktop/website/poll", s.websiteShellPoll)
@@ -43,7 +50,7 @@ func TestWebsiteStateFreshEmpty(t *testing.T) {
 	if snap.CurrentSiteID != "" || snap.DesiredOpen || snap.ReportedOpen {
 		t.Fatalf("fresh snapshot=%+v", snap)
 	}
-	if len(snap.Catalog) != 5 || snap.Catalog[0].ID != website.SiteBilibili || snap.Catalog[4].ID != website.SiteDouyin {
+	if len(snap.Catalog) != 7 || snap.Catalog[0].ID != website.SiteBilibili || snap.Catalog[4].ID != website.SiteDouyin || snap.Catalog[5].ID != website.SiteYouTube || snap.Catalog[6].ID != website.SiteNetflix {
 		t.Fatalf("catalog=%+v", snap.Catalog)
 	}
 	var raw map[string]any
@@ -97,6 +104,64 @@ func TestWebsiteRejectUnknownSiteAndAction(t *testing.T) {
 	}
 }
 
+func TestWebsiteCustomURLPersistsAndOpensAsGeneric(t *testing.T) {
+	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
+	_, h := websiteTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/website/custom", `{"url":"example.com/guide"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add custom status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var snap website.Snapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Catalog) != 8 {
+		t.Fatalf("catalog=%+v", snap.Catalog)
+	}
+	custom := snap.Catalog[7]
+	if !custom.GenericOnly || custom.URL != "https://example.com/guide" {
+		t.Fatalf("custom=%+v", custom)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/website/open", `{"site_id":"`+custom.ID+`"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open custom status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, ok := websiteBroker.PendingAfter(0)
+	if !ok || cmd.URL != custom.URL || cmd.SiteID != custom.ID {
+		t.Fatalf("command=%+v", cmd)
+	}
+	rec = httptest.NewRecorder()
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/website/custom/"+custom.ID, nil)
+	deleteReq.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, deleteReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete custom status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebsiteCustomAddRejectedWhenListIsFull(t *testing.T) {
+	_, h := websiteTestServer(t)
+	for i := 0; i < config.MaxWebsiteCustomSites; i++ {
+		rec := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"url":"site%d.example.com"}`, i)
+		h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/website/custom", body))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("add %d status=%d body=%s", i, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/api/website/custom", `{"url":"one-too-many.example.com"}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// The message must name the cap, not read as a malformed-address error.
+	if detail := rec.Body.String(); !strings.Contains(detail, "100") {
+		t.Fatalf("full-list detail=%s", detail)
+	}
+}
+
 func TestWebsiteOpenQueuesAllowlistedURL(t *testing.T) {
 	_, h := websiteTestServer(t)
 	rec := httptest.NewRecorder()
@@ -137,7 +202,7 @@ func TestWebsiteReportDerivesCurrentSiteWithoutLeakingURL(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
 		t.Fatal(err)
 	}
-	if snap.CurrentSiteID != website.SiteBilibili || !snap.ReportedOpen {
+	if snap.CurrentSiteID != website.SiteBilibili || !snap.ReportedOpen || !snap.MoreAvailable {
 		t.Fatalf("snap=%+v", snap)
 	}
 	if strings.Contains(rec.Body.String(), "token=secret") || strings.Contains(rec.Body.String(), "current_url") {
@@ -179,7 +244,7 @@ func TestWebsiteReportDerivesCurrentSiteWithoutLeakingURL(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:9"
 	h.ServeHTTP(rec, req)
 	_ = json.Unmarshal(rec.Body.Bytes(), &snap)
-	if snap.CurrentSiteID != website.SiteIQIYI {
+	if snap.CurrentSiteID != website.SiteIQIYI || !snap.MoreAvailable {
 		t.Fatalf("expected iqiyi, got %+v", snap)
 	}
 }

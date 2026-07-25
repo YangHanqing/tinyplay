@@ -16,7 +16,7 @@ func TestBrokerDefaultState(t *testing.T) {
 	if snap.DesiredOpen || snap.ReportedOpen {
 		t.Fatalf("window should start closed: %+v", snap)
 	}
-	if len(snap.Catalog) != 5 {
+	if len(snap.Catalog) != 7 {
 		t.Fatalf("catalog missing from snapshot")
 	}
 	// Snapshot must not expose raw URLs of the live WebView.
@@ -179,9 +179,6 @@ func TestRejectUnknownActionAndText(t *testing.T) {
 	if _, err := b.EnqueueAction(ActionSpeed, "0", ""); !IsInvalid(err) || ErrorCode(err) != "invalid_number" {
 		t.Fatalf("expected out-of-range speed reject, err=%v", err)
 	}
-	if _, err := b.EnqueueAction(ActionVolume, "0", ""); !IsInvalid(err) || ErrorCode(err) != "invalid_number" {
-		t.Fatalf("expected zero volume delta reject, err=%v", err)
-	}
 }
 
 func TestHomeUsesCurrentCatalogRoot(t *testing.T) {
@@ -211,86 +208,78 @@ func TestHomeUsesCurrentCatalogRoot(t *testing.T) {
 	}
 }
 
-func TestHomeRequiresRecognizedCurrentSite(t *testing.T) {
+func TestHomeUsesOpenedRootAcrossNavigation(t *testing.T) {
 	b := NewBroker(nil)
 	if _, err := b.RequestOpen(SiteTencent); err != nil {
 		t.Fatal(err)
 	}
-	// Window desired-open but current site not yet derived from a real navigation.
-	if _, err := b.EnqueueAction(ActionHome, "", ""); !IsInvalid(err) || ErrorCode(err) != "home_unavailable" {
-		t.Fatalf("home without current site = %v", err)
+	// The stored opening URL is a safe home destination before a navigation
+	// report arrives and after a cross-site hop.
+	if _, err := b.EnqueueAction(ActionHome, "", ""); err != nil {
+		t.Fatalf("home before navigation = %v", err)
 	}
-	// Window open on an unrecognized domain also blocks home.
 	open := true
 	b.ApplyReport(Report{Open: &open, CurrentURL: "https://evilbilibili.com/"})
-	if _, err := b.EnqueueAction(ActionHome, "", ""); !IsInvalid(err) || ErrorCode(err) != "home_unavailable" {
-		t.Fatalf("home on unknown domain = %v", err)
+	if _, err := b.EnqueueAction(ActionHome, "", ""); err != nil {
+		t.Fatalf("home after cross-site navigation = %v", err)
 	}
 }
 
-func TestLoginUsesFixedPerSiteRoutes(t *testing.T) {
-	cases := []struct {
-		site string
-		url  string
-		nav  string
-	}{
-		{SiteBilibili, "https://passport.bilibili.com/", "https://www.bilibili.com/video/1"},
-		{SiteIQIYI, "https://www.iqiyi.com/iframe/loginreg?show_back=1", "https://www.iqiyi.com/v_1.html"},
-		{SiteTencent, "https://v.qq.com/s/videoplus/host", "https://v.qq.com/x/cover/1.html"},
-		{SiteYouku, "https://account.youku.com/", "https://www.youku.com/"},
-	}
-	for _, tc := range cases {
-		b := NewBroker(nil)
-		if _, err := b.RequestOpen(tc.site); err != nil {
-			t.Fatalf("%s open: %v", tc.site, err)
-		}
-		open := true
-		b.ApplyReport(Report{Open: &open, CurrentURL: tc.nav})
-		if _, err := b.EnqueueAction(ActionLogin, "https://evil.example/login", ""); err != nil {
-			t.Fatalf("%s login: %v", tc.site, err)
-		}
-		var login Command
-		for id := uint64(0); id < 10; id++ {
-			if cmd, ok := b.PendingAfter(id); ok && cmd.Action == ActionLogin {
-				login = cmd
-				break
-			}
-		}
-		if login.URL != tc.url || login.SiteID != tc.site {
-			t.Fatalf("%s login cmd=%+v want url=%q", tc.site, login, tc.url)
-		}
-	}
-}
-
-func TestLoginUsesGenericControllerForDouyin(t *testing.T) {
+func TestGenericCustomSiteKeepsGenericControlsAcrossNavigation(t *testing.T) {
 	b := NewBroker(nil)
-	if _, err := b.RequestOpen(SiteDouyin); err != nil {
+	site := Site{ID: "custom-1", Name: "Example", URL: "http://example.test/", GenericOnly: true}
+	if _, err := b.RequestOpenSite(site); err != nil {
 		t.Fatal(err)
 	}
 	open := true
-	b.ApplyReport(Report{Open: &open, CurrentURL: "https://www.douyin.com/"})
-	if _, err := b.EnqueueAction(ActionLogin, "https://evil.example/login", ""); err != nil {
-		t.Fatalf("Douyin login: %v", err)
+	snap := b.ApplyReport(Report{Open: &open, CurrentURL: "https://www.youtube.com/watch?v=x"})
+	if !snap.GenericSite || snap.CurrentSiteID != "" || snap.MoreAvailable {
+		t.Fatalf("generic snapshot=%+v", snap)
 	}
-	var login Command
-	for id := uint64(0); id < 10; id++ {
-		if cmd, ok := b.PendingAfter(id); ok && cmd.Action == ActionLogin {
-			login = cmd
-			break
-		}
+	if _, err := b.EnqueueAction(ActionSpeed, "1.5", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
+		t.Fatalf("speed must be unavailable for generic site: %v", err)
 	}
-	if login.SiteID != SiteDouyin || login.URL != "" {
-		t.Fatalf("Douyin login must remain an in-page typed command: %+v", login)
+	if _, err := b.EnqueueAction(ActionHome, "", ""); err != nil {
+		t.Fatalf("generic home = %v", err)
 	}
 }
 
-func TestLoginRequiresRecognizedCurrentSite(t *testing.T) {
+// Search on a personal URL would fall back to guessing a search box and
+// submitting its form. Home/back/refresh/hint stay available: those act on the
+// browser or on an element the user picked, not on a guessed target.
+func TestGenericSiteRejectsSearch(t *testing.T) {
 	b := NewBroker(nil)
-	if _, err := b.RequestOpen(SiteYouku); err != nil {
+	site := Site{ID: "custom-1", Name: "Example", URL: "http://example.test/", GenericOnly: true}
+	if _, err := b.RequestOpenSite(site); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.EnqueueAction(ActionLogin, "", ""); !IsInvalid(err) || ErrorCode(err) != "login_unavailable" {
-		t.Fatalf("login without current site = %v", err)
+	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "http://example.test/watch"})
+	if _, err := b.EnqueueAction(ActionSearch, "hello", ""); !IsInvalid(err) || ErrorCode(err) != "search_unavailable" {
+		t.Fatalf("generic search = %v", err)
+	}
+	for _, action := range []string{ActionRefresh, ActionBack, ActionHintEnter, ActionType, ActionEnter} {
+		if _, err := b.EnqueueAction(action, "hello", ""); err != nil {
+			t.Fatalf("generic %s = %v", action, err)
+		}
+	}
+}
+
+// A recognized catalog site keeps search, and it must survive navigation within
+// that site — the gate keys off the derived current site, not the opened card.
+func TestBuiltInSiteKeepsSearch(t *testing.T) {
+	b := NewBroker(nil)
+	if _, err := b.RequestOpen(SiteBilibili); err != nil {
+		t.Fatal(err)
+	}
+	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.bilibili.com/video/1"})
+	if _, err := b.EnqueueAction(ActionSearch, "hello", ""); err != nil {
+		t.Fatalf("bilibili search = %v", err)
+	}
+	// Navigating off the catalog site leaves an unknown page, which is exactly
+	// the case the guessed-search-box fallback must not run on.
+	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://unknown.example/page"})
+	if _, err := b.EnqueueAction(ActionSearch, "hello", ""); !IsInvalid(err) || ErrorCode(err) != "search_unavailable" {
+		t.Fatalf("search after leaving catalog site = %v", err)
 	}
 }
 
@@ -323,6 +312,9 @@ func TestMoreActionsRequireFreshApprovedCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.bilibili.com/video/BV1"})
+	if !b.Snapshot().MoreAvailable {
+		t.Fatal("bilibili's fixed extension profile should expose More")
+	}
 
 	// A typed special action is still unavailable until the current page probe
 	// reports it. This prevents stale profile knowledge becoming blind control.
@@ -381,6 +373,9 @@ func TestMoreActionsCannotCrossSiteBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.iqiyi.com/v_1.html"})
+	if !b.Snapshot().MoreAvailable {
+		t.Fatal("iqiyi's fixed extension profile should expose More")
+	}
 	if _, err := b.EnqueueAction(ActionCapabilities, "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -393,13 +388,58 @@ func TestMoreActionsCannotCrossSiteBoundary(t *testing.T) {
 		Status:      "capabilities",
 		Action:      ActionCapabilities,
 		CommandID:   probe.ID,
-		MoreActions: []string{ActionDanmakuToggle},
+		MoreActions: []string{ActionDanmakuToggle, ActionIQIYINext},
 	})
-	if len(snap.MoreActions) != 0 {
-		t.Fatalf("iqiyi accepted bilibili capability: %+v", snap.MoreActions)
+	if len(snap.MoreActions) != 1 || snap.MoreActions[0].ID != ActionIQIYINext {
+		t.Fatalf("iqiyi capability filtering failed: %+v", snap.MoreActions)
+	}
+	if _, err := b.EnqueueAction(ActionIQIYINext, "", ""); err != nil {
+		t.Fatalf("approved iqiyi action rejected: %v", err)
 	}
 	if _, err := b.EnqueueAction(ActionDanmakuToggle, "", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
 		t.Fatalf("cross-site special action = %v", err)
+	}
+}
+
+func TestDouyinMoreActionsAreSiteScoped(t *testing.T) {
+	b := NewBroker(nil)
+	if _, err := b.RequestOpen(SiteDouyin); err != nil {
+		t.Fatal(err)
+	}
+	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.douyin.com/video/1"})
+	if !b.Snapshot().MoreAvailable {
+		t.Fatal("douyin's fixed extension profile should expose More")
+	}
+	if _, err := b.EnqueueAction(ActionCapabilities, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := b.PendingAfter(1)
+	if !ok || probe.Action != ActionCapabilities {
+		t.Fatalf("capability command missing: %+v", probe)
+	}
+	snap := b.ApplyReport(Report{
+		Open:        boolPtr(true),
+		Status:      "capabilities",
+		Action:      ActionCapabilities,
+		CommandID:   probe.ID,
+		MoreActions: []string{ActionDouyinLike, ActionBilibiliLike},
+	})
+	if len(snap.MoreActions) != 1 || snap.MoreActions[0].ID != ActionDouyinLike {
+		t.Fatalf("douyin capability filtering failed: %+v", snap.MoreActions)
+	}
+	if _, err := b.EnqueueAction(ActionDouyinLike, "", ""); err != nil {
+		t.Fatalf("approved douyin action rejected: %v", err)
+	}
+
+	if _, err := b.RequestOpen(SiteTencent); err != nil {
+		t.Fatal(err)
+	}
+	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://v.qq.com/x/cover/1"})
+	if b.Snapshot().MoreAvailable {
+		t.Fatal("generic profile must not expose More")
+	}
+	if _, err := b.EnqueueAction(ActionDouyinLike, "", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
+		t.Fatalf("douyin more action leaked across sites: %v", err)
 	}
 }
 
@@ -408,6 +448,12 @@ func TestEnqueueSeekAndSpeed(t *testing.T) {
 	if _, err := b.RequestOpen(SiteBilibili); err != nil {
 		t.Fatal(err)
 	}
+	// Speed is gated on the site actually reported by the shell, so the rate
+	// form only becomes available once navigation confirms a rate-mode host.
+	if _, err := b.EnqueueAction(ActionSpeed, "1.25", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
+		t.Fatalf("speed before navigation report = %v", err)
+	}
+	b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.bilibili.com/video/BV1"})
 	if _, err := b.EnqueueAction(ActionSeek, "10", ""); err != nil {
 		t.Fatalf("valid seek rejected: %v", err)
 	}
@@ -433,6 +479,64 @@ func TestEnqueueSeekAndSpeed(t *testing.T) {
 	}
 	if lastSpeed.Text != "1.25" {
 		t.Fatalf("expected speed text 1.25, got %q", lastSpeed.Text)
+	}
+}
+
+// The two speed forms are not interchangeable: a rate-mode site must never
+// accept a step command, a step-mode site must never accept an absolute rate,
+// and a site with no speed profile accepts neither.
+func TestSpeedFormsAreSiteScoped(t *testing.T) {
+	cases := []struct {
+		site   string
+		url    string
+		mode   string
+		rateOK bool
+		stepOK bool
+	}{
+		{SiteBilibili, "https://www.bilibili.com/video/BV1", SpeedModeRate, true, false},
+		{SiteTencent, "https://v.qq.com/x/cover/1", SpeedModeRate, true, false},
+		{SiteYouTube, "https://www.youtube.com/watch?v=x", SpeedModeStep, false, true},
+		{SiteIQIYI, "https://www.iqiyi.com/v_1.html", SpeedModeNone, false, false},
+		{SiteNetflix, "https://www.netflix.com/watch/1", SpeedModeNone, false, false},
+	}
+	for _, tc := range cases {
+		b := NewBroker(nil)
+		if _, err := b.RequestOpen(tc.site); err != nil {
+			t.Fatal(err)
+		}
+		snap := b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: tc.url})
+		if snap.SpeedMode != tc.mode {
+			t.Fatalf("%s speed_mode = %q, want %q", tc.site, snap.SpeedMode, tc.mode)
+		}
+		_, rateErr := b.EnqueueAction(ActionSpeed, "1.5", "")
+		if (rateErr == nil) != tc.rateOK {
+			t.Fatalf("%s absolute speed err = %v, want ok=%v", tc.site, rateErr, tc.rateOK)
+		}
+		for _, step := range []string{ActionSpeedUp, ActionSpeedDown} {
+			_, stepErr := b.EnqueueAction(step, "", "")
+			if (stepErr == nil) != tc.stepOK {
+				t.Fatalf("%s %s err = %v, want ok=%v", tc.site, step, stepErr, tc.stepOK)
+			}
+		}
+	}
+}
+
+// A generic personal URL never derives a current site, so it reports no speed
+// capability even while sitting on a host that would otherwise have one.
+func TestGenericSiteHasNoSpeedMode(t *testing.T) {
+	b := NewBroker(nil)
+	site := Site{ID: "custom-1", Name: "Example", URL: "http://example.test/", GenericOnly: true}
+	if _, err := b.RequestOpenSite(site); err != nil {
+		t.Fatal(err)
+	}
+	snap := b.ApplyReport(Report{Open: boolPtr(true), CurrentURL: "https://www.youtube.com/watch?v=x"})
+	if snap.SpeedMode != SpeedModeNone {
+		t.Fatalf("generic speed_mode = %q", snap.SpeedMode)
+	}
+	for _, action := range []string{ActionSpeed, ActionSpeedUp, ActionSpeedDown} {
+		if _, err := b.EnqueueAction(action, "1.5", ""); !IsInvalid(err) || ErrorCode(err) != "action_unavailable" {
+			t.Fatalf("generic %s = %v", action, err)
+		}
 	}
 }
 
@@ -621,11 +725,14 @@ func TestControllerJSEmbedded(t *testing.T) {
 		"video-pod__list .pod-item.video-pod__item",
 		"episodesNew_item__", "episodes_item__",
 		"collectDelegatedRowTargets", "elementsFromPoint", "fullscreen: 'f'",
-		"https://www.iqiyi.com/iframe/loginreg?show_back=1",
-		"https://v.qq.com/s/videoplus/host",
-		"https://account.youku.com/",
+		"https://search.bilibili.com/all?keyword={q}",
+		"https://www.iqiyi.com/search?q={q}",
+		"https://so.youku.com/search/q_{q}",
 	}) {
 		t.Fatal("controller.js missing expected markers")
+	}
+	if containsAny(ControllerJS, []string{"LOGIN_URLS", "function doLogin(", "case 'login':"}) {
+		t.Fatal("controller.js must not retain a website login action")
 	}
 }
 
@@ -680,6 +787,24 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 	if !containsAll(js, []string{"episodesNew_item__", "episodes_item__"}) {
 		t.Fatal("iqiyi episode-grid adapter selectors missing")
 	}
+	// Douyin Jingxuan's waterfall cards are clickable divs without semantic
+	// attributes. Pin its outer-card selector and route guard so inner image and
+	// title nodes cannot receive duplicate Hints.
+	if !containsAll(js, []string{
+		"waterfall-videoCardContainer.jingxuanVideoCard",
+		"/^\\/jingxuan(?:\\/|$)/",
+	}) {
+		t.Fatal("douyin jingxuan card adapter missing")
+	}
+	// Regression: Semi Design (Douyin's UI kit) puts tabindex="0" on the whole
+	// active role="tabpanel" wrapper for keyboard focus, not because the whole
+	// panel is one click target. The bare-tabindex semantic clause must exclude
+	// it, or that one wrapper gets "seen" first and alreadyCovered's ancestor
+	// walk silently swallows every card in the entire jingxuan waterfall below
+	// it — confirmed live: 0 of ~70 cards got a Hint until this exclusion.
+	if !contains(js, `[tabindex]:not([tabindex="-1"]):not([role="tabpanel"])`) {
+		t.Fatal("tabpanel wrapper must not swallow the douyin jingxuan card adapter")
+	}
 	// A non-semantic row must receive the click at its true hit target, not
 	// merely at its outer layout wrapper.
 	if !containsAll(js, []string{
@@ -688,10 +813,15 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 	}) {
 		t.Fatal("hint coordinate click fallback missing")
 	}
-	// Site-key fallbacks for bilibili + iqiyi (Space + F), oracle-gated.
+	// Generic sites use Space/Arrow; selected profiles may override the key
+	// while retaining the same verified fallback contract.
 	if !containsAll(js, []string{
+		"COMMON_PLAYBACK_KEYS",
 		"SITE_KEYS",
 		"play_pause: ' '",
+		"seek_backward: 'ArrowLeft'",
+		"seek_forward: 'ArrowRight'",
+		"playbackKey('play_pause')",
 		"fullscreen: 'f'",
 		"iqiyi",
 		"effect_unconfirmed",
@@ -704,27 +834,63 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 		t.Fatal("bilibili/iqiyi SITE_KEYS host tests missing")
 	}
 	// Version gate must re-inject after controller upgrades.
-	if !contains(js, "__version >= 14") {
+	if !contains(js, "__version >= 24") {
 		t.Fatal("controller version gate missing")
+	}
+	// Site profiles keep their shortcut contracts even though speed is gone
+	// from most of them.
+	if !containsAll(js, []string{
+		"iqiyi_previous_episode: 'Shift+P'", "iqiyi_next_episode: 'Shift+N'",
+		"iqiyi_replay: '0'", "triggerIQIYIShortcut", "shiftKey: shiftKey",
+		"fullscreen: 'h'", "douyin_danmaku_toggle: 'b'",
+		"douyin_watch_later: 'l'", "triggerDouyinShortcut",
+	}) {
+		t.Fatal("iqiyi/douyin shortcut contract missing")
+	}
+	// Speed is now two site-scoped forms. The absolute write survives only for
+	// the rate-mode sites Go allows; YouTube steps through its own rate menu
+	// with the documented Shift+> / Shift+< shortcuts, and no site keeps the
+	// old iQIYI speed-menu scraping (its adverts share the programme's <video>,
+	// so it has no speed control at all now).
+	if !containsAll(js, []string{
+		"function setSpeed(", "video.playbackRate = rate",
+		"function stepSpeed(", "speed_up: 'Shift+>'", "speed_down: 'Shift+<'",
+		"SHIFTED_SYMBOL_KEYS", "code: 'Period'", "code: 'Comma'",
+		"case 'speed_up':", "case 'speed_down':", "atSpeedLimit",
+	}) {
+		t.Fatal("site-scoped speed contract missing")
+	}
+	if containsAny(js, []string{
+		"setIQIYIOfficialSpeed", "iQIYIAdPlaying", "iQIYISpeedTrigger",
+		"iQIYISpeedOption", "official_speed_control_unavailable", "ad_playing",
+	}) {
+		t.Fatal("iQIYI speed path must be gone, not merely unreachable")
 	}
 	// More capability contract: only Bilibili advertises the D-key danmaku
 	// action, and the effect must be read back before success is reported.
 	if !containsAll(js, []string{
 		"danmaku_toggle: 'd'",
 		"seek_backward: 'ArrowLeft'",
-		"volume_down: 'ArrowDown'",
-		"fullscreen_exit: 'Escape'",
+		"fullscreen: 'f'",
 		"bilibili_like: 'q'",
 		"bilibili_triple: 'r'",
 		"siteMoreActions",
 		"bilibiliDanmakuState",
 		"triggerBilibiliShortcut",
-		"bilibiliVolumeSignature",
 		"dispatchKeyHold",
 		"capabilities",
 		"after !== before",
 	}) {
 		t.Fatal("Bilibili More capability / oracle markers missing")
+	}
+	// Fullscreen exit is Escape for every site uniformly, not a per-site
+	// preference table — no site should carry its own fullscreen_exit key,
+	// and the removed gating helper must not reappear.
+	if !contains(js, "dispatchKey('Escape')") {
+		t.Fatal("universal Escape fullscreen-exit dispatch missing")
+	}
+	if containsAny(js, []string{"fullscreen_exit:", "preferSiteShortcut"}) {
+		t.Fatal("fullscreen exit must not special-case any site")
 	}
 	// A real DOM fullscreen transition must be forwarded to the Windows host;
 	// WebView2 does not resize its embedding HWND the way standalone Edge does.
@@ -757,6 +923,15 @@ func containsAll(s string, parts []string) bool {
 		}
 	}
 	return true
+}
+
+func containsAny(s string, parts []string) bool {
+	for _, p := range parts {
+		if contains(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(s, sub string) bool {

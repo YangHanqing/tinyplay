@@ -2,7 +2,7 @@
 # Apple Silicon and Intel), with mpv bundled, and attaches them to a GitHub
 # Release when you push a v* tag.
 #
-#   Windows → TinyPlay-windows.zip        (TinyPlay.exe + mpv/, unzip & double-click)
+#   Windows → TinyPlay-Setup-x64.exe      (install / upgrade in place)
 #   macOS   → TinyPlay-macos-arm64.dmg    (Apple Silicon)
 #             TinyPlay-macos-intel.dmg    (Intel)
 #                                          signed+notarized, drag TinyPlay.app to
@@ -76,22 +76,34 @@ jobs:
         shell: bash
         run: cp THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
 
-      - name: Package zip
-        shell: bash
+      - name: Build Windows installer
+        shell: pwsh
         run: |
-          cd dist
-          7z a ../TinyPlay-windows.zip ./*
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) {
+            choco install innosetup --yes --no-progress
+          }
+          if (-not (Test-Path $compiler)) {
+            throw "Inno Setup compiler was not installed"
+          }
+          if ("${{ github.ref }}" -like "refs/tags/*") {
+            $version = "${{ github.ref_name }}".TrimStart('v')
+          } else {
+            $version = "0.0.0-dev"
+          }
+          & $compiler "/DMyAppVersion=$version" "windows\TinyPlay.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TinyPlay-windows
-          path: TinyPlay-windows.zip
+          name: TinyPlay-windows-setup
+          path: dist/TinyPlay-Setup-x64.exe
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: TinyPlay-windows.zip
+          files: dist/TinyPlay-Setup-x64.exe
 
   macos:
     strategy:

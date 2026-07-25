@@ -121,6 +121,17 @@ type Player struct {
 	// that construct Player values directly.
 	playbackRevWait chan struct{}
 
+	// starting is true from the moment Play() commits to a new title until mpv
+	// confirms real playback (the "playback-restart" IPC event) or the attempt
+	// ends (stop/crash/timeout). The desktop shells use it to show a transient
+	// "connecting/buffering" indicator over an otherwise blank or frozen screen
+	// while a slow source (remote Emby, IPTV) has not produced a frame yet.
+	starting bool
+	// startingEpoch guards the safety timer below against a stale AfterFunc
+	// clearing a *later* Play() attempt's starting=true after it fires.
+	startingEpoch uint64
+	startingTimer *time.Timer
+
 	propsMu   sync.Mutex
 	liveProps map[string]any
 
@@ -555,6 +566,11 @@ func (p *Player) handleEvent(line []byte) {
 		switch msg.Event {
 		case "file-loaded":
 			p.reportPlaybackStarted()
+		case "playback-restart":
+			// mpv's confirmation that a frame is actually being produced, not
+			// just that the file was opened — the right signal to end the
+			// desktop "connecting/buffering" indicator (see armStartingLocked).
+			p.clearStarting()
 		case "end-file":
 			reason, _ := fields["reason"].(string)
 			if reason == "error" {
@@ -688,11 +704,13 @@ func (p *Player) State() map[string]any {
 	p.mu.Lock()
 	ctx := p.ctx
 	running := p.running
+	starting := p.starting
 	revision := p.playbackRevision
 	p.mu.Unlock()
 	diagnosticAvailable, diagnosticScope := p.DiagnosticStatus()
 	return map[string]any{
 		"running":                running,
+		"player_starting":        starting,
 		"playback_revision":      revision,
 		"server_id":              ctx.ServerID,
 		"item_id":                ctx.ItemID,
@@ -967,6 +985,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 			if isCurrent {
 				p.running = false
 				p.proc = nil
+				p.clearStartingLocked()
 			}
 			p.mu.Unlock()
 			if isCurrent {
@@ -1045,9 +1064,63 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		VariantIndex: opt.VariantIndex,
 		SourceType:   opt.SourceType,
 	}
+	p.armStartingLocked()
 	p.bumpPlaybackRevisionLocked()
 	p.mu.Unlock()
 	return result
+}
+
+// startingSafetyTimeout bounds how long the desktop "connecting/buffering"
+// indicator can stay on if mpv never confirms playback (e.g. a source that
+// hangs without ever erroring). Chosen well above ordinary slow-start latency
+// (a few seconds for a remote Emby/IPTV first byte) but short enough that a
+// truly stuck load does not leave the indicator on screen indefinitely.
+const startingSafetyTimeout = 20 * time.Second
+
+// armStartingLocked marks a new Play() attempt as starting and (re)arms the
+// safety timer. Caller must hold p.mu.
+func (p *Player) armStartingLocked() {
+	p.starting = true
+	p.startingEpoch++
+	epoch := p.startingEpoch
+	if p.startingTimer != nil {
+		p.startingTimer.Stop()
+	}
+	p.startingTimer = time.AfterFunc(startingSafetyTimeout, func() { p.clearStartingEpoch(epoch) })
+}
+
+// clearStarting unconditionally ends the current starting attempt (mpv
+// confirmed playback via "playback-restart", or the attempt stopped/crashed).
+// Bumping the epoch invalidates any still-pending safety timer from this
+// attempt so it cannot later clobber a newer Play().
+func (p *Player) clearStarting() {
+	p.mu.Lock()
+	p.clearStartingLocked()
+	p.mu.Unlock()
+}
+
+func (p *Player) clearStartingLocked() {
+	p.startingEpoch++
+	if p.startingTimer != nil {
+		p.startingTimer.Stop()
+		p.startingTimer = nil
+	}
+	changed := p.starting
+	p.starting = false
+	if changed {
+		p.bumpPlaybackRevisionLocked()
+	}
+}
+
+// clearStartingEpoch is the safety-timer callback. It only acts if epoch still
+// matches the attempt that armed it, so a stale timer from an attempt that was
+// already confirmed/stopped/superseded cannot clear a newer one's starting=true.
+func (p *Player) clearStartingEpoch(epoch uint64) {
+	p.mu.Lock()
+	if p.startingEpoch == epoch {
+		p.clearStartingLocked()
+	}
+	p.mu.Unlock()
 }
 
 func (p *Player) Stop() map[string]any {
@@ -1055,6 +1128,7 @@ func (p *Player) Stop() map[string]any {
 	p.appendDiagnosticEvent("stop_requested", map[string]any{})
 	p.finalizeDiagnostic("user_stop", "user_action")
 	p.fireStopReport()
+	p.clearStarting()
 	p.mu.Lock()
 	proc := p.proc
 	p.mu.Unlock()

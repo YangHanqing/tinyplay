@@ -4,7 +4,7 @@
  */
 (function () {
   'use strict';
-  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 14) {
+  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 24) {
     return;
   }
 
@@ -19,29 +19,52 @@
     { test: /(^|\.)iqiyi\.com$/i, url: 'https://www.iqiyi.com/search?q={q}' },
     { test: /(^|\.)v\.qq\.com$/i, url: 'https://v.qq.com/x/search/?q={q}' },
     { test: /(^|\.)youku\.com$/i, url: 'https://so.youku.com/search/q_{q}' },
+    { test: /(^|\.)youtube\.com$/i, url: 'https://www.youtube.com/results?search_query={q}' },
   ];
-  var LOGIN_URLS = [
-    { test: /(^|\.)bilibili\.com$/i, url: 'https://passport.bilibili.com/' },
-    { test: /(^|\.)iqiyi\.com$/i, url: 'https://www.iqiyi.com/iframe/loginreg?show_back=1' },
-    { test: /(^|\.)v\.qq\.com$/i, url: 'https://v.qq.com/s/videoplus/host' },
-    { test: /(^|\.)youku\.com$/i, url: 'https://account.youku.com/' },
-  ];
-  // Generic login-trigger text is retained only as a fallback for a site that
-  // has no fixed route in the table above.
-  var LOGIN_TEXT = /^(登录|登陆|登录注册|注册\/登录|login|log in|sign in)$/i;
-  // Per-site keyboard adapters. Synthetic KeyboardEvents are untrusted
+  // The three core playback keys are deliberately identical for every
+  // supported website. Synthetic KeyboardEvents are untrusted
   // (isTrusted === false), so every shortcut has an effect oracle and falls
   // through to the generic media path on failure — never a blind success.
+  var COMMON_PLAYBACK_KEYS = {
+    play_pause: ' ',
+    seek_backward: 'ArrowLeft',
+    seek_forward: 'ArrowRight'
+  };
+
+  // Per-site keyboard adapters hold only genuinely site-specific behavior.
   // Bilibili's mappings below are taken from its in-player shortcut help.
-  //   iqiyi:    Space play/pause, F web-fullscreen (user-reported; oracle-gated)
+  //   iqiyi:    F fullscreen; Shift+P/Shift+N episode navigation; 0 replay
   var SITE_KEYS = [
     { test: /(^|\.)bilibili\.com$/i, keys: {
       play_pause: ' ', seek_backward: 'ArrowLeft', seek_forward: 'ArrowRight',
-      volume_down: 'ArrowDown', volume_up: 'ArrowUp', fullscreen_exit: 'Escape',
+      fullscreen: 'f',
       danmaku_toggle: 'd', bilibili_like: 'q', bilibili_coin: 'w',
       bilibili_favorite: 'e', bilibili_follow: 'g', bilibili_triple: 'r'
     } },
-    { test: /(^|\.)iqiyi\.com$/i, keys: { play_pause: ' ', fullscreen: 'f' } },
+    { test: /(^|\.)iqiyi\.com$/i, keys: {
+      fullscreen: 'f', iqiyi_previous_episode: 'Shift+P',
+      iqiyi_next_episode: 'Shift+N', iqiyi_replay: '0'
+    } },
+    { test: /(^|\.)douyin\.com$/i, keys: {
+      fullscreen: 'h',
+      douyin_danmaku_toggle: 'b', douyin_like: 'z', douyin_favorite: 'c',
+      douyin_follow: 'g', douyin_comments: 'x', douyin_autoplay: 'k',
+      douyin_watch_later: 'l'
+    } },
+    { test: /(^|\.)youtube\.com$/i, keys: {
+      play_pause: 'k', seek_backward: 'j', seek_forward: 'l',
+      fullscreen: 'f',
+      // YouTube's documented rate shortcuts. They step through the player's own
+      // rate menu, so the phone offers faster/slower rather than fixed rates.
+      speed_up: 'Shift+>', speed_down: 'Shift+<',
+      youtube_captions_toggle: 'c',
+      youtube_previous_video: 'Shift+P', youtube_next_video: 'Shift+N'
+    } },
+    { test: /(^|\.)netflix\.com$/i, keys: {
+      play_pause: ' ', seek_backward: 'ArrowLeft', seek_forward: 'ArrowRight',
+      fullscreen: 'f',
+      netflix_skip_intro: 's'
+    } },
   ];
 
   function siteKey(action) {
@@ -54,10 +77,12 @@
     return null;
   }
 
-  function preferSiteShortcut(action) {
-    // Bilibili is deliberately opt-in: the phone's generic button should have
-    // the same semantics a viewer gets from Bilibili's own keyboard first.
-    return isBilibiliHost() && !!siteKey(action);
+  function commonPlaybackKey(action) {
+    return COMMON_PLAYBACK_KEYS[action] || null;
+  }
+
+  function playbackKey(action) {
+    return siteKey(action) || commonPlaybackKey(action);
   }
 
   function findURLTemplate(table) {
@@ -96,7 +121,7 @@
     return (el && el.ownerDocument && el.ownerDocument.defaultView) || window;
   }
 
-  // Lightweight geometry check used by search/login probes (not Hint).
+  // Lightweight geometry check used by search probes (not Hint).
   function isVisible(el) {
     if (!el || el.nodeType !== 1) return false;
     var view = ownerWindow(el);
@@ -367,9 +392,34 @@
     return document.body || document.documentElement;
   }
 
+  var SHIFTED_SYMBOL_KEYS = {
+    'Shift+>': { key: '>', code: 'Period', keyCode: 190 },
+    'Shift+<': { key: '<', code: 'Comma', keyCode: 188 }
+  };
+
   function keyboardOptions(key) {
-    var code, keyCode;
-    if (key === ' ') {
+    var code, keyCode, shiftKey = false;
+    // Shifted punctuation is written as the produced character (Shift+> / Shift+<)
+    // because that is what a real event's .key carries, while .code stays the
+    // unshifted physical key. Sites read either one, so both must be right.
+    var shiftedSymbol = SHIFTED_SYMBOL_KEYS[key];
+    var shiftedLetter = /^Shift\+([a-z])$/i.exec(key);
+    if (shiftedSymbol) {
+      return {
+        key: shiftedSymbol.key, code: shiftedSymbol.code,
+        keyCode: shiftedSymbol.keyCode, which: shiftedSymbol.keyCode,
+        shiftKey: true, bubbles: true, cancelable: true
+      };
+    }
+    if (shiftedLetter) {
+      key = shiftedLetter[1].toUpperCase();
+      code = 'Key' + key;
+      keyCode = key.charCodeAt(0);
+      shiftKey = true;
+    } else if (/^\d$/.test(key)) {
+      code = 'Digit' + key;
+      keyCode = 48 + Number(key);
+    } else if (key === ' ') {
       code = 'Space';
       keyCode = 32;
     } else if (/^[a-z]$/i.test(key)) {
@@ -394,7 +444,7 @@
       code = key;
       keyCode = 0;
     }
-    return { key: key, code: code, keyCode: keyCode, which: keyCode, bubbles: true, cancelable: true };
+    return { key: key, code: code, keyCode: keyCode, which: keyCode, shiftKey: shiftKey, bubbles: true, cancelable: true };
   }
 
   function dispatchKey(key) {
@@ -466,6 +516,18 @@
     return /(^|\.)bilibili\.com$/i.test(HOST);
   }
 
+  function isDouyinHost() {
+    return /(^|\.)douyin\.com$/i.test(HOST);
+  }
+
+  function isNetflixHost() {
+    return /(^|\.)netflix\.com$/i.test(HOST);
+  }
+
+  function isYouTubeHost() {
+    return /(^|\.)youtube\.com$/i.test(HOST);
+  }
+
   // Bilibili's own player labels its danmaku switch as either 关闭弹幕 (d) or
   // 打开/开启弹幕 (d). Prefer explicit control state when available, then the
   // official label. Returning null means we cannot prove an effect, so the
@@ -503,13 +565,32 @@
   }
 
   function siteMoreActions() {
-    if (!primaryVideo()) return [];
+    var video = primaryVideo();
+    if (!video) return [];
     var actions = [];
     if (isBilibiliHost()) {
       if (bilibiliDanmakuState() !== null) actions.push('danmaku_toggle');
       ['bilibili_like', 'bilibili_coin', 'bilibili_favorite', 'bilibili_follow', 'bilibili_triple'].forEach(function (action) {
         if (bilibiliShortcutSurface(action)) actions.push(action);
       });
+    }
+    if (isIQIYIHost()) {
+      actions.push('iqiyi_previous_episode', 'iqiyi_next_episode', 'iqiyi_replay');
+    }
+    if (isDouyinHost()) {
+      [
+        'douyin_danmaku_toggle', 'douyin_like', 'douyin_favorite', 'douyin_follow',
+        'douyin_comments', 'douyin_autoplay', 'douyin_watch_later'
+      ].forEach(function (action) {
+        if (douyinShortcutSurface(action)) actions.push(action);
+      });
+    }
+    if (isYouTubeHost()) {
+      if (youtubeCaptionsState() !== null) actions.push('youtube_captions_toggle');
+      actions.push('youtube_previous_video', 'youtube_next_video');
+    }
+    if (isNetflixHost()) {
+      actions.push('netflix_skip_intro');
     }
     return actions;
   }
@@ -573,25 +654,6 @@
     return labels.join('||');
   }
 
-  // The Bilibili player keeps volume in its own control model. In particular,
-  // some streamed videos expose an unusable HTMLMediaElement.volume readback
-  // even though the official ↑/↓ shortcuts work. Its visible numeric readout
-  // and slider transform are a better effect oracle for that site.
-  function bilibiliVolumeSignature() {
-    if (!isBilibiliHost()) return null;
-    var root;
-    try { root = document.querySelector('.bpx-player-ctrl-volume'); } catch (_) { root = null; }
-    if (!root) return null;
-    var number = root.querySelector('.bpx-player-ctrl-volume-number');
-    var bar = root.querySelector('.bpx-player-ctrl-volume-progress .bui-bar');
-    if (!number && !bar) return null;
-    return [
-      number ? (number.textContent || '').replace(/\s+/g, ' ').trim() : '',
-      bar ? (bar.getAttribute('style') || '') : '',
-      root.querySelector('.bpx-player-ctrl-muted-icon') ? 'has-muted-icon' : ''
-    ].join('|');
-  }
-
   function triggerBilibiliShortcut(action) {
     if (!isBilibiliHost() || !bilibiliShortcutSurface(action)) return failed('action_unavailable');
     var key = siteKey(action);
@@ -609,9 +671,169 @@
     });
   }
 
-  // Bilibili's documented shortcuts take priority so the phone has the same
-  // behavior as the viewer's keyboard. Other sites retain the HTMLMediaElement
-  // API first, with their shortcut as a verified fallback.
+  function iQIYIEpisodeSignature(video) {
+    if (!video) return '';
+    return [
+      location.href || '', document.title || '',
+      video.currentSrc || video.src || '', video.getAttribute('src') || ''
+    ].join('|');
+  }
+
+  function triggerIQIYIShortcut(action) {
+    if (!isIQIYIHost()) return failed('action_unavailable');
+    var video = primaryVideo();
+    var key = siteKey(action);
+    if (!video || !key) return failed('action_unavailable');
+    var beforeTime = Number(video.currentTime);
+    if (!isFinite(beforeTime)) return failed('effect_unconfirmed');
+
+    if (action === 'iqiyi_replay') {
+      if (beforeTime < 1) return failed('effect_unconfirmed');
+      if (!dispatchKey(key)) return failed('effect_unconfirmed');
+      return settle(function () {
+        return Number(video.currentTime) < Math.max(0.5, beforeTime - 1);
+      }, 1000).then(function (changed) {
+        return changed ? { ok: true, status: action } : failed('effect_unconfirmed');
+      });
+    }
+
+    var beforeEpisode = iQIYIEpisodeSignature(video);
+    if (!dispatchKey(key)) return failed('effect_unconfirmed');
+    return settle(function () {
+      var episodeChanged = iQIYIEpisodeSignature(video) !== beforeEpisode;
+      var restarted = Number(video.currentTime) < 1 && beforeTime > 2;
+      return episodeChanged || restarted;
+    }, 1400).then(function (changed) {
+      return changed ? { ok: true, status: action } : failed('effect_unconfirmed');
+    });
+  }
+
+  function douyinShortcutSurface(action) {
+    if (!isDouyinHost()) return null;
+    var selectors = {
+      douyin_danmaku_toggle: '[aria-label*="弹幕"], [title*="弹幕"], [data-e2e*="danmaku"]',
+      douyin_like: '[aria-label*="赞"], [title*="赞"], [data-e2e*="like"]',
+      douyin_favorite: '[aria-label*="收藏"], [title*="收藏"], [data-e2e*="collect"], [data-e2e*="favorite"]',
+      douyin_follow: '[aria-label*="关注"], [title*="关注"], [data-e2e*="follow"]',
+      douyin_comments: '[aria-label*="评论"], [title*="评论"], [data-e2e*="comment"]',
+      douyin_autoplay: '[aria-label*="自动连播"], [title*="自动连播"], [data-e2e*="autoplay"]',
+      douyin_watch_later: '[aria-label*="稍后再看"], [title*="稍后再看"], [data-e2e*="later"]'
+    };
+    var selector = selectors[action];
+    if (!selector) return null;
+    try {
+      var nodes = document.querySelectorAll(selector);
+      for (var i = 0; i < nodes.length; i++) {
+        if (isVisible(nodes[i])) return nodes[i];
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function douyinSurfaceSignature(action) {
+    var node = douyinShortcutSurface(action);
+    if (!node) return '';
+    return [
+      node.className || '', node.getAttribute('title') || '',
+      node.getAttribute('aria-label') || '', node.getAttribute('aria-pressed') || '',
+      node.getAttribute('aria-checked') || '', node.getAttribute('data-e2e') || '',
+      (node.textContent || '').replace(/\s+/g, ' ').trim()
+    ].join('|');
+  }
+
+  function douyinOverlaySignature() {
+    var nodes;
+    try { nodes = document.querySelectorAll('[role="dialog"], [role="alert"], [class*="toast"], [class*="modal"], [class*="popup"]'); } catch (_) { nodes = []; }
+    var labels = [];
+    for (var i = 0; i < nodes.length && labels.length < 8; i++) {
+      if (!isVisible(nodes[i])) continue;
+      labels.push((nodes[i].className || '') + '|' + (nodes[i].getAttribute('aria-label') || '') + '|' + (nodes[i].textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80));
+    }
+    return labels.join('||');
+  }
+
+  function triggerDouyinShortcut(action) {
+    if (!isDouyinHost() || !douyinShortcutSurface(action)) return failed('action_unavailable');
+    var key = siteKey(action);
+    if (!key) return failed('action_unavailable');
+    var beforeControl = douyinSurfaceSignature(action);
+    var beforeOverlay = douyinOverlaySignature();
+    if (!dispatchKey(key)) return failed('effect_unconfirmed');
+    return settle(function () {
+      return douyinSurfaceSignature(action) !== beforeControl || douyinOverlaySignature() !== beforeOverlay;
+    }, 1000).then(function (changed) {
+      return changed ? { ok: true, status: action } : failed('effect_unconfirmed');
+    });
+  }
+
+  // YouTube's CC button exposes aria-pressed, the same on/off pattern already
+  // read for Bilibili's danmaku switch.
+  function youtubeCaptionsState() {
+    if (!isYouTubeHost()) return null;
+    var btn = document.querySelector('.ytp-subtitles-button');
+    if (!btn) return null;
+    var pressed = btn.getAttribute('aria-pressed');
+    return pressed === 'true' || pressed === 'false' ? pressed === 'true' : null;
+  }
+
+  function toggleYouTubeCaptions() {
+    if (!isYouTubeHost()) return failed('action_unavailable');
+    if (!primaryVideo()) return failed('no_player');
+    var before = youtubeCaptionsState();
+    var key = siteKey('youtube_captions_toggle');
+    if (!key || !dispatchKey(key)) return failed('effect_unconfirmed');
+    return settle(function () {
+      var after = youtubeCaptionsState();
+      return after !== null && after !== before;
+    }, 700).then(function (changed) {
+      return changed ? { ok: true, status: 'youtube_captions_toggle' } : failed('effect_unconfirmed');
+    });
+  }
+
+  function youtubeMediaSignature(video) {
+    return [
+      location.href || '', document.title || '',
+      (video && (video.currentSrc || video.src)) || ''
+    ].join('|');
+  }
+
+  // Shift+P/Shift+N only do anything inside a playlist; outside one the
+  // signature never changes and the command fails honestly instead of
+  // reporting a success that didn't happen.
+  function triggerYouTubeVideoNav(action) {
+    if (!isYouTubeHost()) return failed('action_unavailable');
+    var video = primaryVideo();
+    var key = siteKey(action);
+    if (!video || !key) return failed('action_unavailable');
+    var before = youtubeMediaSignature(video);
+    if (!dispatchKey(key)) return failed('effect_unconfirmed');
+    return settle(function () {
+      return youtubeMediaSignature(video) !== before;
+    }, 1400).then(function (changed) {
+      return changed ? { ok: true, status: action } : failed('effect_unconfirmed');
+    });
+  }
+
+  // Netflix's S key only does something while the skip-intro/recap button is
+  // showing; the oracle is the currentTime jump itself (tens of seconds),
+  // which is also what tells a real skip apart from a no-op keypress.
+  function netflixSkipIntro() {
+    if (!isNetflixHost()) return failed('action_unavailable');
+    var video = primaryVideo();
+    if (!video) return failed('no_player');
+    var before = Number(video.currentTime);
+    if (!isFinite(before)) return failed('effect_unconfirmed');
+    var key = siteKey('netflix_skip_intro');
+    if (!key || !dispatchKey(key)) return failed('effect_unconfirmed');
+    return settle(function () {
+      return Number(video.currentTime) - before > 3;
+    }, 900).then(function (jumped) {
+      return jumped ? { ok: true, status: 'netflix_skip_intro' } : failed('effect_unconfirmed');
+    });
+  }
+
+  // Every website gets the same keyboard-first contract: Space toggles
+  // playback, and the HTMLMediaElement path is strictly a verified fallback.
   function togglePlayPause() {
     var video = primaryVideo();
     if (!video) return failed('no_player');
@@ -628,21 +850,13 @@
         return viaAPI ? { ok: true, status: 'play_pause' } : failed('effect_unconfirmed');
       });
     }
-    if (preferSiteShortcut('play_pause') && dispatchKey(siteKey('play_pause'))) {
+    var key = playbackKey('play_pause');
+    if (key && dispatchKey(key)) {
       return settle(flipped, 600).then(function (viaKey) {
         return viaKey ? { ok: true, status: 'play_pause' } : viaMediaAPI();
       });
     }
-    return viaMediaAPI().then(function (viaAPI) {
-      if (viaAPI.ok) return viaAPI;
-      var key = siteKey('play_pause');
-      if (key && dispatchKey(key)) {
-        return settle(flipped, 600).then(function (viaKey) {
-          return viaKey ? { ok: true, status: 'play_pause' } : failed('effect_unconfirmed');
-        });
-      }
-      return failed('effect_unconfirmed');
-    });
+    return viaMediaAPI();
   }
 
   function seekBy(text) {
@@ -665,12 +879,13 @@
         return done ? { ok: true, status: 'seek' } : failed('effect_unconfirmed');
       });
     }
-    if (!preferSiteShortcut(delta < 0 ? 'seek_backward' : 'seek_forward')) return viaMediaAPI();
-    var key = siteKey(delta < 0 ? 'seek_backward' : 'seek_forward');
+    var key = playbackKey(delta < 0 ? 'seek_backward' : 'seek_forward');
     var before = video.currentTime;
-    // Bilibili documents one arrow press as five seconds. The phone's existing
-    // ±10 controls send two official presses, keeping their established range.
-    var presses = Math.max(1, Math.min(4, Math.round(Math.abs(delta) / 5)));
+    // YouTube's J/L and Netflix's arrows are documented as 10-second jumps;
+    // Bilibili/iQIYI's arrow path is five seconds. Keep the phone's ±10
+    // controls honest on both profiles before falling back to media APIs.
+    var step = (/(^|\.)youtube\.com$/i.test(HOST) || isNetflixHost()) ? 10 : 5;
+    var presses = Math.max(1, Math.min(4, Math.round(Math.abs(delta) / step)));
     return dispatchKeyRepeated(key, presses, 110).then(function (sent) {
       if (!sent) return viaMediaAPI();
       return settle(function () {
@@ -682,6 +897,13 @@
     });
   }
 
+  // ── Playback speed ─────────────────────────────────────────────────────
+  // Speed is NOT a universal control. Go decides per site which of the two
+  // forms below (if either) a phone may send, so the direct playbackRate write
+  // never reaches a player that serves adverts through the same <video> as the
+  // programme, or one whose own governor would snap the value back.
+
+  //   setSpeed  — absolute rate (bilibili, tencent).
   function setSpeed(text) {
     var video = primaryVideo();
     if (!video) return failed('no_player');
@@ -695,36 +917,38 @@
     });
   }
 
-  function changeVolume(text) {
+  //   stepSpeed — one notch along the site's own rate ladder via its documented
+  //   shortcut (YouTube's Shift+> / Shift+<). The rate itself is never written:
+  //   the site stays in charge of which values exist and which are allowed.
+  function stepSpeed(direction) {
     var video = primaryVideo();
     if (!video) return failed('no_player');
-    var delta = parseFloat(text);
-    if (!isFinite(delta) || delta === 0) return failed('bad_delta');
-    function viaMediaAPI() {
-      var before = Number(video.volume);
-      if (!isFinite(before)) return failed('effect_unconfirmed');
-      var next = Math.max(0, Math.min(1, before + delta / 100));
-      video.muted = false;
-      video.volume = next;
-      return confirmAfter(300, function () { return Math.abs(video.volume - next) < 0.01; }).then(function (kept) {
-        return kept ? { ok: true, status: 'volume' } : failed('effect_unconfirmed');
-      });
-    }
-    var action = delta < 0 ? 'volume_down' : 'volume_up';
-    if (!preferSiteShortcut(action)) return viaMediaAPI();
-    var presses = Math.max(1, Math.min(4, Math.round(Math.abs(delta) / 10)));
-    var beforeBilibili = bilibiliVolumeSignature();
-    var beforeMedia = Number(video.volume);
-    return dispatchKeyRepeated(siteKey(action), presses, 110).then(function (sent) {
-      if (!sent) return viaMediaAPI();
-      return settle(function () {
-        if (beforeBilibili !== null) return bilibiliVolumeSignature() !== beforeBilibili;
-        var current = Number(video.volume);
-        return isFinite(current) && isFinite(beforeMedia) && Math.abs(current - beforeMedia) > 0.02;
-      }, 800).then(function (viaKey) {
-        return viaKey ? { ok: true, status: 'volume' } : viaMediaAPI();
-      });
+    var action = direction === 'down' ? 'speed_down' : 'speed_up';
+    var key = siteKey(action);
+    if (!key) return failed('action_unavailable');
+    var before = video.playbackRate;
+    if (!dispatchKey(key)) return failed('effect_unconfirmed');
+    var moved = function () {
+      return direction === 'down' ? video.playbackRate < before - 0.001
+                                  : video.playbackRate > before + 0.001;
+    };
+    return settle(moved, 900).then(function (stepped) {
+      if (stepped) return { ok: true, status: action };
+      // Already at the end of the site's ladder: nothing changed because there
+      // is nothing left to change, which is not a failure to report as one.
+      if (atSpeedLimit(before, direction)) return { ok: true, status: action };
+      return failed('effect_unconfirmed');
     });
+  }
+
+  // Bounds of the rate menus the step shortcuts walk. Kept deliberately loose
+  // (a site widening its ladder only costs one honest effect_unconfirmed).
+  function atSpeedLimit(rate, direction) {
+    return direction === 'down' ? rate <= 0.25 + 0.001 : rate >= 2 - 0.001;
+  }
+
+  function isIQIYIHost() {
+    return /(^|\.)iqiyi\.com$/i.test(HOST);
   }
 
   function scrollPage(direction) {
@@ -733,30 +957,14 @@
     return { ok: true, status: direction === 'up' ? 'scroll_up' : 'scroll_down' };
   }
 
-  function findLoginTrigger() {
-    var candidates = document.querySelectorAll('a, button, [role="button"], div, span');
-    for (var i = 0; i < candidates.length; i++) {
-      var el = candidates[i];
-      if (el.children.length > 1) continue;
-      var text = (el.textContent || '').trim();
-      if (!text || text.length > 10 || !LOGIN_TEXT.test(text)) continue;
-      if (isVisible(el)) return el;
-    }
-    return null;
-  }
-
-  function doLogin() {
-    var url = findURLTemplate(LOGIN_URLS);
-    if (url) {
-      window.location.assign(url);
-      return { ok: true, status: 'login' };
-    }
-    var trigger = findLoginTrigger();
-    if (trigger) {
-      trigger.click();
-      return { ok: true, status: 'login' };
-    }
-    return { ok: false, status: 'error', error: 'no_login' };
+  // Real ArrowUp/ArrowDown, not a page scroll — Go only routes this to Douyin
+  // (next/previous video in the feed) and YouTube (its own volume step), see
+  // ArrowNavAvailableForSite. No host check here: Go is the single source of
+  // truth for which site gets the button, same as setSpeed/stepSpeed already do.
+  function pressArrowKey(direction) {
+    var key = direction === 'up' ? 'ArrowUp' : 'ArrowDown';
+    if (!dispatchKey(key)) return failed('effect_unconfirmed');
+    return { ok: true, status: direction === 'up' ? 'arrow_up' : 'arrow_down' };
   }
 
   // Climbs from <video> to the nearest ancestor whose box is meaningfully
@@ -1042,9 +1250,10 @@
       // user already exited natively with their own mouse/Esc.
       return { ok: true, status: 'fullscreen_exit' };
     }
-    // Bilibili documents Escape as the native way to leave fullscreen. Prefer
-    // that exact behavior before touching generic fullscreen state.
-    if (preferSiteShortcut('fullscreen_exit') && dispatchKey(siteKey('fullscreen_exit'))) {
+    // Escape is the universal way to leave fullscreen — every supported site
+    // honors it the same way a real keyboard would, so it is tried first
+    // regardless of site before falling back to native/CSS-pin/toggle-key state.
+    if (dispatchKey('Escape')) {
       return settle(function () { return !currentlyFullscreen(video); }, 900).then(function (exited) {
         return exited ? { ok: true, status: 'fullscreen_exit' } : exitFullscreenGeneric(video);
       });
@@ -1153,8 +1362,17 @@
   var HINT_ALPHABET = 'AXY123456789';
   var MAX_HINT_TARGETS = HINT_ALPHABET.length * HINT_ALPHABET.length;
   // Semantic interactive surfaces — collected first.
+  // The bare-tabindex clause excludes [role="tabpanel"]: WAI-ARIA's own
+  // authoring practice puts tabindex="0" on the *active tab panel wrapper* so
+  // keyboard users can focus/scroll into that content region — it is not a
+  // claim that the whole panel is one click target. Without this exclusion,
+  // that single wrapper becomes a "seen" Hint target whose entire subtree is
+  // then treated as already covered (see alreadyCovered below), silently
+  // swallowing every real target inside it. Confirmed live on Douyin
+  // Jingxuan: Semi Design's `.semi-tabs-pane[role=tabpanel][tabindex=0]`
+  // wraps the whole waterfall feed and ate every one of its ~70 video cards.
   var SEMANTIC_HINT_SEL =
-    'a[href], button, input, select, textarea, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [tabindex]:not([tabindex="-1"])';
+    'a[href], button, input, select, textarea, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [tabindex]:not([tabindex="-1"]):not([role="tabpanel"])';
 
   function alphabetLabels(count) {
     var out = [];
@@ -1200,7 +1418,7 @@
     if (role === 'button' || role === 'link' || role === 'tab' || role === 'menuitem') return true;
     if (el.hasAttribute('onclick')) return true;
     var tab = el.getAttribute('tabindex');
-    if (tab !== null && tab !== '' && tab !== '-1') return true;
+    if (tab !== null && tab !== '' && tab !== '-1' && role !== 'tabpanel') return true;
     return false;
   }
 
@@ -1364,6 +1582,22 @@
       }
       for (var j = 0; j < episodes.length; j++) {
         pushHintTarget(acc, seen, episodes[j], frameOffset);
+      }
+    }
+    if (isDouyinHost() && /^\/jingxuan(?:\/|$)/.test(location.pathname || '')) {
+      var cards;
+      try {
+        // Douyin Jingxuan's waterfall cards are delegated-click divs without
+        // semantic attributes. Claim the outer card so one Hint activates the
+        // React click surface rather than its image/title children.
+        cards = doc.querySelectorAll(
+          '.waterfall-videoCardContainer.jingxuanVideoCard'
+        );
+      } catch (_) {
+        cards = [];
+      }
+      for (var k = 0; k < cards.length; k++) {
+        pushHintTarget(acc, seen, cards[k], frameOffset);
       }
     }
   }
@@ -1699,14 +1933,18 @@
         return seekBy(cmd.text || '');
       case 'speed':
         return setSpeed(cmd.text || '');
-      case 'volume':
-        return changeVolume(cmd.text || '');
+      case 'speed_up':
+        return stepSpeed('up');
+      case 'speed_down':
+        return stepSpeed('down');
       case 'scroll_up':
         return scrollPage('up');
       case 'scroll_down':
         return scrollPage('down');
-      case 'login':
-        return doLogin();
+      case 'arrow_up':
+        return pressArrowKey('up');
+      case 'arrow_down':
+        return pressArrowKey('down');
       case 'search':
         return doSearch(cmd.text || '');
       case 'type':
@@ -1729,13 +1967,32 @@
       case 'bilibili_follow':
       case 'bilibili_triple':
         return triggerBilibiliShortcut(action);
+      case 'douyin_danmaku_toggle':
+      case 'douyin_like':
+      case 'douyin_favorite':
+      case 'douyin_follow':
+      case 'douyin_comments':
+      case 'douyin_autoplay':
+      case 'douyin_watch_later':
+        return triggerDouyinShortcut(action);
+      case 'iqiyi_previous_episode':
+      case 'iqiyi_next_episode':
+      case 'iqiyi_replay':
+        return triggerIQIYIShortcut(action);
+      case 'youtube_captions_toggle':
+        return toggleYouTubeCaptions();
+      case 'youtube_previous_video':
+      case 'youtube_next_video':
+        return triggerYouTubeVideoNav(action);
+      case 'netflix_skip_intro':
+        return netflixSkipIntro();
       default:
         return failed('unknown_action');
     }
   }
 
   window.__tinyplayWebsite = {
-    __version: 14,
+    __version: 24,
     handle: handle,
     clearHints: clearHints,
     isHintActive: function () { return !!hintState.active; },

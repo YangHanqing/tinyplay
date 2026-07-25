@@ -39,8 +39,11 @@ Common hardware already has more than enough video-decode capability:
 
 Download the latest build from [GitHub Releases](../../releases/latest).
 
-- **Windows x86-64** — unzip the package, then run `TinyPlay.exe`. Windows may
-  show a SmartScreen warning because the current build is unsigned.
+- **Windows x86-64** — run `TinyPlay-Setup-x64.exe`. It creates Start-menu and
+  desktop shortcuts, then starts TinyPlay when installation finishes. Future
+  installers recognise the existing installation, close TinyPlay, and upgrade
+  it in place while keeping your settings. Windows may show a SmartScreen
+  warning because the current build is unsigned.
 - **macOS** — Apple Silicon (`TinyPlay-macos-arm64.dmg`) and Intel
   (`TinyPlay-macos-intel.dmg`) are both available. Open the DMG and drag
   TinyPlay to Applications.

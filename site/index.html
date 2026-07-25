@@ -15,7 +15,7 @@
   <title data-i18n="page_title">TinyPlay — 闲置 PC，接管电视</title>
   <link rel="icon" href="assets/favicon.png" type="image/png" sizes="1024x1024">
   <link rel="apple-touch-icon" href="assets/favicon.png">
-  <link rel="stylesheet" href="assets/site.css?v=feature-sections">
+  <link rel="stylesheet" href="assets/site.css?v=mobile-1">
 </head>
 <body>
   <header class="site-header">
@@ -30,8 +30,8 @@
       <button type="button" class="lang-toggle" id="lang-toggle" onclick="toggleSiteLang()" aria-label="切换语言 / Switch language">
         <span class="lang-opt" data-lang="zh-CN">中文</span><span class="lang-sep">/</span><span class="lang-opt" data-lang="en">EN</span>
       </button>
-      <a class="nav-atv" href="#" onclick="openAppleTvModal(event)" aria-haspopup="dialog" aria-controls="appletv-modal-backdrop" data-i18n="nav_appletv">Apple TV 即将推出</a>
-      <a class="nav-cta" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="nav_download">下载 <span class="nav-platform">macOS / Windows</span><span class="free-badge">免费</span></a>
+      <a class="nav-atv" href="#" onclick="openAppleTvModal(event)" aria-haspopup="dialog" aria-controls="appletv-modal-backdrop" data-i18n="nav_appletv">Apple TV 版</a>
+      <a class="nav-cta" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="nav_download">下载 <span class="nav-platform">macOS / Windows</span></a>
     </nav>
   </header>
 
@@ -43,7 +43,7 @@
         <p class="hero-lead" data-i18n="hero_lead">把闲置的 Windows 小主机或 Mac mini 接上电视。手机扫码即可选电影、拖进度、切字幕、调倍速。没有复杂的插件系统和电视端菜单。打开手机，找到想看的，剩下的交给接电视的电脑。</p>
         <div class="hero-actions">
           <a class="button primary" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS / Windows <span class="free-badge">免费</span><span>↗</span></a>
-          <a class="button secondary" href="#" onclick="openAppleTvModal(event)" data-i18n="btn_view_appletv">Apple TV 版 · 即将推出</a>
+          <a class="button secondary" href="#" onclick="openAppleTvModal(event)" data-i18n="btn_view_appletv">Apple TV 版</a>
         </div>
         <div class="platform-note">
           <span data-i18n="platform_win">Windows 10+</span><i></i><span data-i18n="platform_mac">macOS 13+</span><i></i><span data-i18n="platform_phone">手机无需安装 App</span>
@@ -54,7 +54,7 @@
           <span data-i18n="hero_tag_network_shares">SMB / WebDAV</span>
           <span data-i18n="hero_tag_iptv">IPTV</span>
           <span data-i18n="hero_tag_dlna">DLNA</span>
-          <span data-lang-only="zh-CN" data-i18n="hero_tag_chinese_video">B站 / 爱 / 优 / 腾</span>
+          <span data-i18n="hero_tag_online_video">B站 / 爱 / 优 / 腾</span>
         </div>
       </div>
       <div class="hero-visual">
@@ -143,12 +143,12 @@
       </div>
     </section>
 
-    <section class="feature-section feature-section--landscape section-shell" data-lang-only="zh-CN">
+    <section class="feature-section feature-section--landscape section-shell">
       <div class="feature-inner">
         <div class="feature-copy">
-          <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="feature_web_eyebrow">手机控制在线视频</span><span class="feature-beta" data-i18n="feature_web_beta">中文 Beta</span></p>
+          <p class="eyebrow"><span class="eyebrow-dash"></span> <span data-i18n="feature_web_eyebrow">手机控制在线视频</span></p>
           <h2 data-i18n="feature_web_title">在线视频</h2>
-          <p data-i18n="feature_web_desc">创新的手机 / 电脑 Vim 联动：不用鼠标，也能快速选视频、控制播放、调倍速。</p>
+          <p data-i18n="feature_web_desc">用手机控制电脑上的在线视频：选片、播放、调倍速，沙发上不用摸鼠标。</p>
           <p class="feature-note" data-i18n="feature_web_note">* 仍需在电脑端登录账号；能看什么、能不能跳广告，取决于平台和你的会员。</p>
         </div>
         <div class="feature-visual">
@@ -181,10 +181,10 @@
           <a class="button light-button" href="https://github.com/YangHanqing/tinyplay/releases/latest" data-i18n-html="btn_download_app">下载 macOS / Windows <span class="free-badge">免费</span><span>↗</span></a>
           <div class="download-secondary-actions">
             <a class="button guide-button" href="guide/" data-i18n="guide_path" data-i18n-attr="href"><span data-i18n="btn_read_guide">使用指南</span></a>
-            <button type="button" class="button atv-button" onclick="openAppleTvModal(event)" aria-haspopup="dialog" aria-controls="appletv-modal-backdrop"><span data-i18n="download_atv_title">Apple TV 版</span><small data-i18n="download_atv_badge">即将推出</small></button>
+            <button type="button" class="button atv-button" onclick="openAppleTvModal(event)" aria-haspopup="dialog" aria-controls="appletv-modal-backdrop" data-i18n="download_atv_title">Apple TV 版</button>
           </div>
         </div>
-        <p data-i18n="download_platforms">Windows 10+ / macOS 13+</p>
+        <p data-i18n="download_platforms">Windows 10+ / macOS 13+ / tvOS 18+</p>
       </div>
     </section>
   </main>
@@ -195,15 +195,51 @@
     <div><a href="https://github.com/YangHanqing/tinyplay">GitHub</a><a href="https://github.com/YangHanqing/tinyplay/releases/latest">Releases</a><a href="https://github.com/YangHanqing/tinyplay/blob/main/LICENSE" data-i18n="footer_license">GPL-3.0 License</a></div>
   </footer>
 
-  <!-- Apple TV: not released yet -->
+  <!-- Apple TV: App Store install guide -->
   <div class="modal-backdrop hidden" id="appletv-modal-backdrop" onclick="onAppleTvBackdropClick(event)">
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="appletv-modal-title" tabindex="-1">
-      <h3 id="appletv-modal-title" data-i18n="appletv_modal_title">Apple TV 版本</h3>
-      <p data-i18n="appletv_modal_body">原生 Apple TV 版本正在准备中，上线后可直接在 App Store 获取。</p>
-      <button type="button" class="button primary" id="appletv-modal-close" onclick="closeAppleTvModal()" data-i18n="appletv_modal_close">好的</button>
+    <div class="modal-card atv-modal" role="dialog" aria-modal="true" aria-labelledby="appletv-modal-title" aria-describedby="appletv-modal-desc" tabindex="-1">
+      <button type="button" class="modal-x" id="appletv-modal-x" onclick="closeAppleTvModal()" aria-label="关闭" data-i18n="appletv_modal_close_aria" data-i18n-attr="aria-label"></button>
+
+      <div class="atv-modal-hero">
+        <img class="atv-modal-icon" src="assets/favicon.png" alt="" width="64" height="64" aria-hidden="true">
+        <div class="atv-modal-heading">
+          <h3 id="appletv-modal-title" data-i18n="appletv_modal_title">TinyPlay - Video Remote</h3>
+          <p class="atv-modal-subtitle" data-i18n="appletv_modal_subtitle">for Apple TV</p>
+        </div>
+      </div>
+
+      <p id="appletv-modal-desc" class="atv-modal-lead" data-i18n="appletv_modal_body">支持多种视频格式与杜比视界，手机即可遥控。</p>
+
+      <div class="atv-modal-steps" aria-label="Install steps">
+        <p class="atv-modal-steps-title" data-i18n="appletv_modal_steps_title">如何安装</p>
+        <ol class="atv-step-list">
+          <li>
+            <span class="atv-step-num" aria-hidden="true">1</span>
+            <span data-i18n="appletv_modal_step1">在 Apple TV 上打开 App Store</span>
+          </li>
+          <li>
+            <span class="atv-step-num" aria-hidden="true">2</span>
+            <span data-i18n-html="appletv_modal_step2">搜索 <kbd>TinyPlay - Video Remote</kbd></span>
+          </li>
+          <li>
+            <span class="atv-step-num" aria-hidden="true">3</span>
+            <span data-i18n="appletv_modal_step3">下载安装</span>
+          </li>
+        </ol>
+      </div>
+
+      <div class="atv-modal-callout" data-lang-only="zh-CN">
+        <span class="atv-callout-icon" aria-hidden="true">!</span>
+        <p data-i18n="appletv_modal_region_body">暂未在中国大陆区域上架，可切换至其他区 Apple ID 后搜索安装。</p>
+      </div>
+
+      <div class="atv-modal-actions">
+        <a class="button primary" id="appletv-modal-store" href="https://apps.apple.com/app/tinyplay-video-remote/id6788041703" target="_blank" rel="noopener noreferrer" data-i18n="appletv_modal_open_store">打开 App Store</a>
+        <button type="button" class="button secondary" id="appletv-modal-close" onclick="closeAppleTvModal()" data-i18n="appletv_modal_close">知道了</button>
+      </div>
     </div>
   </div>
 
-  <script src="assets/site.js?v=feature-sections"></script>
+  <script src="assets/site.js?v=mobile-1"></script>
 </body>
 </html>

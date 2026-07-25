@@ -13,14 +13,14 @@
     nav_choose: '选购指南',
     nav_guide: '使用指南',
     guide_path: 'guide/',
-    nav_appletv: 'Apple TV 即将推出',
-    nav_download: '下载 <span class="nav-platform">macOS / Windows</span><span class="free-badge">免费</span>',
+    nav_appletv: 'Apple TV 版',
+    nav_download: '下载 <span class="nav-platform">macOS / Windows</span>',
     hero_eyebrow: '把小主机变成客厅播放器 HTPC',
     hero_title: '可能比<em>电视盒子</em><br>更好用',
     hero_lead: '把闲置的 Windows 小主机或 Mac mini 接上电视。手机扫码即可选电影、拖进度、切字幕、调倍速。没有复杂的插件系统和电视端菜单。打开手机，找到想看的，剩下的交给接电视的电脑。',
     btn_download_app: '下载 macOS / Windows <span class="free-badge">免费</span><span>↗</span>',
     btn_read_guide: '使用指南',
-    btn_view_appletv: 'Apple TV 版 · 即将推出',
+    btn_view_appletv: 'Apple TV 版',
     platform_win: 'Windows 10+',
     platform_mac: 'macOS 13+',
     platform_phone: '手机无需安装 App',
@@ -30,7 +30,7 @@
     hero_tag_network_shares: 'SMB / WebDAV',
     hero_tag_iptv: 'IPTV',
     hero_tag_dlna: 'DLNA',
-    hero_tag_chinese_video: 'B站 / 爱 / 优 / 腾',
+    hero_tag_online_video: 'B站 / 爱 / 优 / 腾',
     signal_lan: '局域网已连接',
     signal_room: '客厅播放器',
     why_title: '客厅不该在自由和好用之间<br>二选一。',
@@ -49,9 +49,8 @@
     content_tab_iptv: 'IPTV',
     content_tab_remote: '遥控器',
     feature_web_eyebrow: '手机控制在线视频',
-    feature_web_beta: '中文 Beta',
     feature_web_title: '在线视频',
-    feature_web_desc: '创新的手机 / 电脑 Vim 联动：不用鼠标，也能快速选视频、控制播放、调倍速。',
+    feature_web_desc: '用手机控制电脑上的在线视频：选片、播放、调倍速，沙发上不用摸鼠标。',
     feature_web_note: '* 仍需在电脑端登录账号；能看什么、能不能跳广告，取决于平台和你的会员。',
     feature_dlna_eyebrow: '接收局域网投屏',
     feature_dlna_title: 'DLNA 接收器',
@@ -79,17 +78,17 @@
     t_col_nuc: 'Windows 小主机 / 笔记本',
     t_col_mac: 'M 芯片 Mac mini',
     t_col_atv: 'Apple TV 4K',
-    t_col_bluray: '本地影音播放器（如芝杜）',
+    t_col_bluray: '专业蓝光播放器',
     t_row_position: '核心定位',
     t_position_nuc: '可扩展的电脑播放器',
     t_position_mac: '电脑 + 播放器',
     t_position_atv: '流媒体盒子',
-    t_position_bluray: '本地影视专机',
+    t_position_bluray: '本地高规格播放专机',
     t_row_docker: '下载 / Docker',
     t_docker_nuc: '可用',
     t_docker_mac: '可用',
     t_docker_atv: '不适合',
-    t_docker_bluray: '不支持',
+    t_docker_bluray: '可装下载类应用；Docker 通常不支持',
     t_row_nas: '本地媒体 / NAS',
     t_nas_nuc: '软件与格式选择多',
     t_nas_mac: '软件选择多',
@@ -107,9 +106,9 @@
     t_hd_audio_bluray: '看型号与音频格式',
     t_row_hdr: 'HDR / 杜比视界',
     t_hdr_nuc: '看显卡、系统与播放器',
-    t_hdr_mac: '支持 HDR，具体能力看片源',
+    t_hdr_mac: '支持 HDR，具体能力取决于片源',
     t_hdr_atv: '流媒体体验省心',
-    t_hdr_bluray: '本地影片体验看型号',
+    t_hdr_bluray: '本地影片体验取决于具体型号',
     t_row_maintenance: '维护成本',
     t_maintenance_nuc: '中到高',
     t_maintenance_mac: '中',
@@ -129,21 +128,28 @@
     v3_title: 'M 芯片 Mac mini',
     v3_body: '播放、浏览、工作和家庭服务兼顾，适合想保留完整电脑体验的人。',
     v4_tag: '本地播放优先',
-    v4_title: '本地影音播放器（如芝杜）',
+    v4_title: '专业蓝光播放器',
     v4_body: '适合把本地影视播放作为主要用途、偏好独立影音设备的人。',
     guide_note: '实际 HDR、Dolby Vision 与音频能力会随芯片、操作系统、驱动、播放器、片源封装和影音设备而变化，购买前请以具体设备规格为准。',
     download_title: '让那台小主机，<br>今晚就接管电视。',
-    download_platforms: 'Windows 10+ / macOS 13+',
+    download_platforms: 'Windows 10+ / macOS 13+ / tvOS 18+',
     download_atv_title: 'Apple TV 版',
-    download_atv_badge: '即将推出',
     footer_tagline: 'Turn the little box into the big screen.',
     footer_license: 'GPL-3.0 License',
-    appletv_modal_title: 'Apple TV 版本',
-    appletv_modal_body: '原生 Apple TV 版本正在准备中，上线后可直接在 App Store 获取。',
-    appletv_modal_close: '好的',
+    appletv_modal_title: 'TinyPlay - Video Remote',
+    appletv_modal_subtitle: 'for Apple TV',
+    appletv_modal_body: '支持多种视频格式与杜比视界，手机即可遥控。',
+    appletv_modal_steps_title: '如何安装',
+    appletv_modal_step1: '在 Apple TV 上打开 App Store',
+    appletv_modal_step2: '搜索 <kbd>TinyPlay - Video Remote</kbd>',
+    appletv_modal_step3: '下载安装',
+    appletv_modal_region_body: '暂未在中国大陆区域上架，可切换至其他区 Apple ID 后搜索安装。',
+    appletv_modal_open_store: '打开 App Store',
+    appletv_modal_close: '知道了',
+    appletv_modal_close_aria: '关闭',
 
     guide_page_title: '使用指南 — TinyPlay',
-    guide_meta_description: 'TinyPlay 使用指南：已有媒体服务器、直接播放文件，或搭建一个媒体库，从适合你的方式开始。',
+    guide_meta_description: 'TinyPlay 使用指南：已有媒体服务器、播放本地与网络文件，或搭建一个媒体库，从适合你的方式开始。',
     guide_back_home: '← 返回首页',
     guide_doc_label: 'TINYPLAY 文档',
     guide_toc_title: '目录',
@@ -155,14 +161,14 @@
     guide_nav1_title: '已有媒体服务器',
     guide_nav1_desc: '已经在用 Emby、Jellyfin 或 Plex，直接连接。',
     guide_nav2_tag: '情况二',
-    guide_nav2_title: '直接播放文件',
+    guide_nav2_title: '播放本地与网络文件',
     guide_nav2_desc: '跳过服务器，直接播放本机或局域网文件。',
     guide_nav3_tag: '情况三',
     guide_nav3_title: '想要媒体库',
     guide_nav3_desc: '还没有服务器？搭一个最简单的。',
     guide_nav4_tag: '延伸阅读',
     guide_nav4_title: '设备怎么选',
-    guide_nav4_desc: '比较电脑、Apple TV 和本地影音播放器的取舍。',
+    guide_nav4_desc: '比较电脑、Apple TV 和专业蓝光播放器的取舍。',
 
     guide_s1_eyebrow: 'ALREADY HAVE A SERVER',
     guide_s1_title: '已经熟悉 NAS 或媒体服务器',
@@ -170,8 +176,8 @@
     guide_s1_callout_title: '国产 NAS 用户请注意',
     guide_s1_callout_body: '如果你使用的是<b>极空间</b>，其自带的媒体服务功能兼容 Emby 接口协议，添加内容源时选择「Emby」类型即可。',
 
-    guide_s2_eyebrow: 'PLAY FILES DIRECTLY',
-    guide_s2_title: '不需要媒体库，直接播放文件',
+    guide_s2_eyebrow: 'PLAY LOCAL AND NETWORK FILES',
+    guide_s2_title: '不需要媒体库，直接播放本地与网络文件',
     guide_s2_body: '如果你暂时不打算搭建媒体服务器，可以直接添加本地文件夹、已挂载目录、SMB 或 WebDAV 共享。连通后，用手机浏览并选择要作为起点的文件夹；之后就能按目录浏览和播放。遥控器照常支持暂停、进度、字幕、音轨和倍速，只是没有海报、剧集信息与续播记录。',
     guide_os_mac: 'macOS',
     guide_os_mac_local_title: '播放本机目录',
@@ -210,14 +216,14 @@
     nav_choose: 'Buying guide',
     nav_guide: 'Getting started',
     guide_path: 'guide/en/',
-    nav_appletv: 'Apple TV coming soon',
-    nav_download: 'Download <span class="nav-platform">macOS / Windows</span><span class="free-badge">FREE</span>',
+    nav_appletv: 'Apple TV',
+    nav_download: 'Download <span class="nav-platform">macOS / Windows</span>',
     hero_eyebrow: 'TURN A MINI PC INTO AN HTPC',
     hero_title: 'Maybe better than<br><em>a streaming box.</em>',
     hero_lead: 'Connect a spare Windows PC or Mac mini to your TV. Scan the QR code to browse, seek, switch subtitles, and change playback speed. No plugin maze, no TV-first menus. Find what you want on your phone and let the PC handle playback.',
     btn_download_app: 'Download macOS / Windows <span class="free-badge">FREE</span><span>↗</span>',
     btn_read_guide: 'Getting started',
-    btn_view_appletv: 'Apple TV · coming soon',
+    btn_view_appletv: 'Apple TV',
     platform_win: 'Windows 10+',
     platform_mac: 'macOS 13+',
     platform_phone: 'No app needed on your phone',
@@ -227,14 +233,14 @@
     hero_tag_network_shares: 'SMB / WebDAV',
     hero_tag_iptv: 'IPTV',
     hero_tag_dlna: 'DLNA',
-    hero_tag_chinese_video: 'Chinese online video',
+    hero_tag_online_video: 'YouTube / Netflix',
     signal_lan: 'Connected on LAN',
     signal_room: 'Living-room player',
     why_title: 'The living room should not make you choose<br>between freedom and ease.',
     why1_title: 'TV boxes are simple, but not always flexible',
     why1_body: 'When you want desktop software, NAS folders, media servers, or your own live sources, a TV box can become one limitation too many.',
     why2_title: 'Mini PCs are flexible, but should not need a keyboard and mouse',
-    why2_body: 'A computer connected to the TV can do a lot. It just was not designed to browse, search, and scrub from the couch.',
+    why2_body: 'A computer connected to the TV can do a lot. It just was not designed to browse, search, and drag through playback from the couch.',
     why3_title: 'TinyPlay fills the gap',
     why3_body: 'Your phone gives you a modern, familiar control surface. Your mini PC keeps handling content, playback, and format compatibility.',
     feature_content_eyebrow: 'YOUR CONTENT, ONE PHONE',
@@ -246,9 +252,8 @@
     content_tab_iptv: 'IPTV',
     content_tab_remote: 'Remote',
     feature_web_eyebrow: 'CONTROL ONLINE VIDEO FROM YOUR PHONE',
-    feature_web_beta: 'Chinese beta',
     feature_web_title: 'Online video',
-    feature_web_desc: 'An innovative Vim-style link between your phone and computer: pick videos, control playback, and change speed without reaching for the mouse.',
+    feature_web_desc: 'Control online video on the computer from your phone — pick something to watch, play or pause, and change speed without reaching for the mouse.',
     feature_web_note: '* You still sign in on the computer. What you can watch and whether ads can be skipped depend on the platform and your subscription.',
     feature_dlna_eyebrow: 'RECEIVE LAN CASTING',
     feature_dlna_title: 'DLNA receiver',
@@ -276,17 +281,17 @@
     t_col_nuc: 'Windows mini PC / laptop',
     t_col_mac: 'M-series Mac mini',
     t_col_atv: 'Apple TV 4K',
-    t_col_bluray: 'Local-media player (e.g. Zidoo)',
+    t_col_bluray: 'Professional Blu-ray media player',
     t_row_position: 'Core role',
     t_position_nuc: 'Configurable computer player',
     t_position_mac: 'Computer + player',
     t_position_atv: 'Streaming box',
-    t_position_bluray: 'Dedicated local-media player',
+    t_position_bluray: 'Purpose-built local high-spec player',
     t_row_docker: 'Downloads / Docker',
     t_docker_nuc: 'Possible',
     t_docker_mac: 'Possible',
     t_docker_atv: 'Not suited',
-    t_docker_bluray: 'Not supported',
+    t_docker_bluray: 'Download apps often possible; Docker usually not supported',
     t_row_nas: 'Local media / NAS',
     t_nas_nuc: 'Wide software and format choice',
     t_nas_mac: 'Wide software choice',
@@ -326,21 +331,28 @@
     v3_title: 'M-series Mac mini',
     v3_body: 'Playback, browsing, work, and home services together — for people who want to keep a full computer.',
     v4_tag: 'Local media first',
-    v4_title: 'Local-media player (e.g. Zidoo)',
+    v4_title: 'Professional Blu-ray media player',
     v4_body: 'For people whose main use is local-media playback and who prefer a dedicated device.',
     guide_note: 'Actual HDR, Dolby Vision, and audio capabilities vary by chip, OS, driver, player, source container, and AV equipment. Check your exact hardware’s specs before buying.',
     download_title: 'Let that mini PC<br>take over the TV tonight.',
-    download_platforms: 'Windows 10+ / macOS 13+',
-    download_atv_title: 'Apple TV edition',
-    download_atv_badge: 'COMING SOON',
+    download_platforms: 'Windows 10+ / macOS 13+ / tvOS 18+',
+    download_atv_title: 'Apple TV',
     footer_tagline: 'Turn the little box into the big screen.',
     footer_license: 'GPL-3.0 License',
-    appletv_modal_title: 'Apple TV version',
-    appletv_modal_body: 'The native Apple TV edition is in the works and will be available from the App Store.',
+    appletv_modal_title: 'TinyPlay - Video Remote',
+    appletv_modal_subtitle: 'for Apple TV',
+    appletv_modal_body: 'Supports a wide range of video formats and Dolby Vision, with phone remote control.',
+    appletv_modal_steps_title: 'How to install',
+    appletv_modal_step1: 'Open the App Store on your Apple TV',
+    appletv_modal_step2: 'Search for <kbd>TinyPlay - Video Remote</kbd>',
+    appletv_modal_step3: 'Download and install',
+    appletv_modal_region_body: 'Not yet available in mainland China. Switch to another region Apple ID, then search and install.',
+    appletv_modal_open_store: 'Open App Store',
     appletv_modal_close: 'Got it',
+    appletv_modal_close_aria: 'Close',
 
     guide_page_title: 'Getting Started — TinyPlay',
-    guide_meta_description: 'A TinyPlay getting-started guide for existing media servers, direct folder playback, and setting up a media library.',
+    guide_meta_description: 'A TinyPlay getting-started guide for existing media servers, local and network file playback, and setting up a media library.',
     guide_back_home: '← Back to home',
     guide_doc_label: 'TINYPLAY DOCS',
     guide_toc_title: 'Contents',
@@ -352,14 +364,14 @@
     guide_nav1_title: 'Already have a media server',
     guide_nav1_desc: 'Running Emby, Jellyfin, or Plex already — just connect.',
     guide_nav2_tag: 'Situation two',
-    guide_nav2_title: 'Play files directly',
+    guide_nav2_title: 'Play local and network files',
     guide_nav2_desc: 'Skip the server and play local or LAN files directly.',
     guide_nav3_tag: 'Situation three',
     guide_nav3_title: 'Want a media library',
     guide_nav3_desc: 'No server yet? Stand up the simplest one.',
     guide_nav4_tag: 'Further reading',
     guide_nav4_title: 'Which device fits?',
-    guide_nav4_desc: 'Compare computers, Apple TV, and local-media players.',
+    guide_nav4_desc: 'Compare computers, Apple TV, and professional Blu-ray media players.',
 
     guide_s1_eyebrow: 'ALREADY HAVE A SERVER',
     guide_s1_title: 'Already comfortable with a NAS or media server',
@@ -367,8 +379,8 @@
     guide_s1_callout_title: 'Note for Chinese NAS users',
     guide_s1_callout_body: 'For 极空间, use the <b>Emby</b> type.',
 
-    guide_s2_eyebrow: 'PLAY FILES DIRECTLY',
-    guide_s2_title: 'No media library needed — just play files',
+    guide_s2_eyebrow: 'PLAY LOCAL AND NETWORK FILES',
+    guide_s2_title: 'No media library needed — just play local and network files',
     guide_s2_body: 'If you are not ready to run a media server, add a local folder, mounted path, SMB share, or WebDAV share directly. Once connected, browse from your phone and choose the folder to start from; then browse and play by folder. The remote still gives you pause, seek, subtitles, audio tracks, and speed — you simply will not get posters, episode metadata, or resume history.',
     guide_os_mac: 'macOS',
     guide_os_mac_local_title: 'Playing a folder on this Mac',
@@ -391,7 +403,7 @@
     guide_wall_note: 'Concept illustration; see product screenshots for the actual interface.',
     guide_reco_tag: 'Recommended',
     guide_reco_title: 'Plex',
-    guide_reco_body: 'The most widely supported option in North America, with a mature phone and TV app ecosystem and a one-line Docker image to get started. TinyPlay’s own player handles the actual playback, so a Plex Pass isn’t required for anything TinyPlay uses. Once it’s running, add it in TinyPlay as a “Plex” type server.',
+    guide_reco_body: 'The most widely supported option in North America, with a mature phone and TV app ecosystem and a Docker image that can be launched with a one-line command. TinyPlay’s own player handles the actual playback, so a Plex Pass isn’t required for anything TinyPlay uses. Once it’s running, add it in TinyPlay as a “Plex” type server.',
 
     guide_cta_title: 'Ready when you are.',
     guide_cta_body: 'Download TinyPlay and let that mini PC take over the TV in minutes.',
@@ -441,13 +453,30 @@
   window.toggleSiteLang = toggleSiteLang;
 
   var lastFocusedElement = null;
+  var APPLETV_STORE_URL = 'https://apps.apple.com/app/tinyplay-video-remote/id6788041703';
+
+  function appleTvFocusables() {
+    var card = document.querySelector('#appletv-modal-backdrop .atv-modal');
+    if (!card) return [];
+    return Array.prototype.slice.call(
+      card.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')
+    ).filter(function (el) {
+      if (el.hasAttribute('disabled') || el.getAttribute('aria-hidden') === 'true') return false;
+      // fixed/absolute modal controls may report null offsetParent
+      return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    });
+  }
 
   function openAppleTvModal(event) {
     if (event) event.preventDefault();
     lastFocusedElement = document.activeElement;
     document.body.classList.add('modal-open');
     document.getElementById('appletv-modal-backdrop').classList.remove('hidden');
-    document.getElementById('appletv-modal-close').focus();
+    var store = document.getElementById('appletv-modal-store');
+    if (store) store.setAttribute('href', APPLETV_STORE_URL);
+    var focusables = appleTvFocusables();
+    var preferred = document.getElementById('appletv-modal-close') || focusables[0];
+    if (preferred && typeof preferred.focus === 'function') preferred.focus();
   }
   window.openAppleTvModal = openAppleTvModal;
 
@@ -472,9 +501,25 @@
       closeAppleTvModal();
       return;
     }
-    if (event.key === 'Tab') {
+    if (event.key !== 'Tab') return;
+    var focusables = appleTvFocusables();
+    if (!focusables.length) {
       event.preventDefault();
-      document.getElementById('appletv-modal-close').focus();
+      return;
+    }
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    var active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || !backdrop.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (active === last || !backdrop.contains(active)) {
+      event.preventDefault();
+      first.focus();
     }
   });
 

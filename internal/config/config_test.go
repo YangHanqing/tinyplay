@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +44,50 @@ func TestFileSourceAndLanguagePersist(t *testing.T) {
 	}
 	if persisted.Language != "zh-CN" || len(persisted.Servers) != 1 || persisted.Servers[0].ID != srv.ID || persisted.Servers[0].Password != password {
 		t.Fatalf("unexpected persisted config: %#v", persisted)
+	}
+}
+
+func TestWebsiteCustomSitesPersistAndRejectUnsafeURLs(t *testing.T) {
+	useTempData(t)
+	site, err := AddWebsiteCustomSite("example.com/path")
+	if err != nil || site.ID == "" || site.Name != "example.com" || site.URL != "https://example.com/path" {
+		t.Fatalf("added site=%+v err=%v", site, err)
+	}
+	if _, err := AddWebsiteCustomSite("javascript:alert(1)"); !errors.Is(err, ErrWebsiteInvalidURL) {
+		t.Fatalf("unsafe URL was accepted: err=%v", err)
+	}
+	persisted := WebsiteCustomSites()
+	if len(persisted) != 1 || persisted[0] != site {
+		t.Fatalf("persisted sites=%+v", persisted)
+	}
+	if !DeleteWebsiteCustomSite(site.ID) || len(WebsiteCustomSites()) != 0 {
+		t.Fatalf("custom website deletion failed: %+v", WebsiteCustomSites())
+	}
+}
+
+func TestWebsiteCustomSitesCappedAtLimit(t *testing.T) {
+	useTempData(t)
+	for i := 0; i < MaxWebsiteCustomSites; i++ {
+		if _, err := AddWebsiteCustomSite(fmt.Sprintf("site%d.example.com", i)); err != nil {
+			t.Fatalf("add %d failed: %v", i, err)
+		}
+	}
+	if _, err := AddWebsiteCustomSite("one-too-many.example.com"); !errors.Is(err, ErrWebsiteListFull) {
+		t.Fatalf("add past the cap: err=%v", err)
+	}
+	if got := len(WebsiteCustomSites()); got != MaxWebsiteCustomSites {
+		t.Fatalf("stored %d sites, want %d", got, MaxWebsiteCustomSites)
+	}
+}
+
+func TestResetAllClearsWebsiteCustomSites(t *testing.T) {
+	useTempData(t)
+	if _, err := AddWebsiteCustomSite("example.com"); err != nil {
+		t.Fatalf("custom site setup failed: %v", err)
+	}
+	ResetAll()
+	if got := WebsiteCustomSites(); len(got) != 0 {
+		t.Fatalf("custom sites survived reset: %+v", got)
 	}
 }
 

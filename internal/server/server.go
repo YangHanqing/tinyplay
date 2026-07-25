@@ -282,6 +282,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/servers/{id}/login", s.loginServer)
 	mux.HandleFunc("POST /api/servers/{id}/connect", s.connectServer)
 
+	// ── Device pairing ──
+	// These three are the only /api/ routes reachable without a token: they are
+	// what produces one. See withAuth and internal/auth.
+	mux.HandleFunc("POST /api/pair/qr", s.pairWithQR)
+	mux.HandleFunc("POST /api/pair/request", s.pairRequest)
+	mux.HandleFunc("POST /api/pair/claim", s.pairClaim)
+	// Computer-side pairing control, loopback only (the intro window).
+	mux.HandleFunc("GET /desktop/pairing", s.pairingStatus)
+	mux.HandleFunc("POST /desktop/pairing/approve", s.pairingApprove)
+	mux.HandleFunc("POST /desktop/pairing/deny", s.pairingDeny)
+	mux.HandleFunc("POST /desktop/pairing/refresh", s.pairingRefresh)
+	mux.HandleFunc("POST /desktop/pairing/unpair-all", s.pairingUnpairAll)
+
 	// ── App settings ──
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.updateSettings)
@@ -351,11 +364,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/system/input/state", s.desktopInputState)
 	mux.HandleFunc("POST /api/system/input/action", s.desktopInputAction)
 
-	// ── Website playback (desktop experimental; fixed allowlist) ──
+	// ── Website playback (desktop experimental; built-ins + shared custom URLs) ──
 	// Phone Media/Website workspace is client-local; no /api/website/mode.
-	// Site selection is not persisted: open requires an allowlisted site_id.
+	// Custom URLs persist in the local config; opening still requires their saved id.
 	mux.HandleFunc("GET /api/website/state", s.websiteState)
 	mux.HandleFunc("POST /api/website/open", s.websiteOpen)
+	mux.HandleFunc("POST /api/website/custom", s.websiteCustomAdd)
+	mux.HandleFunc("DELETE /api/website/custom/{id}", s.websiteCustomDelete)
 	mux.HandleFunc("POST /api/website/close", s.websiteClose)
 	mux.HandleFunc("POST /api/website/action", s.websiteAction)
 	// Loopback-only native shell transport.
@@ -371,5 +386,5 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /sw.js", s.serviceWorker)
 	mux.HandleFunc("GET /", s.index)
 
-	return withLogging(withGuard(withRequestLimits(mux)))
+	return withLogging(withGuard(withRequestLimits(withAuth(mux))))
 }

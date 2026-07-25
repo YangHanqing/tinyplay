@@ -1,27 +1,33 @@
 # Build a media library
 
-If you want posters, episode browsing, search, and resume playback, set up a media server first and connect TinyPlay to it. The server organises the content; TinyPlay lets you browse it from your phone and play it on the computer connected to the TV.
+If you want a poster wall, episode browsing, search, and resume history, set up a media server first and then connect TinyPlay to it. The server organises the content; TinyPlay lets you choose titles on your phone and plays them on the computer connected to the TV.
 
-## Recommended: Jellyfin
+## What is a poster wall?
 
-Jellyfin is a straightforward option: it is free and open source, supports Docker, and has a large community. Many NAS systems also provide a convenient installation package.
+A poster wall is a media library laid out like shelves of covers: each film or series has a poster tile, often with a title, year, or rating underneath. Tap a poster to open details, pick an episode, or continue watching.
 
-Once it is running, choose **Jellyfin** under **Add media source** in TinyPlay and enter the server address and account details.
+It is not required to play files. Browsing folders works too, but you miss unified covers, episode structure, and resume history. A media server scans the folders you organise, matches posters and metadata, and builds that wall. Once TinyPlay connects to the server, you can browse by poster on your phone and play on the computer connected to the TV.
 
-## Organise the folders first
+![A media-library poster wall on a living-room TV](/poster-wall.jpg)
 
-The media server needs to know where your movies and shows are stored. Keep movies, TV shows, and animation in separate folders when possible. For shows, use a structure such as “Title / Season / episode file” so the server can match posters, metadata, and subtitles reliably.
+## Recommended: Plex
+
+In many English-speaking setups, Plex is a practical starting point: broad device support, a mature app ecosystem, and a Docker image that can be launched with a one-line command. TinyPlay handles playback itself, so a Plex Pass is not required for the features TinyPlay uses. Once the server is running, add it in TinyPlay as a **Plex** source.
+
+## Organise folders first
+
+A media server needs a clear folder structure. Keep movies, TV shows, and animation in separate trees, and nest episodes as *Show / Season / file*. That makes posters, episode metadata, and subtitles easier to match.
 
 ```text
 Media/
 ├── Movies/
-│   └── Movie Name (Year).mkv
+│   └── Movie Title (Year).mkv
 └── TV Shows/
     └── Show Name/
         └── Season 01/
             └── S01E01.mkv
 ```
 
-## You do not need to configure everything at once
+## You do not need a perfect setup on day one
 
-Let the server identify one folder correctly, then connect TinyPlay and play one video. You can fill in posters, metadata, remote access, and other details later as needed.
+Getting one folder recognised by the media server, connecting TinyPlay, and playing a single title is enough to prove the whole path. Covers, metadata polish, and remote access can wait until you need them.

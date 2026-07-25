@@ -52,6 +52,63 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .service-offline-copy { min-width: 0; }
 .service-offline-title { font-size: 14px; font-weight: 800; color: var(--text); }
 .service-offline-body { margin-top: 2px; font-size: 12px; line-height: 1.45; color: rgba(255,255,255,.68); }
+
+/* ── Pairing screen ───────────────────────────────────────────────────────────
+   Shown instead of the remote until this phone is paired. It covers everything:
+   nothing behind it can work yet, so a peek at a half-loaded UI would only
+   invite taps that fail. */
+.pairing-screen {
+  position: fixed; inset: 0; z-index: 5000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: var(--bg);
+}
+.pairing-card {
+  width: 100%; max-width: 340px; text-align: center;
+  display: grid; gap: 14px; justify-items: center;
+  padding: 28px 22px; border-radius: 18px;
+  border: 1px solid var(--border); background: var(--surface);
+}
+.pairing-card h2 { font-size: 19px; font-weight: 800; }
+.pairing-card p { font-size: 14px; line-height: 1.55; color: rgba(255,255,255,.72); }
+.pairing-icon { width: 42px; height: 42px; color: var(--accent2); }
+.pairing-code {
+  font-size: 44px; font-weight: 800; letter-spacing: .16em;
+  font-variant-numeric: tabular-nums;
+  padding: 6px 4px 6px 18px; border-radius: 14px;
+  background: var(--surface2); width: 100%;
+}
+.pairing-primary, .pairing-secondary {
+  width: 100%; padding: 13px 18px; border-radius: 12px;
+  font-size: 15px; font-weight: 700; border: 1px solid transparent;
+  color: #fff; background: var(--accent);
+}
+.pairing-secondary { background: transparent; border-color: var(--border); color: rgba(255,255,255,.72); }
+.pairing-primary:active, .pairing-secondary:active { transform: translateY(1px); }
+.pairing-hint { font-size: 12.5px !important; color: var(--text-muted) !important; }
+.pairing-error {
+  width: 100%; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid rgba(239,68,68,.34); background: rgba(239,68,68,.12);
+  font-size: 13px !important; color: #fca5a5 !important;
+}
+.pairing-waiting {
+  display: flex; align-items: center; gap: 9px; justify-content: center;
+  font-size: 13px; color: var(--text-muted);
+}
+.pairing-spinner {
+  width: 15px; height: 15px; flex: 0 0 auto; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.18); border-top-color: var(--accent2);
+  animation: pairing-spin .8s linear infinite;
+}
+.pairing-ok {
+  width: 46px; height: 46px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 24px; font-weight: 700;
+  color: #fff; background: var(--success);
+}
+@keyframes pairing-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pairing-spinner { animation-duration: 2.4s; }
+}
+
 /* ── Header ───────────────────────────────────────────────────────────────── */
 .header {
   display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px;
@@ -138,6 +195,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .smi-avatar.st-nfs      { background: linear-gradient(135deg, #4fd6a8, #189470); }
 .smi-avatar.st-iptv     { background: linear-gradient(135deg, #ff7a59, #d1442a); }
 .smi-avatar.st-website  { background: linear-gradient(135deg, #38bdf8, #2563eb); }
+.smi-avatar svg { width: 18px; height: 18px; display: block; }
 .smi-body { flex: 1; min-width: 0; }
 .smi-name { display: block; font-weight: 700; font-size: 14px; color: rgba(255,255,255,.9); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .smi-host { display: block; font-size: 12px; color: rgba(255,255,255,.44); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -660,24 +718,19 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   padding: 14px 14px 28px;
 }
 #lib-website-view.hidden { display: none !important; }
-.website-catalog-head { margin-bottom: 12px; }
-.website-catalog-hint {
-  margin-top: 4px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: rgba(255,255,255,.48);
-}
 .website-catalog {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
-/* Whole-card button: name + fixed URL only. */
+/* Website cards share the library's compact, whole-row touch target. */
 .website-card {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
   width: 100%;
   border: 1px solid rgba(255,255,255,.10);
   border-radius: 16px;
@@ -689,6 +742,24 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   cursor: pointer;
   transition: background .12s, border-color .12s;
 }
+.website-card-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.website-card-row { display: flex; align-items: stretch; gap: 8px; }
+.website-card-delete {
+  flex: 0 0 48px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 16px;
+  background: rgba(255,255,255,.035);
+  color: rgba(255,255,255,.48);
+  cursor: pointer;
+}
+.website-card-delete svg { width: 18px; height: 18px; }
+.website-card-delete:active { background: rgba(248,113,113,.16); color: #fca5a5; }
 .website-card:active {
   background: rgba(255,255,255,.08);
   border-color: rgba(124,92,252,.4);
@@ -727,6 +798,9 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .website-row-2 { grid-template-columns: repeat(2, 1fr); }
 .website-row-3 { grid-template-columns: repeat(3, 1fr); }
 .website-row-4 { grid-template-columns: repeat(4, 1fr); }
+.website-search-more-row { grid-template-columns: 1fr 3fr; }
+.website-search-more-row.only-search { grid-template-columns: 1fr; }
+.website-search-more-row.only-more { grid-template-columns: 1fr; }
 /* Play/pause sits center and reads wider than the two seek buttons. */
 .website-row-play { grid-template-columns: 1fr 1.5fr 1fr; }
 .website-row .website-btn {
@@ -734,10 +808,16 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   min-height: 50px;
   font-size: 14px;
 }
+.website-row-play .website-btn {
+  min-height: 75px;
+}
 .website-row-play .website-btn-primary {
-  min-height: 56px;
+  min-height: 75px;
   font-size: 16px;
 }
+.website-volume-control { display: flex; flex-direction: column; gap: 4px; }
+.website-volume-title { display: flex; align-items: center; justify-content: space-between; }
+.website-volume-strip { padding: 0 2px; }
 .website-btn {
   display: inline-flex;
   align-items: center;
@@ -779,6 +859,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .website-more-trigger svg {
   width: 19px;
   height: 19px;
+  flex: 0 0 auto;
+}
+.website-arrow-icon {
+  width: 24px;
+  height: 24px;
   flex: 0 0 auto;
 }
 .website-btn:focus-visible,

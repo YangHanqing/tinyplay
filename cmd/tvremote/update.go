@@ -3,7 +3,7 @@ package main
 // The desktop shells use this small release checker instead of scraping the
 // GitHub releases HTML. It deliberately only discovers a newer version: the
 // actual installation remains in the user's browser, where macOS DMGs and the
-// portable Windows ZIP have their normal, explicit install flow.
+// Windows setup program have their normal, explicit install flow.
 
 import (
 	"context"

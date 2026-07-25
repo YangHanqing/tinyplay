@@ -93,6 +93,16 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSLocalNetworkUsageDescription</key><string>TinyPlay needs access to your local network so your phone can connect to this computer and TinyPlay can reach your configured media server or network folder.</string>
     <key>NSBonjourServices</key><array><string>_http._tcp</string></array>
+    <!-- Website mode is a browser: WKWebView must be able to load a plain-HTTP
+         page the user explicitly asked for (a LAN web UI, a router page, an old
+         site). Without this, ATS fails those loads with -1022 and the window
+         just stays black. Scoped to web content, so the app's own URLSession
+         traffic keeps the default ATS rules. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
+        <key>NSAllowsLocalNetworking</key><true/>
+    </dict>
 </dict>
 </plist>
 PLIST

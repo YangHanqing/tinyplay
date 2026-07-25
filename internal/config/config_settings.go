@@ -42,6 +42,7 @@ func ResetAll() map[string]any {
 		cfg.SeekBackwardSecs = 5
 		cfg.SeekForwardSecs = 30
 		cfg.Language = ""
+		cfg.WebsiteCustomSites = nil
 		cfg.DLNAReceiverEnabled = true
 		cfg.DLNAReceiverID = newID()
 		cfg.LocalPlaybackHistory = nil
@@ -49,6 +50,11 @@ func ResetAll() map[string]any {
 		cfg.UpdateSkippedVersion = ""
 		cfg.UpdateRemindVersion = ""
 		cfg.UpdateRemindAfter = ""
+		// PairedDevices deliberately survives. This reset is a phone-initiated
+		// action, and unpairing is a physical-presence one: a phone must not be
+		// able to kick every other device off the remote — and clearing the list
+		// here would also lock out the phone making the request. The computer's
+		// own window owns "unpair all devices".
 	})
 	return Settings()
 }

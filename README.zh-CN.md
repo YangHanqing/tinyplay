@@ -33,7 +33,7 @@ TinyPlay 的思路是：**让硬件负责播放，让手机负责交互。**
 
 前往 [GitHub Releases](../../releases/latest) 下载最新版本。
 
-* **Windows x86-64** — 解压完整压缩包后运行 `TinyPlay.exe`。Windows 版本目前尚未签名，系统可能显示 SmartScreen 警告。
+* **Windows x86-64** — 运行 `TinyPlay-Setup-x64.exe`。安装器会创建开始菜单和桌面快捷方式，并在完成后启动 TinyPlay。以后安装新版本时，它会识别已有安装、自动关闭 TinyPlay 并原位升级，保留你的设置。Windows 版本目前尚未签名，系统可能显示 SmartScreen 警告。
 * **macOS** — 同时提供 Apple Silicon（`TinyPlay-macos-arm64.dmg`）和 Intel（`TinyPlay-macos-intel.dmg`）版本。打开 DMG，将 TinyPlay 拖入“应用程序”文件夹。
 
 手机与运行 TinyPlay 的电脑需要连接到同一个局域网。

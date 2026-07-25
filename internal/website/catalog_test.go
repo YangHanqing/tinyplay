@@ -3,7 +3,7 @@ package website
 import "testing"
 
 func TestCatalogOrder(t *testing.T) {
-	want := []string{SiteBilibili, SiteIQIYI, SiteTencent, SiteYouku, SiteDouyin}
+	want := []string{SiteBilibili, SiteIQIYI, SiteTencent, SiteYouku, SiteDouyin, SiteYouTube, SiteNetflix}
 	if len(Catalog) != len(want) {
 		t.Fatalf("catalog len=%d want %d", len(Catalog), len(want))
 	}
@@ -20,6 +20,10 @@ func TestCatalogOrder(t *testing.T) {
 	}
 	if _, ok := SiteByID("evil"); ok {
 		t.Fatal("unknown site should not resolve")
+	}
+	douyin, ok := SiteByID(SiteDouyin)
+	if !ok || douyin.Name != "抖音精选" {
+		t.Fatalf("douyin catalog name = %#v, want 抖音精选", douyin)
 	}
 }
 
@@ -38,6 +42,9 @@ func TestSiteIDFromHostDomainMatching(t *testing.T) {
 		{"www.youku.com", SiteYouku},
 		{"www.douyin.com", SiteDouyin},
 		{"www.www.douyin.com", SiteDouyin},
+		{"www.youtube.com", SiteYouTube},
+		{"m.youtube.com", SiteYouTube},
+		{"www.netflix.com", SiteNetflix},
 		{"www.mgtv.com", ""},
 		{"www.whatismybrowser.com", ""},
 		// Near-miss / unknown must not match.
@@ -52,6 +59,35 @@ func TestSiteIDFromHostDomainMatching(t *testing.T) {
 	for _, tc := range cases {
 		if got := SiteIDFromHost(tc.host); got != tc.want {
 			t.Errorf("SiteIDFromHost(%q)=%q want %q", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestNormalizeUserURL(t *testing.T) {
+	cases := []struct {
+		in, wantURL, wantName string
+		ok                    bool
+	}{
+		// Bare public domains are HTTPS-first, like a browser address bar.
+		{"example.com/watch?q=1", "https://example.com/watch?q=1", "example.com", true},
+		{"mgtv.com", "https://mgtv.com/", "mgtv.com", true},
+		{"https://WWW.Example.com", "https://www.example.com/", "example.com", true},
+		// An explicit scheme is always honoured, including plain HTTP.
+		{"http://example.com/", "http://example.com/", "example.com", true},
+		// LAN-shaped addresses stay on HTTP so self-hosted web UIs keep working.
+		{"192.168.1.10:8080/ui", "http://192.168.1.10:8080/ui", "192.168.1.10", true},
+		{"nas.local", "http://nas.local/", "nas.local", true},
+		{"router", "http://router/", "router", true},
+		{"localhost", "http://localhost/", "localhost", true},
+		{"http://localhost:3000", "http://localhost:3000/", "localhost", true},
+		{"javascript:alert(1)", "", "", false},
+		{"file:///etc/passwd", "", "", false},
+		{"not a url", "", "", false},
+	}
+	for _, tc := range cases {
+		gotURL, gotName, ok := NormalizeUserURL(tc.in)
+		if ok != tc.ok || gotURL != tc.wantURL || gotName != tc.wantName {
+			t.Errorf("NormalizeUserURL(%q)=(%q,%q,%v), want (%q,%q,%v)", tc.in, gotURL, gotName, ok, tc.wantURL, tc.wantName, tc.ok)
 		}
 	}
 }
@@ -147,20 +183,81 @@ func TestIsKnownAction(t *testing.T) {
 	if !IsKnownAction(ActionPlayPause) {
 		t.Fatal("play_pause should be known")
 	}
-	for _, action := range []string{ActionSeek, ActionSpeed, ActionVolume, ActionScrollUp, ActionScrollDown, ActionLogin, ActionHome, ActionRefresh, ActionFullscreenEnter, ActionFullscreenExit, ActionCapabilities, ActionDanmakuToggle, ActionBilibiliLike, ActionBilibiliCoin, ActionBilibiliFav, ActionBilibiliFollow, ActionBilibiliTriple} {
+	for _, action := range []string{ActionSeek, ActionSpeed, ActionSpeedUp, ActionSpeedDown, ActionScrollUp, ActionScrollDown, ActionHome, ActionRefresh, ActionFullscreenEnter, ActionFullscreenExit, ActionCapabilities, ActionDanmakuToggle, ActionBilibiliLike, ActionBilibiliCoin, ActionBilibiliFav, ActionBilibiliFollow, ActionBilibiliTriple, ActionIQIYIPrevious, ActionIQIYINext, ActionIQIYIReplay, ActionDouyinDanmakuToggle, ActionDouyinLike, ActionDouyinFavorite, ActionDouyinFollow, ActionDouyinComments, ActionDouyinAutoplay, ActionDouyinWatchLater} {
 		if !IsKnownAction(action) {
 			t.Fatalf("%s should be known", action)
 		}
 	}
-	if IsKnownAction("eval") || IsKnownAction("shell") || IsKnownAction("navigate") {
+	if IsKnownAction("eval") || IsKnownAction("shell") || IsKnownAction("navigate") || IsKnownAction("volume") || IsKnownAction("login") {
 		t.Fatal("dangerous actions must not be known")
+	}
+}
+
+// Playback speed is an allowlist, not a default. Only Bilibili/Tencent may set
+// an absolute rate, only YouTube gets the step form, and every other catalog
+// site (notably iQIYI, whose adverts share the programme's <video>) gets none.
+func TestSpeedModeIsPerSiteAllowlist(t *testing.T) {
+	cases := map[string]string{
+		SiteBilibili: SpeedModeRate,
+		SiteTencent:  SpeedModeRate,
+		SiteYouTube:  SpeedModeStep,
+		SiteIQIYI:    SpeedModeNone,
+		SiteYouku:    SpeedModeNone,
+		SiteDouyin:   SpeedModeNone,
+		SiteNetflix:  SpeedModeNone,
+		"":           SpeedModeNone,
+		"custom-1":   SpeedModeNone,
+	}
+	for site, want := range cases {
+		if got := SpeedModeForSite(site); got != want {
+			t.Fatalf("SpeedModeForSite(%q) = %q, want %q", site, got, want)
+		}
+	}
+	// Every catalog entry must be covered by the table above, so a newly added
+	// site cannot silently inherit a speed control nobody verified.
+	for _, site := range Catalog {
+		if _, ok := cases[site.ID]; !ok {
+			t.Fatalf("catalog site %q missing from speed-mode expectations", site.ID)
+		}
+	}
+}
+
+func TestSearchAvailabilityIsPerSiteAllowlist(t *testing.T) {
+	cases := map[string]bool{
+		SiteBilibili: true,
+		SiteIQIYI:    true,
+		SiteTencent:  true,
+		SiteYouku:    true,
+		SiteYouTube:  true,
+		SiteDouyin:   false,
+		SiteNetflix:  false,
+		"":           false,
+		"custom-1":   false,
+	}
+	for site, want := range cases {
+		if got := SearchAvailableForSite(site); got != want {
+			t.Fatalf("SearchAvailableForSite(%q) = %v, want %v", site, got, want)
+		}
+	}
+	for _, site := range Catalog {
+		if _, ok := cases[site.ID]; !ok {
+			t.Fatalf("catalog site %q missing from search expectations", site.ID)
+		}
 	}
 }
 
 func TestFilterMoreActionsUsesFixedSiteProfile(t *testing.T) {
 	profile := MoreActionsForSite(SiteBilibili)
-	if len(profile) != 6 || profile[0].ID != ActionDanmakuToggle || profile[1].ID != ActionBilibiliLike || profile[5].ID != ActionBilibiliTriple || profile[0].Strategy != MoreActionStrategyShortcut {
+	if len(profile) != 6 || profile[0].ID != ActionDanmakuToggle || profile[0].Name != "开关弹幕（D）" || profile[1].ID != ActionBilibiliLike || profile[5].ID != ActionBilibiliTriple || profile[0].Strategy != MoreActionStrategyShortcut {
 		t.Fatalf("unexpected bilibili profile: %+v", profile)
+	}
+	iqiyi := MoreActionsForSite(SiteIQIYI)
+	if len(iqiyi) != 3 || iqiyi[0].ID != ActionIQIYIPrevious || iqiyi[0].Name != "上一集（Shift+P）" || iqiyi[1].ID != ActionIQIYINext || iqiyi[2].ID != ActionIQIYIReplay {
+		t.Fatalf("unexpected iqiyi profile: %+v", iqiyi)
+	}
+	douyin := MoreActionsForSite(SiteDouyin)
+	if len(douyin) != 7 || douyin[0].ID != ActionDouyinDanmakuToggle || douyin[0].Name != "开关弹幕（B）" || douyin[4].ID != ActionDouyinComments || douyin[6].ID != ActionDouyinWatchLater {
+		t.Fatalf("unexpected douyin profile: %+v", douyin)
 	}
 
 	// Page reports are untrusted capability claims. Unknown IDs, duplicates,
@@ -180,34 +277,6 @@ func TestFilterMoreActionsUsesFixedSiteProfile(t *testing.T) {
 	profile[0].Name = "mutated"
 	if next := MoreActionsForSite(SiteBilibili); next[0].Name == "mutated" {
 		t.Fatal("MoreActionsForSite must return a defensive copy")
-	}
-}
-
-func TestLoginURLFixedRoutes(t *testing.T) {
-	want := map[string]string{
-		SiteBilibili: "https://passport.bilibili.com/",
-		SiteIQIYI:    "https://www.iqiyi.com/iframe/loginreg?show_back=1",
-		SiteTencent:  "https://v.qq.com/s/videoplus/host",
-		SiteYouku:    "https://account.youku.com/",
-	}
-	for id, url := range want {
-		got, ok := LoginURL(id)
-		if !ok || got != url {
-			t.Errorf("LoginURL(%s)=%q ok=%v want %q", id, got, ok, url)
-		}
-	}
-	if _, ok := LoginURL("mgtv"); ok {
-		t.Fatal("removed catalog sites must not expose login routes")
-	}
-	if _, ok := LoginURL("uacheck"); ok {
-		t.Fatal("removed catalog sites must not expose login routes")
-	}
-	if _, ok := LoginURL(""); ok {
-		t.Fatal("empty site must not expose a login route")
-	}
-	// Douyin currently uses an in-page login modal, not a verified fixed route.
-	if _, ok := LoginURL(SiteDouyin); ok {
-		t.Fatal("Douyin must use the generic in-page login controller")
 	}
 }
 

@@ -6,10 +6,10 @@ const chineseSidebar = [
     items: [
       { text: '首页', link: '/' },
       { text: '连接媒体服务器', link: '/media-server' },
-      { text: '直接播放文件', link: '/files' },
-      { text: 'IPTV', link: '/iptv' },
-      { text: '接收 DLNA 投屏', link: '/dlna' },
-      { text: '网页控制（中文 Beta）', link: '/website' },
+      { text: '播放本地与网络文件', link: '/files' },
+      { text: '播放 IPTV', link: '/iptv' },
+      { text: '手机投屏（DLNA）', link: '/dlna' },
+      { text: '网页控制', link: '/website' },
       { text: '注意事项', link: '/notes' }
     ]
   },
@@ -28,10 +28,10 @@ const englishSidebar = [
     items: [
       { text: 'Overview', link: '/en/' },
       { text: 'Connect a media server', link: '/en/media-server' },
-      { text: 'Play files directly', link: '/en/files' },
-      { text: 'IPTV', link: '/en/iptv' },
-      { text: 'Receive DLNA casts', link: '/en/dlna' },
-      { text: 'Web control (Chinese beta)', link: '/en/website' },
+      { text: 'Play local and network files', link: '/en/files' },
+      { text: 'Play IPTV', link: '/en/iptv' },
+      { text: 'Phone casting (DLNA)', link: '/en/dlna' },
+      { text: 'Web control', link: '/en/website' },
       { text: 'Notes and safety', link: '/en/notes' }
     ]
   },

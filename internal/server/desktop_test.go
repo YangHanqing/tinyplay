@@ -30,6 +30,47 @@ func TestDesktopPageIncludesLocalizedNetworkGuidance(t *testing.T) {
 	}
 }
 
+// TestDesktopPageCrossPlatformShellContract locks the bridge names and footer
+// affordances that both the macOS and Windows shells must implement so the
+// shared /desktop page behaves the same on each OS.
+func TestDesktopPageCrossPlatformShellContract(t *testing.T) {
+	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
+	s := &Server{port: 1980}
+	req := httptest.NewRequest(http.MethodGet, "/desktop?lang=en&version=1.2.3", nil)
+	rec := httptest.NewRecorder()
+	s.desktopPage(rec, req)
+	body := rec.Body.String()
+
+	// Shared native bridge names (Windows Bind / macOS WKScriptMessageHandler).
+	for _, bridge := range []string{
+		"tinyplaySetFullscreen",
+		"tinyplayIsFullscreen",
+		"tinyplayShowAbout",
+		"tinyplayCheckForUpdates",
+		"__tinyplayUpdateCheckDone",
+		"__tinyplayNativeFullscreen",
+	} {
+		if !strings.Contains(body, bridge) {
+			t.Fatalf("shared /desktop page missing cross-platform bridge %q", bridge)
+		}
+	}
+	// Version doubles as About; check-updates has a spinner; no second About link.
+	if !strings.Contains(body, `id="btn-about"`) || !strings.Contains(body, ">v1.2.3<") {
+		t.Fatal("version footer must be the clickable About control (v1.2.3)")
+	}
+	if strings.Count(body, `id="btn-about"`) != 1 {
+		t.Fatal("expected a single About control (the version label)")
+	}
+	if !strings.Contains(body, `id="btn-check-updates"`) || !strings.Contains(body, "footer-spinner") {
+		t.Fatal("check-for-updates must expose the same loading spinner on both platforms")
+	}
+	// Ready pill uses the same status-dot language as DLNA on every OS.
+	if !strings.Contains(body, `status-pill available compact-ready`) ||
+		!strings.Contains(body, "text-transform: uppercase") {
+		t.Fatal("ready pill + uppercase status labels must be in the shared page CSS")
+	}
+}
+
 func TestDesktopPageIncludesFullscreenStandbyControls(t *testing.T) {
 	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
 	s := &Server{port: 1980}
@@ -59,21 +100,105 @@ func TestDesktopPageIncludesFullscreenStandbyControls(t *testing.T) {
 		`id="clock"`,
 		`id="fs-enter"`,
 		`id="fs-exit"`,
-		`class="compact-title"`,
+		`class="compact-columns"`,
+		`class="brand-logo"`,
+		`class="brand-core"`,
+		`class="connect-card"`,
 		`class="compact-qr-stage"`,
 		`class="fullscreen-action"`,
+		`class="url-row"`,
 		`class="network-help"`,
 		`class="standby-qr"`,
+		"color-scheme: light",
+		"--bg: #f7f9fc",
+		"border-right: 1px solid var(--divider)",
+		"compact-ready",
+		"footer-spinner",
+		"__tinyplayUpdateCheckDone",
 		"DLNA unavailable · TinyPlay (",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("desktop page missing %q", want)
 		}
 	}
+	// Compact is logo-only on the left; standby still shows the TinyPlay wordmark.
+	// Ready appears on compact (beside URL) and on standby (top chrome).
+	if n := strings.Count(body, `class="brand-name"`); n < 1 {
+		t.Fatalf("expected TinyPlay wordmark on standby, found %d", n)
+	}
+	if strings.Contains(body, `<h1 class="brand-name">TinyPlay</h1>`) &&
+		strings.Index(body, `<h1 class="brand-name">TinyPlay</h1>`) < strings.Index(body, `class="connect-card"`) {
+		// Only fail if a compact-side wordmark appears before the connect card.
+		compactSideEnd := strings.Index(body, `class="compact-main"`)
+		wordmark := strings.Index(body, `<h1 class="brand-name">TinyPlay</h1>`)
+		if compactSideEnd > 0 && wordmark >= 0 && wordmark < compactSideEnd {
+			t.Fatal("compact left column should keep logo only (no TinyPlay wordmark)")
+		}
+	}
+	if !strings.Contains(body, `class="status-pill available compact-ready"`) ||
+		!strings.Contains(body, `class="status-dot"`) {
+		t.Fatal("compact ready capsule should use the same status-pill + status-dot as DLNA")
+	}
+	if !strings.Contains(body, "text-transform: uppercase") {
+		t.Fatal("status pills should uppercase Ready labels for Latin scripts")
+	}
+	if !strings.Contains(body, `id="btn-about"`) || !strings.Contains(body, `id="btn-check-updates"`) {
+		t.Fatal("footer should keep version→about and check-for-updates actions")
+	}
+	// Compact is bright; standby keeps its own night canvas.
+	if !strings.Contains(body, "body.mode-standby") || !strings.Contains(body, "#05070c") {
+		t.Fatal("standby mode must keep the night canvas independent of compact light theme")
+	}
 	fullscreenIndex := strings.Index(body, `id="fs-enter"`)
 	helpIndex := strings.Index(body, `class="network-help"`)
 	if fullscreenIndex < 0 || helpIndex < 0 || fullscreenIndex > helpIndex {
 		t.Fatal("compact Full Screen action must appear above the small network-help disclosure")
+	}
+	// Left column: logo only, centered. Full Screen sits under the QR.
+	// Intro sits above the URL; ready capsule is to the right of the URL.
+	logoIndex := strings.Index(body, `class="brand-logo"`)
+	qrIndex := strings.Index(body, `class="compact-qr-stage"`)
+	introIndex := strings.Index(body, `class="intro"`)
+	urlIndex := strings.Index(body, `id="url-compact"`)
+	readyIndex := strings.Index(body, `class="status-pill available compact-ready"`)
+	if logoIndex < 0 || qrIndex < 0 || fullscreenIndex < 0 || !(qrIndex < fullscreenIndex) {
+		t.Fatal("full-screen action should sit under the QR code")
+	}
+	if introIndex < 0 || urlIndex < 0 || !(introIndex < urlIndex) {
+		t.Fatal("intro copy should sit above the phone URL next to the QR")
+	}
+	if readyIndex < 0 || urlIndex > readyIndex {
+		t.Fatal("ready capsule should appear immediately after the phone URL")
+	}
+	if !strings.Contains(body, "border-radius: 999px") || !strings.Contains(body, ".status-pill.available") {
+		t.Fatal("ready status beside the URL should be a green status pill")
+	}
+	if !strings.Contains(body, ".brand-core") || !strings.Contains(body, "padding: 6px") {
+		t.Fatal("expected centered logo core and tighter QR padding")
+	}
+	if !strings.Contains(body, `class="connect-qr-col"`) {
+		t.Fatal("QR column should group the code and the full-screen control")
+	}
+	if !strings.Contains(body, `class="aux-spacer"`) {
+		t.Fatal("aux rows should keep a flex spacer between label and trailing controls")
+	}
+	// Network help sits under the paired-devices row, not beside it.
+	devicesIndex := strings.Index(body, `id="pair-devices"`)
+	if devicesIndex < 0 || helpIndex < devicesIndex {
+		t.Fatal("network-help disclosure should appear below the paired-devices row")
+	}
+	if !strings.Contains(body, "margin-top: auto") || !strings.Contains(body, "flex: 1 1 auto") {
+		t.Fatal("compact layout should fill the shell height: grow the middle card and pin the footer")
+	}
+	if strings.Contains(body, "下方") || strings.Contains(body, "下の") {
+		t.Fatal("intro copy must not say the QR is below the text")
+	}
+	// Intro should still be a short paragraph (not a single phrase, not the old essay).
+	if !strings.Contains(body, i18n.T("en", "desktop_intro")) {
+		t.Fatal("expected localized intro copy on the desktop page")
+	}
+	if intro := i18n.T("zh-CN", "desktop_intro"); len([]rune(intro)) < 20 || len([]rune(intro)) > 80 {
+		t.Fatalf("zh-CN intro should be one or two short sentences, got %q (%d runes)", intro, len([]rune(intro)))
 	}
 	for _, unwanted := range []string{`id="url-standby"`, "Scan the QR code with your phone to control playback", `<strong>LAN</strong>`} {
 		if strings.Contains(body, unwanted) {

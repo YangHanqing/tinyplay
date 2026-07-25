@@ -35,7 +35,7 @@ func TestActivatingAnotherLibraryDoesNotStopPlayback(t *testing.T) {
 		t.Fatalf("play: %#v", result)
 	}
 
-	h := New(p).Handler()
+	h := testHandler(New(p))
 	req := jsonReq(http.MethodPost, "/api/servers/"+b.ID+"/activate", `{}`)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

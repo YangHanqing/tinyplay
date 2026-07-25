@@ -1,4 +1,4 @@
-# Play files directly
+# Play local and network files
 
 You can use TinyPlay without setting up a media server. Browse local folders, mounted paths, SMB shares, or WebDAV shares; choose the starting folder from your phone, then browse and play by directory. You can start watching without first setting up posters or plugins.
 

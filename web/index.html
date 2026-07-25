@@ -51,6 +51,9 @@
             <line x1="21" y1="12" x2="9" y2="12"/>
           </svg>
         </button>
+        <button class="topbar-action-btn hidden" id="btn-website-add" onclick="openWebsiteAddSheet()" aria-label="Add website">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+        </button>
       </div>
     </header>
 
@@ -155,12 +158,8 @@
         <div class="iptv-channel-list" id="iptv-channel-list"></div>
       </div>
 
-      <!-- Website workspace: fixed allowlisted catalog (no free-form URL) -->
+      <!-- Website workspace: locale-filtered built-ins plus shared personal URLs. -->
       <div id="lib-website-view" class="hidden">
-        <div class="website-catalog-head">
-          <h2 class="section-title-h" data-i18n="websiteLibrary">Website Library</h2>
-          <p class="website-catalog-hint" data-i18n="websiteCatalogHint">Tap a site to open it on TV, then control it from Remote.</p>
-        </div>
         <div class="website-catalog" id="website-catalog"></div>
       </div>
 
@@ -199,22 +198,44 @@
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteSeekForward"
                         onclick="websiteAction('seek', {text:'10'})">Forward</button>
               </div>
-              <div class="website-row website-row-2">
-                <button type="button" class="website-btn website-control-action" data-i18n="volumeDown"
-                        onclick="websiteAction('volume', {text:'-10'})">Volume down</button>
-                <button type="button" class="website-btn website-control-action" data-i18n="volumeUp"
-                        onclick="websiteAction('volume', {text:'10'})">Volume up</button>
+              <div class="website-volume-control">
+                <div class="website-section-title website-volume-title">
+                  <span data-i18n="volume">Volume</span>
+                  <span id="website-volume-current">--%</span>
+                </div>
+                <div class="volume-strip website-volume-strip">
+                  <button class="volume-end" onclick="setVolumeByDelta(-10)" aria-label="Volume down">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M16 10a4 4 0 0 1 0 4"/></svg>
+                  </button>
+                  <div class="volume-track" data-volume-control role="slider" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+                       onpointerdown="onVolumePointer(event)"
+                       onpointermove="onVolumePointer(event)">
+                    <div class="volume-fill"></div>
+                    <div class="volume-thumb"></div>
+                  </div>
+                  <button class="volume-end" onclick="setVolumeByDelta(10)" aria-label="Volume up">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M16 7a7 7 0 0 1 0 10"/><path d="M19 4a11 11 0 0 1 0 16"/></svg>
+                  </button>
+                </div>
               </div>
             </div>
 
-            <!-- 倍速 -->
-            <div class="website-section">
+            <!-- 倍速 — not universal. The whole section stays hidden unless the
+                 server reports a speed_mode for the site actually being shown:
+                 "rate" gets fixed rates, "step" gets faster/slower. -->
+            <div class="website-section hidden" id="website-speed-section">
               <div class="website-section-title" data-i18n="websiteSpeedSection">Speed</div>
-              <div class="website-row website-row-4">
+              <div class="website-row website-row-4 hidden" id="website-speed-rate-row">
                 <button type="button" class="website-btn website-control-action" onclick="websiteAction('speed', {text:'1'})">1.0x</button>
                 <button type="button" class="website-btn website-control-action" onclick="websiteAction('speed', {text:'1.25'})">1.25x</button>
                 <button type="button" class="website-btn website-control-action" onclick="websiteAction('speed', {text:'1.5'})">1.5x</button>
                 <button type="button" class="website-btn website-control-action" onclick="websiteAction('speed', {text:'2'})">2.0x</button>
+              </div>
+              <div class="website-row website-row-2 hidden" id="website-speed-step-row">
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteSpeedDown"
+                        onclick="websiteAction('speed_down')">Slower</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteSpeedUp"
+                        onclick="websiteAction('speed_up')">Faster</button>
               </div>
             </div>
 
@@ -231,7 +252,29 @@
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteScrollUp" onclick="websiteAction('scroll_up')">Scroll Up</button>
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteScrollDown" onclick="websiteAction('scroll_down')">Scroll Down</button>
               </div>
+              <!-- Real ArrowUp/ArrowDown keypress (Douyin feed nav, YouTube volume
+                   step) — distinct from the page-scroll row above. Server-gated:
+                   hidden unless the recognized current site actually reacts to it. -->
+              <div class="website-row website-row-2 hidden" id="website-arrow-nav-row">
+                <button type="button" class="website-btn website-control-action" onclick="websiteAction('arrow_up')" aria-label="Arrow up">
+                  <svg class="website-arrow-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+                </button>
+                <button type="button" class="website-btn website-control-action" onclick="websiteAction('arrow_down')" aria-label="Arrow down">
+                  <svg class="website-arrow-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>
+                </button>
+              </div>
+              <div class="website-row website-row-4">
+                <button type="button" class="website-btn website-control-action" id="website-btn-home" data-i18n="websiteHome" onclick="websiteAction('home')">Home</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteBack" onclick="websiteAction('back')">Back</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteForward" onclick="websiteAction('forward')">Forward</button>
+                <button type="button" class="website-btn website-control-action" data-i18n="websiteRefresh" onclick="websiteAction('refresh')">Refresh</button>
+              </div>
               <div class="website-row website-row-1">
+                <button type="button" class="website-btn website-btn-accent website-control-action" id="website-btn-hint-enter"
+                        data-i18n="websiteClickPage" onclick="openWebsiteHintSheet()">Select page element</button>
+              </div>
+              <div class="website-row website-search-more-row hidden" id="website-search-more-row">
+                <button type="button" class="website-btn website-btn-primary website-control-action" id="website-btn-search" data-i18n="websiteSearch" onclick="openWebsiteSearchSheet()">Search</button>
                 <button type="button" class="website-btn website-more-trigger website-control-action" id="website-btn-more"
                         onclick="openWebsiteMoreSheet()" aria-haspopup="dialog">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -361,7 +404,7 @@
             <button class="volume-end" onclick="setVolumeByDelta(-10)" aria-label="Volume down">
               <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M16 10a4 4 0 0 1 0 4"/></svg>
             </button>
-            <div class="volume-track" role="slider" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+            <div class="volume-track" data-volume-control role="slider" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
                  onpointerdown="onVolumePointer(event)"
                  onpointermove="onVolumePointer(event)">
               <div class="volume-fill" id="volume-fill"></div>
@@ -698,7 +741,7 @@
       </section>
     </div>
 
-    <!-- Website More sheet: page-sensitive site actions + universal navigation -->
+    <!-- Website More sheet: controls detected for the current website only -->
     <div class="sheet-backdrop hidden" id="website-more-backdrop" onclick="onWebsiteMoreBackdropClick(event)">
       <section class="video-sheet media-select-sheet website-more-sheet" role="dialog" aria-modal="true" aria-labelledby="website-more-title">
         <div class="sheet-handle"></div>
@@ -712,24 +755,6 @@
             <div class="website-section-title" data-i18n="websiteSiteActions">Current website</div>
             <div class="website-more-status" id="website-more-status" aria-live="polite"></div>
             <div class="website-more-actions" id="website-more-actions"></div>
-          </div>
-
-          <div class="website-more-section">
-            <div class="website-section-title" data-i18n="websiteNavSection">Navigation</div>
-            <div class="website-row website-row-3">
-              <button type="button" class="website-btn website-control-action" id="website-btn-home" data-i18n="websiteHome" onclick="websiteMoreAction('home')">Home</button>
-              <button type="button" class="website-btn website-control-action" data-i18n="websiteBack" onclick="websiteMoreAction('back')">Back</button>
-              <button type="button" class="website-btn website-control-action" data-i18n="websiteForward" onclick="websiteMoreAction('forward')">Forward</button>
-            </div>
-            <div class="website-row website-row-3">
-              <button type="button" class="website-btn website-control-action" id="website-btn-login" data-i18n="websiteLogin" onclick="websiteMoreAction('login')">Login</button>
-              <button type="button" class="website-btn website-btn-primary website-control-action" data-i18n="websiteSearch" onclick="openWebsiteSearchFromMore()">Search</button>
-              <button type="button" class="website-btn website-control-action" data-i18n="websiteRefresh" onclick="websiteMoreAction('refresh')">Refresh</button>
-            </div>
-            <div class="website-row website-row-1">
-              <button type="button" class="website-btn website-btn-accent website-control-action" id="website-btn-hint-enter"
-                      data-i18n="websiteClickPage" onclick="openWebsiteHintFromMore()">Select page element</button>
-            </div>
           </div>
         </div>
       </section>
@@ -750,6 +775,26 @@
                    onkeydown="if(event.key==='Enter'){event.preventDefault();websiteSearch();}">
             <button type="button" class="website-btn website-btn-primary website-sheet-go" data-i18n="websiteSearch"
                     onclick="websiteSearch()">Search</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Website add-url sheet -->
+    <div class="sheet-backdrop hidden" id="website-add-backdrop" onclick="onWebsiteAddBackdropClick(event)">
+      <section class="video-sheet media-select-sheet" role="dialog" aria-modal="true" aria-labelledby="website-add-title">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3 id="website-add-title" data-i18n="websiteAddUrl">Add website</h3>
+        </div>
+        <div class="website-sheet-body">
+          <div class="website-sheet-row">
+            <input type="url" class="website-sheet-input" id="website-add-input"
+                   data-i18n-placeholder="websiteAddUrlPlaceholder" placeholder="example.com"
+                   inputmode="url" enterkeyhint="done" autocomplete="url" autocapitalize="none" spellcheck="false"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();websiteAddCustomSite();}">
+            <button type="button" class="website-btn website-btn-primary website-sheet-go" data-i18n="websiteAddUrl"
+                    onclick="websiteAddCustomSite()">Add</button>
           </div>
         </div>
       </section>

@@ -9,7 +9,7 @@
 //   1. Launch the bundled Go core (Contents/Resources/tvremote-core) as a
 //      sidecar, telling it where the bundled mpv lives via TVREMOTE_MPV_EXE and
 //      asking it to write its LAN URL to a temp file via TVREMOTE_URL_FILE.
-//   2. Show a menu-bar item with entries for the remote, logs, and quit.
+//   2. Show a menu-bar item with open-main, language, feedback, and quit.
 //   3. The remote item opens a small native window with the intro + QR page served by
 //      the core at /desktop.
 //   4. Terminate the sidecar on quit.
@@ -20,6 +20,34 @@ import Foundation
 import WebKit
 import Network
 
+private let feedbackMailAddress = "tinyday.app@gmail.com"
+
+/// TinyPlay is an accessory (LSUIElement) app by default — tray/menu-bar only,
+/// no Dock icon — but a real on-screen window with no Dock icon or Cmd-Tab
+/// entry is disorienting and behaves unlike every other Mac app. Promote to
+/// `.regular` for as long as any of TinyPlay's windows (the intro/QR window,
+/// the website playback window) is open, and demote back to `.accessory` the
+/// moment the last one closes, matching Windows (whose WebView2 window is a
+/// normal top-level window and already gets a taskbar entry while open).
+private enum DockVisibility {
+	private static var openWindows = Set<ObjectIdentifier>()
+
+	static func windowOpened(_ window: NSWindow) {
+		openWindows.insert(ObjectIdentifier(window))
+		NSApp.setActivationPolicy(.regular)
+	}
+
+	static func windowClosed(_ window: NSWindow) {
+		openWindows.remove(ObjectIdentifier(window))
+		if openWindows.isEmpty {
+			NSApp.setActivationPolicy(.accessory)
+		}
+	}
+}
+
+// Menu-bar / alert copy for the native shell. Keys used by the web /desktop
+// page still go through the Go core's i18n; this table only covers AppKit UI.
+// Keep zh-CN + English here (menu preference "auto" follows the system locale).
 private func L(_ key: String) -> String {
 	let preference = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
 	let zh = preference == "zh-CN" || (preference == "auto" && Locale.current.language.languageCode?.identifier.lowercased().hasPrefix("zh") == true)
@@ -28,6 +56,12 @@ private func L(_ key: String) -> String {
         "open_logs": ("\u{6253}\u{5F00}\u{65E5}\u{5FD7}\u{76EE}\u{5F55}", "Open Logs"),
 		"settings": ("\u{8BBE}\u{7F6E}", "Settings"),
 		"dlna_receiver": ("DLNA \u{63A5}\u{6536}\u{5668}", "DLNA Receiver"),
+		"feedback": ("\u{53CD}\u{9988}", "Send Feedback"),
+		"feedback_mail_subject": ("TinyPlay \u{7528}\u{6237}\u{53CD}\u{9988}", "TinyPlay Feedback"),
+		"feedback_mail_body": (
+			"\u{8BF7}\u{5199}\u{660E}\u{4F60}\u{7684}\u{53CD}\u{9988}\u{5185}\u{5BB9}\u{3002}\n\n\u{2022} \u{529F}\u{80FD}\u{9700}\u{6C42}\u{FF1A}\u{76F4}\u{63A5}\u{63CF}\u{8FF0}\u{5E0C}\u{671B}\u{589E}\u{52A0}\u{7684}\u{529F}\u{80FD}\u{5373}\u{53EF}\u{3002}\n\u{2022} \u{95EE}\u{9898}\u{53CD}\u{9988}\u{FF08}Bug\u{FF09}\u{FF1A}\u{8BF7}\u{63CF}\u{8FF0}\u{73B0}\u{8C61}\u{4E0E}\u{590D}\u{73B0}\u{6B65}\u{9AA4}\u{FF0C}\u{5E76}\u{9644}\u{4E0A}\u{65E5}\u{5FD7}\u{76EE}\u{5F55}\u{4E2D}\u{7684}\u{65E5}\u{5FD7}\u{6587}\u{4EF6}\u{FF08}\u{53EF}\u{5728}\u{4E3B}\u{754C}\u{9762}\u{5E95}\u{90E8}\u{70B9}\u{51FB}\u{300C}\u{6253}\u{5F00}\u{65E5}\u{5FD7}\u{76EE}\u{5F55}\u{300D}\u{83B7}\u{53D6}\u{FF09}\u{3002}\n\n",
+			"Please describe your feedback.\n\n• Feature request: write what you would like to add.\n• Bug report: describe what happened and the steps to reproduce it, and attach the log files from the logs folder (use “Open Logs” at the bottom of the main window).\n\n"
+		),
 		"quit": ("\u{9000}\u{51FA}", "Quit"),
 		"language": ("\u{8BED}\u{8A00}", "Language"),
 		"automatic": ("\u{81EA}\u{52A8}", "Automatic"),
@@ -44,6 +78,15 @@ private func L(_ key: String) -> String {
 		"update_latest": ("\u{4F60}\u{6B63}\u{5728}\u{4F7F}\u{7528}\u{6700}\u{65B0}\u{7248}\u{672C}\u{3002}", "You're using the latest version."),
 		"update_failed": ("\u{6682}\u{65F6}\u{65E0}\u{6CD5}\u{68C0}\u{67E5}\u{66F4}\u{65B0}\u{FF0C}\u{8BF7}\u{7A0D}\u{540E}\u{518D}\u{8BD5}\u{3002}", "Couldn't check for updates. Please try again later."),
 		"ok": ("\u{597D}\u{7684}", "OK"),
+		"feedback_no_mail_client": (
+			"\u{7CFB}\u{7EDF}\u{672A}\u{68C0}\u{6D4B}\u{5230}\u{90AE}\u{4EF6}\u{5BA2}\u{6237}\u{7AEF}\u{FF0C}\u{53CD}\u{9988}\u{90AE}\u{7BB1}\u{5730}\u{5740}\u{5DF2}\u{590D}\u{5236}\u{5230}\u{526A}\u{8D34}\u{677F}\u{FF0C}\u{8BF7}\u{624B}\u{52A8}\u{53D1}\u{9001}\u{90AE}\u{4EF6}\u{81F3}\u{FF1A}\n%@",
+			"No mail client was found — only a web browser is registered to handle mailto: links. The feedback address has been copied to your clipboard; please email us manually at:\n%@"
+		),
+		// Small on-screen indicator so a slow remote source (IPTV, remote Emby)
+		// doesn't leave the screen blank/frozen with no sign the phone's tap
+		// registered. See ToastPanelController.
+		"toast_connecting": ("正在连接…", "Connecting…"),
+		"toast_autoplay_countdown": ("%d 秒后自动播放下一集", "Next episode in %ds"),
     ]
     guard let pair = table[key] else { return key }
     return zh ? pair.0 : pair.1
@@ -208,6 +251,129 @@ private func parsePlayerStateForStandby(_ object: [String: Any]) -> (running: Bo
 	return (running, revision)
 }
 
+/// Parse the desktop-toast fields from the same `/api/player/state` payload.
+/// desktop_toast_mode is "" (no toast), "connecting" (a Play() attempt has not
+/// yet produced a frame), or "autoplay" (host autoplay's next-episode grace
+/// period is counting down). See desktopToastState in the Go core.
+private func parseDesktopToast(_ object: [String: Any]) -> (mode: String, remainingSeconds: Int?) {
+	let mode = (object["desktop_toast_mode"] as? String) ?? ""
+	var remainingSeconds: Int?
+	if let n = object["autoplay_remaining_ms"] as? NSNumber {
+		remainingSeconds = Int((n.doubleValue / 1000.0).rounded(.up))
+	}
+	return (mode, remainingSeconds)
+}
+
+// MARK: - Desktop "connecting/buffering" toast
+
+/// A small, always-on-top, non-activating indicator so a slow remote source
+/// (IPTV, remote Emby/Jellyfin/Plex) doesn't leave the monitor blank or
+/// frozen with no sign the phone's tap registered — mpv itself does not
+/// create its window until it has probed enough of the stream to know the
+/// video format, which can take several seconds. Deliberately plain AppKit
+/// (NSPanel + NSTextField + NSProgressIndicator), not a WebView: it must
+/// appear in milliseconds and must not itself become the next thing the user
+/// is waiting on.
+///
+/// Independent of mpv's own window so the same code covers both cases the
+/// user can be in: nothing on screen yet (cold start) or mpv already
+/// full-screen on a previous title (host autoplay counting down to the next
+/// episode). `.canJoinAllSpaces` + `.fullScreenAuxiliary` is what lets this
+/// panel — a different process from mpv — float over mpv's own native
+/// full-screen Space; without it macOS hides auxiliary windows the instant
+/// another app's window goes full-screen.
+private final class ToastPanelController {
+	private var panel: NSPanel?
+	private var label: NSTextField?
+
+	func apply(mode: String, remainingSeconds: Int?) {
+		guard !mode.isEmpty else {
+			hide()
+			return
+		}
+		let text: String
+		switch mode {
+		case "autoplay":
+			text = String(format: L("toast_autoplay_countdown"), max(remainingSeconds ?? 0, 0))
+		default:
+			text = L("toast_connecting")
+		}
+		show(text: text)
+	}
+
+	func hide() {
+		panel?.orderOut(nil)
+	}
+
+	private func show(text: String) {
+		let panel = self.panel ?? makePanel()
+		self.panel = panel
+		label?.stringValue = text
+		layout(panel)
+		if !panel.isVisible {
+			panel.orderFrontRegardless()
+		}
+	}
+
+	private func makePanel() -> NSPanel {
+		let spinner = NSProgressIndicator()
+		spinner.style = .spinning
+		spinner.controlSize = .small
+		spinner.startAnimation(nil)
+
+		let label = NSTextField(labelWithString: "")
+		label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+		label.textColor = .labelColor
+		self.label = label
+
+		let stack = NSStackView(views: [spinner, label])
+		stack.orientation = .horizontal
+		stack.alignment = .centerY
+		stack.spacing = 8
+		stack.edgeInsets = NSEdgeInsets(top: 9, left: 14, bottom: 9, right: 16)
+		stack.translatesAutoresizingMaskIntoConstraints = true
+
+		let effect = NSVisualEffectView()
+		effect.material = .hudWindow
+		effect.state = .active
+		effect.blendingMode = .withinWindow
+		effect.wantsLayer = true
+		effect.layer?.cornerRadius = 11
+		effect.layer?.masksToBounds = true
+		effect.addSubview(stack)
+		stack.frame = effect.bounds
+		stack.autoresizingMask = [.width, .height]
+
+		let panel = NSPanel(
+			contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
+			styleMask: [.nonactivatingPanel, .borderless],
+			backing: .buffered,
+			defer: false
+		)
+		panel.isOpaque = false
+		panel.backgroundColor = .clear
+		panel.hasShadow = true
+		panel.ignoresMouseEvents = true
+		panel.isReleasedWhenClosed = false
+		panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+		panel.level = .statusBar
+		panel.contentView = effect
+		return panel
+	}
+
+	private func layout(_ panel: NSPanel) {
+		guard let screen = NSScreen.main, let content = panel.contentView else { return }
+		let fitting = content.fittingSize
+		let width = max(fitting.width, 160)
+		let height = max(fitting.height, 36)
+		let frame = screen.frame
+		let x = frame.midX - width / 2
+		// Above the bottom edge, clear of a Dock left in auto-hide "sliver" state.
+		let y = frame.minY + 72
+		panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: panel.isVisible)
+	}
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
@@ -219,7 +385,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private var localNetworkDenied = false
 	private var dlnaMenuItem: NSMenuItem?
 	private static let fullscreenMessageName = "tinyplaySetFullscreen"
-	private let compactContentSize = NSSize(width: 380, height: 600)
+	private static let checkForUpdatesMessageName = "tinyplayCheckForUpdates"
+	private static let showAboutMessageName = "tinyplayShowAbout"
+	private let compactContentSize = NSSize(width: 900, height: 540)
 	private var fullscreenTransitionRequested = false
 
 	// Full-screen standby restore: when mpv exits (or is stopped) while the
@@ -239,6 +407,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private let playerStateRequestTimeout: TimeInterval = 30
 	/// Bounded backoff after transient request failures (no tight retry loop).
 	private let playerStateRetryDelay: TimeInterval = 1.5
+	/// Piggybacks on the same long-poll above — see ToastPanelController.
+	private let toastPanel = ToastPanelController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         primeLocalNetworkAccess()
@@ -316,7 +486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
 	private func startWebsiteShell() {
 		websiteShell?.stop()
-		let shell = WebsiteShellController(coreURL: loopbackCoreURL(coreURL))
+		let shell = WebsiteShellController(coreURL: coreURL)
 		websiteShell = shell
 		shell.start()
 	}
@@ -328,7 +498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
 	private func startDesktopInputShell() {
 		desktopInputShell?.stop()
-		let shell = DesktopInputShellController(coreURL: loopbackCoreURL(coreURL))
+		let shell = DesktopInputShellController(coreURL: coreURL)
 		desktopInputShell = shell
 		shell.start()
 	}
@@ -358,6 +528,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		playerStateRetryWorkItem = nil
 		sawActivePlayback = false
 		lastPlaybackRevision = nil
+		toastPanel.hide()
 	}
 
 	/// Bounded delay before retrying a failed / cancelled-for-error state fetch.
@@ -418,6 +589,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 							running: parsed.running
 						)
 					)
+					let toast = parseDesktopToast(object)
+					self.toastPanel.apply(mode: toast.mode, remainingSeconds: toast.remainingSeconds)
 					// Continue long-polling so the next episode / stop is observed.
 					self.fetchPlayerStateForStandby(longPollAfter: self.lastPlaybackRevision)
 					return
@@ -494,13 +667,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     /// Poll the handshake file the core writes its LAN URL into (up to ~5s).
+    ///
+    /// Only the port is kept: every shell→core call is made over 127.0.0.1. The
+    /// core's /desktop endpoints are loopback-only because the QR image carries
+    /// the pairing secret, and shell /api/ calls rely on the same-machine
+    /// exemption rather than holding a device token. The LAN address a phone
+    /// should use is rendered by the core itself, on the /desktop page.
     private func waitForCoreURL(then ready: @escaping () -> Void) {
         var attempts = 0
         func poll() {
             attempts += 1
             if let s = try? String(contentsOfFile: urlFile, encoding: .utf8),
                !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                coreURL = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                coreURL = loopbackCoreURL(s.trimmingCharacters(in: .whitespacesAndNewlines))
                 self.reloadDLNAReceiverState()
                 ready()
                 return
@@ -513,6 +692,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     // MARK: - Menu bar
 
+	/// Compact menu-bar surface: open the QR window, pick a language, send
+	/// feedback, quit. Logs / updates / about / DLNA stay on the main window
+	/// (and phone settings) so the tray does not mirror the whole UI.
 	private func setupMenuBar() {
 		if statusItem == nil { statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength) }
 		if let button = statusItem.button {
@@ -521,9 +703,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 			button.image = NSImage(systemSymbolName: "play.tv", accessibilityDescription: "TinyPlay")
 			button.image?.isTemplate = true
 		}
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: L("open_main"), action: #selector(openMainWindow), keyEquivalent: ""))
-		menu.addItem(NSMenuItem(title: L("open_logs"), action: #selector(openLogs), keyEquivalent: ""))
+		let menu = NSMenu()
+		menu.addItem(NSMenuItem(title: L("open_main"), action: #selector(openMainWindow), keyEquivalent: ""))
 		let language = NSMenuItem(title: L("language"), action: nil, keyEquivalent: "")
 		let languageMenu = NSMenu()
 		let selected = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
@@ -539,20 +720,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		}
 		language.submenu = languageMenu
 		menu.addItem(language)
-		let settings = NSMenuItem(title: L("settings"), action: nil, keyEquivalent: "")
-		let settingsMenu = NSMenu()
-		let dlna = NSMenuItem(title: L("dlna_receiver"), action: #selector(toggleDLNAReceiver(_:)), keyEquivalent: "")
-		dlna.target = self
-		dlna.state = .off
-		settingsMenu.addItem(dlna)
-		settings.submenu = settingsMenu
-		dlnaMenuItem = dlna
-		menu.addItem(settings)
-        menu.addItem(.separator())
-		menu.addItem(NSMenuItem(title: L("check_updates"), action: #selector(checkForUpdates), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: L("about"), action: #selector(showAbout), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: L("quit"), action: #selector(quit), keyEquivalent: "q"))
+		menu.addItem(.separator())
+		menu.addItem(NSMenuItem(title: L("feedback"), action: #selector(sendFeedback), keyEquivalent: ""))
+		menu.addItem(.separator())
+		menu.addItem(NSMenuItem(title: L("quit"), action: #selector(quit), keyEquivalent: "q"))
+		// DLNA is toggled from the main window now; keep the stored item nil so
+		// a stale checkbox cannot reappear after a language refresh rebuilds the menu.
+		dlnaMenuItem = nil
 		statusItem.menu = menu
+	}
+
+	/// Some Macs have a web browser — not a mail app — registered as the
+	/// system's "mailto:" handler (e.g. Microsoft Edge registers itself for
+	/// every URL scheme it can during install, including mailto:, without
+	/// actually composing anything). NSWorkspace.shared.open still reports
+	/// success in that case since it did launch *an* app, so the failure is
+	/// silent: the browser activates and no compose window or page ever
+	/// appears. These bundle IDs are known browsers, not mail clients.
+	private static let knownBrowserBundleIDs: Set<String> = [
+		"com.apple.Safari",
+		"com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary",
+		"com.microsoft.edgemac", "com.microsoft.edgemac.Dev", "com.microsoft.edgemac.Beta",
+		"org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly",
+		"com.brave.Browser", "com.brave.Browser.beta", "com.brave.Browser.nightly",
+		"company.thebrowser.Browser",
+		"com.operasoftware.Opera",
+		"com.vivaldi.Vivaldi",
+	]
+
+	/// Opens the default mail client with a prefilled support address. Feature
+	/// ideas can be free-form; bugs should attach logs from the main window.
+	@objc private func sendFeedback() {
+		var components = URLComponents()
+		components.scheme = "mailto"
+		components.path = feedbackMailAddress
+		components.queryItems = [
+			URLQueryItem(name: "subject", value: L("feedback_mail_subject")),
+			URLQueryItem(name: "body", value: L("feedback_mail_body")),
+		]
+		guard let url = components.url else { return }
+
+		if let handlerURL = NSWorkspace.shared.urlForApplication(toOpen: url),
+			let bundleID = Bundle(url: handlerURL)?.bundleIdentifier,
+			Self.knownBrowserBundleIDs.contains(bundleID) {
+			showFeedbackAddressFallback()
+			return
+		}
+		NSWorkspace.shared.open(url)
+	}
+
+	private func showFeedbackAddressFallback() {
+		NSPasteboard.general.clearContents()
+		NSPasteboard.general.setString(feedbackMailAddress, forType: .string)
+		let alert = NSAlert()
+		alert.messageText = L("feedback")
+		alert.informativeText = String(format: L("feedback_no_mail_client"), feedbackMailAddress)
+		alert.addButton(withTitle: L("ok"))
+		NSApp.activate(ignoringOtherApps: true)
+		alert.runModal()
 	}
 
 	// MARK: - Updates
@@ -563,22 +788,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
 	private func scheduleAutomaticUpdateCheck() {
 		DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
-			self?.performUpdateCheck(manual: false)
+			self?.performUpdateCheck(manual: false, completion: nil)
 		}
 	}
 
 	@objc private func checkForUpdates() {
-		performUpdateCheck(manual: true)
+		performUpdateCheck(manual: true, completion: nil)
 	}
 
-	private func performUpdateCheck(manual: Bool) {
-		guard !updateCheckInFlight, parseTinyPlayVersion(appVersion()) != nil else { return }
+	/// Runs the GitHub release probe. `completion` fires on the main queue after
+	/// the check (and any modal dialog) finishes — used by the /desktop page so
+	/// its "Check for Updates" control can drop the loading spinner.
+	private func performUpdateCheck(manual: Bool, completion: (() -> Void)?) {
+		guard parseTinyPlayVersion(appVersion()) != nil else {
+			if manual { showUpdateMessage(L("update_failed")) }
+			completion?()
+			return
+		}
+		guard !updateCheckInFlight else {
+			// Another check is already in flight (e.g. tray + page). Don't stack
+			// network work; still clear the page spinner if one is waiting.
+			completion?()
+			return
+		}
 		updateCheckInFlight = true
 		let currentVersion = appVersion()
 		fetchLatestTinyPlayUpdate { [weak self] update in
 			DispatchQueue.main.async {
-				guard let self else { return }
+				guard let self else {
+					completion?()
+					return
+				}
 				self.updateCheckInFlight = false
+				defer { completion?() }
 				guard let update,
 					let latest = parseTinyPlayVersion(update.version),
 					let current = parseTinyPlayVersion(currentVersion) else {
@@ -737,8 +979,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
 		let config = WKWebViewConfiguration()
 		config.userContentController.add(self, name: Self.fullscreenMessageName)
+		config.userContentController.add(self, name: Self.checkForUpdatesMessageName)
+		config.userContentController.add(self, name: Self.showAboutMessageName)
 		let webView = WKWebView(frame: NSRect(origin: .zero, size: compactContentSize), configuration: config)
 		webView.navigationDelegate = self
+		// Match /desktop compact canvas (#f7f9fc) so the first paint does not
+		// flash a mismatched window chrome colour.
+		if #available(macOS 12.0, *) {
+			webView.underPageBackgroundColor = NSColor(calibratedRed: 247 / 255, green: 249 / 255, blue: 252 / 255, alpha: 1)
+		}
 		webView.load(URLRequest(url: desktopURL()))
 		self.webView = webView
 
@@ -747,6 +996,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false)
         w.title = "TinyPlay"
+		w.backgroundColor = NSColor(calibratedRed: 247 / 255, green: 249 / 255, blue: 252 / 255, alpha: 1)
         // AppKit needs a resizable window to expand its content view into the
         // native full-screen Space. Manual windowed resizing is clamped by the
         // delegate below, so the normal QR window remains compact.
@@ -757,6 +1007,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         w.isReleasedWhenClosed = false
         w.delegate = self
         window = w
+        DockVisibility.windowOpened(w)
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 	}
@@ -765,7 +1016,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		let preference = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
 		let resolved = resolvedWebLanguage(preference)
 		var components = URLComponents(string: coreURL + "/desktop")!
-		var query = [URLQueryItem(name: "lang", value: resolved)]
+		var query = [URLQueryItem(name: "lang", value: resolved), URLQueryItem(name: "version", value: appVersion())]
 		if localNetworkDenied {
 			query.append(URLQueryItem(name: "local_network", value: "denied"))
 		}
@@ -773,19 +1024,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		return components.url!
 	}
 
-	/// Bridge from the /desktop page: request native NSWindow full screen so
-	/// standby covers the display, not just the compact 380×600 content view.
+	/// Bridge from the /desktop page. Handler names match Windows Bind and the
+	/// shared page JS: tinyplaySetFullscreen, tinyplayCheckForUpdates,
+	/// tinyplayShowAbout. After an update check, both shells call
+	/// window.__tinyplayUpdateCheckDone so the footer spinner clears the same way.
 	func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-		guard message.name == Self.fullscreenMessageName else { return }
-		let enter: Bool
-		if let value = message.body as? Bool {
-			enter = value
-		} else if let number = message.body as? NSNumber {
-			enter = number.boolValue
-		} else {
-			return
+		switch message.name {
+		case Self.fullscreenMessageName:
+			let enter: Bool
+			if let value = message.body as? Bool {
+				enter = value
+			} else if let number = message.body as? NSNumber {
+				enter = number.boolValue
+			} else {
+				return
+			}
+			setNativeFullscreen(enter)
+		case Self.checkForUpdatesMessageName:
+			// Page shows a spinner until we call back; tray menu uses checkForUpdates()
+			// without a completion.
+			performUpdateCheck(manual: true) { [weak self] in
+				self?.webView?.evaluateJavaScript(
+					"window.__tinyplayUpdateCheckDone && window.__tinyplayUpdateCheckDone()",
+					completionHandler: nil)
+			}
+		case Self.showAboutMessageName:
+			showAbout()
+		default:
+			break
 		}
-		setNativeFullscreen(enter)
 	}
 
 	private func setNativeFullscreen(_ enter: Bool) {
@@ -822,7 +1089,12 @@ extension AppDelegate: NSWindowDelegate {
 		// Closed window cannot be restored (restoreFullscreenStandbyIfNeeded
 		// no-ops when window is nil / not full-screen). Keep the long-poll
 		// monitor armed so a later reopened full-screen session still works.
+		if let w = notification.object as? NSWindow ?? window {
+			DockVisibility.windowClosed(w)
+		}
 		webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.fullscreenMessageName)
+		webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.checkForUpdatesMessageName)
+		webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.showAboutMessageName)
 		window = nil
 		webView = nil
     }
@@ -850,8 +1122,10 @@ extension AppDelegate {
 
 // MARK: - Website shell (loopback command poll + Safari-style WKWebView)
 
-/// Prefer 127.0.0.1 so /desktop/website/* loopback guards accept shell traffic
-/// even when the advertised phone URL is a LAN address.
+/// Rewrites the core's advertised LAN address to 127.0.0.1, keeping the port.
+/// The shell always talks to the core over loopback: /desktop/* is loopback-only
+/// (the QR image carries the pairing secret) and /api/* is token-protected for
+/// everyone except same-machine callers.
 private func loopbackCoreURL(_ coreURL: String) -> String {
 	guard let url = URL(string: coreURL), let port = url.port else {
 		return "http://127.0.0.1:1980"
@@ -1143,18 +1417,6 @@ final class WebsiteShellController: NSObject, WKNavigationDelegate, WKUIDelegate
 			}
 			webView?.load(URLRequest(url: destination))
 			report(["open": true, "status": "home", "action": "home", "command_id": id])
-		case "login":
-			if let destination = URL(string: url), !url.isEmpty {
-				// Broker-supplied fixed login route only; never phone-provided free-form URL.
-				webView?.load(URLRequest(url: destination))
-				report(["open": true, "status": "login", "action": "login", "command_id": id])
-			} else if webView != nil {
-				// A catalog site may use an in-page login modal instead of a fixed
-				// login URL. The shared controller finds the visible control.
-				runDOMAction(action: action, text: text, label: label, commandID: id)
-			} else {
-				report(["status": "error", "error": "window_not_open", "action": "login", "command_id": id])
-			}
 		case "refresh":
 			webView?.reload()
 			report(["open": true, "status": "refresh", "action": "refresh", "command_id": id])
@@ -1259,6 +1521,7 @@ final class WebsiteShellController: NSObject, WKNavigationDelegate, WKUIDelegate
 		w.collectionBehavior.insert(.fullScreenPrimary)
 		w.level = .normal
 		self.window = w
+		DockVisibility.windowOpened(w)
 		installWebView(wv, in: w)
 		w.makeKeyAndOrderFront(nil)
 		NSApp.activate(ignoringOtherApps: true)
@@ -1447,6 +1710,34 @@ final class WebsiteShellController: NSObject, WKNavigationDelegate, WKUIDelegate
 		reportCurrentMainFrameURL(webView, status: "navigated")
 	}
 
+	func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+		reportNavigationFailure(webView, error: error)
+	}
+
+	func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+		reportNavigationFailure(webView, error: error)
+	}
+
+	/// A load that never lands (unresolvable host, refused connection, TLS or ATS
+	/// rejection) is otherwise completely silent: the window stays black and the
+	/// phone keeps showing the site as opening. Report it so the phone can say the
+	/// address failed instead of looking stuck. Cancellations are ordinary
+	/// transport here — stopLoading() before a new load, and the policy .cancel
+	/// that re-issues a target=_blank request — so they are not failures.
+	private func reportNavigationFailure(_ webView: WKWebView, error: Error) {
+		guard self.webView === webView else { return }
+		let ns = error as NSError
+		if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
+		// WebKitErrorFrameLoadInterruptedByPolicyChange (download / policy cancel).
+		if ns.domain == "WebKitErrorDomain" && ns.code == 102 { return }
+		report([
+			"open": true,
+			"status": "error",
+			"error": "navigation_failed",
+			"action": "navigation",
+		])
+	}
+
 	func webView(
 		_ webView: WKWebView,
 		decidePolicyFor navigationAction: WKNavigationAction,
@@ -1484,6 +1775,9 @@ extension WebsiteShellController: NSWindowDelegate {
 	}
 
 	func windowWillClose(_ notification: Notification) {
+		if let w = notification.object as? NSWindow ?? window {
+			DockVisibility.windowClosed(w)
+		}
 		let closingCommandID = windowCommandID
 		windowCommandID = 0
 		removeKeyMonitor()

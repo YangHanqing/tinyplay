@@ -15,7 +15,7 @@ import (
 
 func TestPlayerStateImmediateWithoutAfterRevision(t *testing.T) {
 	p := player.New()
-	h := New(p).Handler()
+	h := testHandler(New(p))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/player/state", nil)
 	rec := httptest.NewRecorder()
@@ -48,7 +48,7 @@ func TestPlayerStateLongPollMismatchedRevisionReturnsImmediately(t *testing.T) {
 		t.Fatal("expected non-zero revision after Stop")
 	}
 
-	h := New(p).Handler()
+	h := testHandler(New(p))
 	// Client is behind: after_revision is older than current.
 	req := httptest.NewRequest(http.MethodGet, "/api/player/state?after_revision=0", nil)
 	rec := httptest.NewRecorder()
@@ -64,7 +64,7 @@ func TestPlayerStateLongPollMismatchedRevisionReturnsImmediately(t *testing.T) {
 
 func TestPlayerStateLongPollWaitsUntilRevisionChanges(t *testing.T) {
 	p := player.New()
-	h := New(p).Handler()
+	h := testHandler(New(p))
 	rev, _ := p.State()["playback_revision"].(uint64)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -112,7 +112,7 @@ func TestPlayerStateLongPollWaitsUntilRevisionChanges(t *testing.T) {
 
 func TestPlayerStateLongPollRespectsRequestCancel(t *testing.T) {
 	p := player.New()
-	h := New(p).Handler()
+	h := testHandler(New(p))
 	rev, _ := p.State()["playback_revision"].(uint64)
 
 	ctx, cancel := context.WithCancel(context.Background())
