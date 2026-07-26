@@ -156,8 +156,20 @@ func (c *Client) load() *cacheSnapshot {
 		// snapshot directly. Normalize it once before exposing it to reads.
 		if snap.channelIndex == nil || snap.programmesByTvgID == nil {
 			cacheMu.Lock()
-			snap = indexedSnapshot(snap)
-			caches[c.server.ID] = snap
+			// Re-read: another goroutine may have indexed (and published) this
+			// entry while we were unlocked between the RLock above and here.
+			if current := caches[c.server.ID]; current != nil && current.channelIndex != nil && current.programmesByTvgID != nil {
+				snap = current
+			} else {
+				// Index a copy rather than snap itself: snap may be the same
+				// pointer another goroutine is concurrently reading (it took
+				// the RLock branch above too), and mutating its
+				// channelIndex/programmesByTvgID fields in place would race
+				// with those unsynchronized reads.
+				cp := *snap
+				snap = indexedSnapshot(&cp)
+				caches[c.server.ID] = snap
+			}
 			cacheMu.Unlock()
 		}
 		return snap

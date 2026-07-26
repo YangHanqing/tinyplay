@@ -1029,6 +1029,12 @@ async function ensurePaired() {
 async function apiAcceptsUsUnpaired() {
   try {
     const r = await fetch('/api/settings', { cache: 'no-store' });
+    // The service worker answers an unreachable backend with a synthetic 503
+    // (see sw.js), which arrives as a resolved response rather than a throw, so
+    // the catch below never sees it. Without this check a first-time phone that
+    // loads the page while the core is down is told to pair instead of being
+    // told the computer is not answering.
+    if (r.status === 503 && r.headers.get('X-TVRemote-Offline') === '1') return true;
     return r.ok;
   } catch (_) {
     // Unreachable backend is a different problem, handled by the offline

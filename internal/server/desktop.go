@@ -239,12 +239,14 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
     overflow: hidden;
   }
   .aux-list:empty { display: none; }
+  /* Border between consecutive rows only — not border-bottom — so a trailing
+     .aux-hint (desktop-input restart note) does not sit under a stray line. */
   .aux-row {
     display: flex; align-items: center; gap: 10px;
-    padding: 11px 14px; border-bottom: 1px solid var(--panel-border-soft);
+    padding: 11px 14px;
     font-size: 13px;
   }
-  .aux-row:last-child { border-bottom: none; }
+  .aux-row + .aux-row { border-top: 1px solid var(--panel-border-soft); }
   .aux-row .aux-label { flex: 0 0 auto; font-weight: 600; color: var(--fg); }
   .aux-spacer { flex: 1 1 auto; min-width: 12px; }
   .aux-row .status-pill { flex-shrink: 0; }

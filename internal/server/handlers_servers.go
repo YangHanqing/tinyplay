@@ -312,6 +312,12 @@ func (s *Server) activateServer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.latestSwitch[body.SwitchSession] = body.SwitchSequence
+		// Cap so a client that sends a fresh switch_session per request cannot
+		// grow this map for the life of the process. Mirrors the Apple TV
+		// counterpart, ConfigStore.setActiveServer's latestServerSwitchSequence.
+		if len(s.latestSwitch) > 64 {
+			s.latestSwitch = map[string]int{body.SwitchSession: body.SwitchSequence}
+		}
 	}
 	s.switchMu.Unlock()
 	if !config.SetActiveServer(r.PathValue("id")) {

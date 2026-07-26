@@ -424,6 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 			self?.startPlaybackStandbyMonitor()
 			self?.startWebsiteShell()
 			self?.startDesktopInputShell()
+			self?.startPairingRequestWatcher()
 			self?.openMainWindow()
 			self?.scheduleAutomaticUpdateCheck()
 		}
@@ -488,6 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
 	private var websiteShell: WebsiteShellController?
 	private var desktopInputShell: DesktopInputShellController?
+	private var pairingWatcher: PairingRequestWatcher?
 
 	private func startWebsiteShell() {
 		websiteShell?.stop()
@@ -511,6 +513,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private func stopDesktopInputShell() {
 		desktopInputShell?.stop()
 		desktopInputShell = nil
+	}
+
+	private func startPairingRequestWatcher() {
+		pairingWatcher?.stop()
+		let watcher = PairingRequestWatcher(coreURL: coreURL) { [weak self] in
+			self?.openMainWindow()
+		}
+		pairingWatcher = watcher
+		watcher.start()
+	}
+
+	private func stopPairingRequestWatcher() {
+		pairingWatcher?.stop()
+		pairingWatcher = nil
 	}
 
 	// MARK: - Playback → full-screen standby restore
@@ -1177,6 +1193,73 @@ private func loopbackCoreURL(_ coreURL: String) -> String {
 // recover from a browser dialog or a desktop-level interruption. macOS requires
 // Accessibility consent for CGEvent posting; the phone UI stays disabled until
 // this controller reports that consent back to the Go core.
+/// Raises the intro window when a phone asks to pair by hand.
+///
+/// Same rule and same reasoning as cmd/tvremote/pairingwatch.go, which does this
+/// for the Windows shell — read that file's comment for why it exists. Kept as a
+/// separate copy because this shell is Swift; if you change one, change the other.
+final class PairingRequestWatcher {
+	private let coreURL: String
+	private let raise: () -> Void
+	private var timer: Timer?
+	/// Raise once per request. Someone who closes the window again has answered
+	/// in their own way, and a window that keeps returning to the front is worse
+	/// than a missed pairing.
+	private var lastRaisedNonce = ""
+	private var inFlight = false
+	private let session: URLSession = {
+		let cfg = URLSessionConfiguration.ephemeral
+		cfg.timeoutIntervalForRequest = 5
+		cfg.timeoutIntervalForResource = 8
+		return URLSession(configuration: cfg)
+	}()
+
+	init(coreURL: String, raise: @escaping () -> Void) {
+		self.coreURL = coreURL
+		self.raise = raise
+	}
+
+	/// Matches the intro window's own polling cadence, so watching costs no more
+	/// than leaving that window open.
+	func start() {
+		stop()
+		let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.check() }
+		// .common so the poll keeps running while a menu is tracking.
+		RunLoop.main.add(timer, forMode: .common)
+		self.timer = timer
+	}
+
+	func stop() {
+		timer?.invalidate()
+		timer = nil
+	}
+
+	private func check() {
+		guard !inFlight, let url = URL(string: coreURL + "/desktop/pairing") else { return }
+		inFlight = true
+		var request = URLRequest(url: url)
+		request.cachePolicy = .reloadIgnoringLocalCacheData
+		session.dataTask(with: request) { [weak self] data, response, _ in
+			DispatchQueue.main.async {
+				guard let self else { return }
+				self.inFlight = false
+				guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+					let data,
+					let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+				let nonce = (object["pending"] as? [String: Any])?["nonce"] as? String ?? ""
+				if nonce.isEmpty {
+					// Cleared, so the next request counts as a new event.
+					self.lastRaisedNonce = ""
+					return
+				}
+				guard nonce != self.lastRaisedNonce else { return }
+				self.lastRaisedNonce = nonce
+				self.raise()
+			}
+		}.resume()
+	}
+}
+
 final class DesktopInputShellController {
 	private let coreURL: String
 	private var lastCommandID: UInt64 = 0

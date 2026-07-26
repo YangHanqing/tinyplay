@@ -72,6 +72,13 @@ func (b *Broker) Enqueue(action string, dx, dy int, text string) (Command, bool)
 	defer b.mu.Unlock()
 	b.nextID++
 	cmd := Command{ID: b.nextID, Action: action, DX: dx, DY: dy, Text: text}
+	// Cap queue so a client that never calls WaitCommand (e.g. a dropped
+	// connection mid air-mouse session) cannot grow memory/scan cost forever.
+	// Mirrors internal/website/broker.go's enqueueLocked.
+	const maxPending = 64
+	if len(b.pending) >= maxPending {
+		b.pending = b.pending[len(b.pending)-maxPending/2:]
+	}
 	b.pending = append(b.pending, cmd)
 	for _, ch := range b.waiters {
 		select {

@@ -53,6 +53,12 @@ func runShell(localURL string, httpSrv *http.Server) {
 		// Runs separately from the website WebView: the temporary mouse is a
 		// computer-wide, foreground-window control, not a website-only feature.
 		startDesktopInputHost()
+		// A phone that typed the address by hand needs somebody to approve it on
+		// this computer, and the card lives in a window that is normally closed.
+		// See watchPairingRequests.
+		go watchPairingRequests(context.Background(), coreURL, func() {
+			openWindow(desktopURL())
+		})
 		systray.SetIcon(trayIcon)
 		systray.SetTitle("TinyPlay")
 		systray.SetTooltip(i18n.System("tooltip"))
