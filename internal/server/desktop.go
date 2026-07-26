@@ -531,6 +531,17 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
     border-radius: 14px; background: #fff; padding: 8px;
     box-shadow: 0 12px 40px rgba(0,0,0,.28);
   }
+  /* While QR pairing is locked the image carries no secret (see pairingURL),
+     so showing it here would hand out a code that cannot pair. The compact
+     view swaps in an explanation with a refresh button; standby has no
+     buttons, so it says where to go instead. */
+  .standby-pair-note {
+    display: none; margin: 0; max-width: 22ch;
+    font-size: 13px; line-height: 1.45; letter-spacing: .01em;
+    color: rgba(232,240,255,.72); text-shadow: 0 1px 8px rgba(0,0,0,.4);
+  }
+  .standby-qr-stage.is-locked .standby-qr { display: none; }
+  .standby-qr-stage.is-locked .standby-pair-note { display: block; }
   .photo-credit {
     margin: 0; font-size: 12px; letter-spacing: .02em;
     color: rgba(232,240,255,.48); text-shadow: 0 1px 8px rgba(0,0,0,.4);
@@ -666,7 +677,10 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
         </div>
       </div>
       <div class="standby-footer">
-        <img class="standby-qr" src="/desktop/qr.png" alt="QR" width="148" height="148">
+        <div class="standby-qr-stage" id="standby-qr-stage">
+          <img class="standby-qr" id="standby-qr" src="/desktop/qr.png" alt="QR" width="148" height="148">
+          <p class="standby-pair-note" id="standby-pair-note" role="alert"></p>
+        </div>
         <p class="photo-credit" id="photo-credit">%s</p>
       </div>
     </div>
@@ -930,6 +944,9 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
       /* —— Pairing: consent prompts and QR lockout —— */
       const qrStage = document.getElementById('qr-stage');
       const qrImage = document.getElementById('qr-image');
+      const standbyQRStage = document.getElementById('standby-qr-stage');
+      const standbyQR = document.getElementById('standby-qr');
+      const standbyNote = document.getElementById('standby-pair-note');
       const lockedCard = document.getElementById('pair-locked');
       const consentCard = document.getElementById('pair-consent');
       const codeEl = document.getElementById('pair-code');
@@ -940,8 +957,12 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
       let busy = false;
 
       const reloadQR = () => {
-        // Cache-bust so a refreshed secret shows up as a new image.
-        qrImage.src = '/desktop/qr.png?t=' + Date.now();
+        // Cache-bust so a refreshed secret shows up as a new image. Both copies
+        // have to move together: the standby screen shows the same code, and a
+        // stale one there is a code that silently fails to pair.
+        const src = '/desktop/qr.png?t=' + Date.now();
+        qrImage.src = src;
+        if (standbyQR) standbyQR.src = src;
       };
 
       const pairingPost = async (path, body) => {
@@ -975,6 +996,22 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
         // Only the QR plate swaps; keep the rest of the connect card stable.
         qrStage.classList.toggle('has-card', !!pending || locked);
         qrStage.setAttribute('aria-busy', (!!pending || locked) ? 'true' : 'false');
+
+        // Both pairing cards live in the compact tree, so standby would
+        // otherwise show a bare QR with no way to answer or understand it.
+        if (standbyQRStage) {
+          standbyQRStage.classList.toggle('is-locked', locked);
+          if (locked && standbyNote && !standbyNote.textContent) {
+            standbyNote.textContent = [
+              lockedCard.querySelector('.pair-card-title')?.textContent,
+              lockedCard.querySelector('.pair-card-hint')?.textContent,
+            ].filter(Boolean).join(' — ');
+          }
+        }
+        // A phone waiting on four digits needs a human, and the approve card
+        // cannot be seen from the idle screen. Leaving standby is the same
+        // decision the native shells already make when they raise the window.
+        if (pending && wantStandby) setStandby(false);
 
         const count = Number(state.device_count || 0);
         devicesRow.hidden = count === 0 || !unpairConfirm.hidden;

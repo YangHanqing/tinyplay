@@ -836,6 +836,12 @@ async function initDesktopInput() {
   }
 }
 function paintDesktopInputEntry() {
+  // Two doors into the same sheet: the Settings card, and the icon button that
+  // sits beside "select page element" on the website remote. Both appear only
+  // once a native shell has reported desktop input.
+  const mouseButton = document.getElementById('website-btn-mouse');
+  mouseButton?.classList.toggle('hidden', !_desktopInputAvailable);
+  document.getElementById('website-hint-row')?.classList.toggle('only-hint', !_desktopInputAvailable);
   const entry = document.getElementById('desktop-input-entry');
   if (!entry) return;
   entry.classList.toggle('hidden', !_desktopInputAvailable);
@@ -869,6 +875,8 @@ function paintDesktopInputSheet() {
   const enabled = !!state.ready && !permission;
   document.getElementById('desktop-input-permission')?.classList.toggle('hidden', !permission);
   document.getElementById('desktop-input-controls')?.classList.toggle('hidden', !enabled);
+  // Only the trackpad wants a full-height sheet; see the CSS note.
+  document.getElementById('desktop-input-sheet')?.classList.toggle('desktop-input-sheet-full', enabled);
   const help = document.getElementById('desktop-input-help');
   if (help) help.textContent = permission ? tr('desktopInputPermissionNeeded') : (enabled ? tr('desktopInputHelp') : tr('desktopInputConnecting'));
 }
@@ -904,16 +912,37 @@ function bindDesktopInputTouchpad() {
   const pad = document.getElementById('desktop-trackpad'); if (!pad) return;
   _desktopInputTouchBound = true;
   let previous = null, pending = { dx: 0, dy: 0 }, scheduled = false;
-  const flush = () => { scheduled = false; const delta = pending; pending = { dx: 0, dy: 0 }; if (delta.dx || delta.dy) desktopInputAction('move', delta); };
-  pad.addEventListener('pointerdown', (event) => { previous = { x: event.clientX, y: event.clientY }; pad.setPointerCapture?.(event.pointerId); });
+  // A tap is a click, the way a real trackpad behaves. Both thresholds have to
+  // hold: a finger never lands perfectly still, and a slow drag that happens to
+  // start and finish near the same spot is a gesture, not a click.
+  const TAP_MOVE_PX = 10, TAP_MS = 300;
+  let gesture = null;
+  const flush = () => { scheduled = false; const delta = pending; pending = { dx: 0, dy: 0 }; return (delta.dx || delta.dy) ? desktopInputAction('move', delta) : null; };
+  pad.addEventListener('pointerdown', (event) => {
+    previous = { x: event.clientX, y: event.clientY };
+    gesture = { x: event.clientX, y: event.clientY, at: Date.now(), moved: 0 };
+    pad.setPointerCapture?.(event.pointerId);
+  });
   pad.addEventListener('pointermove', (event) => {
     if (!previous) return;
     pending.dx = Math.max(-500, Math.min(500, pending.dx + Math.round((event.clientX - previous.x) * 1.35)));
     pending.dy = Math.max(-500, Math.min(500, pending.dy + Math.round((event.clientY - previous.y) * 1.35)));
     previous = { x: event.clientX, y: event.clientY };
+    if (gesture) gesture.moved = Math.max(gesture.moved, Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y));
     if (!scheduled) { scheduled = true; requestAnimationFrame(flush); }
   });
-  const end = () => { previous = null; if (scheduled) flush(); };
+  const end = async (event) => {
+    previous = null;
+    const moving = scheduled ? flush() : null;
+    const tap = gesture && gesture.moved <= TAP_MOVE_PX && Date.now() - gesture.at <= TAP_MS;
+    gesture = null;
+    if (!tap || event?.type !== 'pointerup') return;
+    // The cursor has to arrive before the button goes down: two POSTs in flight
+    // at once can be delivered in either order, and a click at the pre-move
+    // position is exactly what a tap must not do.
+    if (moving) await moving;
+    desktopInputAction('left_click');
+  };
   pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end);
 }
 
@@ -964,15 +993,23 @@ function writeTokenCookie(token) {
   } catch (_) {}
 }
 
-// The secret arrives in the fragment (never sent to a server, never logged) and
-// is removed from the address bar as soon as it has been read, so a shared or
-// bookmarked URL does not carry it around.
-function takePairingSecretFromURL() {
-  const hash = String(location.hash || '');
-  const match = hash.match(/[#&]p=([A-Za-z0-9]+)/);
-  if (!match) return '';
+// The secret arrives in the fragment (never sent to a server, never logged).
+//
+// Reading it must not consume it. Stripping the fragment before the exchange
+// succeeded burns the whole scan on any transient failure: the secret is gone
+// from the address bar, so reloading cannot retry it and the only route left is
+// the hand-typed consent flow — which is exactly the flow scanning exists to
+// avoid. Clearing is therefore a separate step, run once a token is in hand.
+function readPairingSecretFromURL() {
+  const match = String(location.hash || '').match(/[#&]p=([A-Za-z0-9]+)/);
+  return match ? match[1] : '';
+}
+
+// Called only after pairing succeeded, so a shared or bookmarked URL does not
+// carry the secret around.
+function clearPairingSecretFromURL() {
+  if (!location.hash) return;
   history.replaceState(null, '', location.pathname + location.search);
-  return match[1];
 }
 
 async function pairingFetch(path, body) {
@@ -997,22 +1034,28 @@ async function ensurePaired() {
   _deviceToken = readStoredToken();
   if (_deviceToken) writeTokenCookie(_deviceToken);
 
-  const secret = takePairingSecretFromURL();
+  const secret = readPairingSecretFromURL();
   if (secret) {
     // Re-scanning the QR from a browser that already holds a working token
-    // must not mint (and register) a second device — trust the existing
-    // token if the API still accepts it, and only spend the secret when it
-    // doesn't.
-    if (_deviceToken && await apiAcceptsUsUnpaired()) return true;
+    // must not mint (and register) a second device — trust the existing token,
+    // but only on a definite "accepted". An unreachable backend must not count
+    // as acceptance here: the secret is in hand and spending it costs nothing,
+    // whereas guessing wrong discards the scan and boots on a dead token.
+    if (_deviceToken && (await apiVerdict()) === 'accepted') {
+      clearPairingSecretFromURL();
+      return true;
+    }
     try {
       const { token } = await pairingFetch('/api/pair/qr', { secret });
       if (token) {
         storeDeviceToken(token);
+        clearPairingSecretFromURL();
         return true;
       }
     } catch (error) {
-      // A stale QR photo or a locked-out code lands here; the consent flow is
-      // still available, so explain and offer it rather than dead-ending.
+      // A stale QR photo or a locked-out code lands here. The secret is still
+      // in the address bar, so offer retrying the scan first and keep the
+      // consent flow as the fallback rather than the only way forward.
       openPairingScreen(error.message);
       return false;
     }
@@ -1020,26 +1063,33 @@ async function ensurePaired() {
   if (_deviceToken) return true;
   // No token yet. The backend exempts callers on the computer itself, so a
   // browser opened there must not be asked to pair with the machine it is
-  // already sitting on — ask the API before assuming a prompt is needed.
-  if (await apiAcceptsUsUnpaired()) return true;
+  // already sitting on — ask the API before assuming a prompt is needed. Only a
+  // definite refusal justifies the prompt; an unreachable core is the offline
+  // banner's problem.
+  if ((await apiVerdict()) !== 'unpaired') return true;
   openPairingScreen();
   return false;
 }
 
-async function apiAcceptsUsUnpaired() {
+// apiVerdict asks what the API thinks of this device right now, as three
+// distinct answers rather than a boolean. The two callers above want opposite
+// things from an inconclusive probe — one should still spend its secret, the
+// other should stay quiet — and collapsing "cannot tell" into either "yes" or
+// "no" silently makes the wrong choice for one of them.
+//
+//   accepted — the request went through (paired, or a loopback caller)
+//   unpaired — the backend answered and refused this device
+//   unknown  — nothing conclusive: unreachable core, or the service worker's
+//              synthetic 503 (see sw.js), which resolves rather than throwing
+async function apiVerdict() {
   try {
     const r = await fetch('/api/settings', { cache: 'no-store' });
-    // The service worker answers an unreachable backend with a synthetic 503
-    // (see sw.js), which arrives as a resolved response rather than a throw, so
-    // the catch below never sees it. Without this check a first-time phone that
-    // loads the page while the core is down is told to pair instead of being
-    // told the computer is not answering.
-    if (r.status === 503 && r.headers.get('X-TVRemote-Offline') === '1') return true;
-    return r.ok;
+    if (r.status === 503 && r.headers.get('X-TVRemote-Offline') === '1') return 'unknown';
+    if (r.ok) return 'accepted';
+    if (r.status === 401 && r.headers.get('X-TinyPlay-Pairing') === 'required') return 'unpaired';
+    return 'unknown';
   } catch (_) {
-    // Unreachable backend is a different problem, handled by the offline
-    // banner. Do not turn it into a pairing prompt.
-    return true;
+    return 'unknown';
   }
 }
 
@@ -1056,16 +1106,40 @@ function openPairingScreen(message = '') {
 const PAIRING_SHIELD_ICON = `<svg class="pairing-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>`;
 
 function paintPairingIntro(screen, message = '') {
+  // The secret survives a failed exchange now, so a scan that lost a race can
+  // simply be retried. Offer that first — it is the path with nothing to
+  // confirm — and let the consent flow stay as the fallback below it.
+  const canRetry = !!readPairingSecretFromURL();
   screen.innerHTML = `
     <div class="pairing-card" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
       ${PAIRING_SHIELD_ICON}
       <h2 id="pairing-title">${esc(tr('pairTitle'))}</h2>
       <p>${esc(tr('pairIntro'))}</p>
       ${message ? `<p class="pairing-error" role="alert">${esc(message)}</p>` : ''}
-      <button type="button" class="pairing-primary" id="pairing-start">${esc(tr('pairStart'))}</button>
+      ${canRetry ? `<button type="button" class="pairing-primary" id="pairing-retry">${esc(tr('pairRetry'))}</button>` : ''}
+      <button type="button" class="pairing-${canRetry ? 'secondary' : 'primary'}" id="pairing-start">${esc(tr('pairStart'))}</button>
       <p class="pairing-hint">${esc(tr('pairScanHint'))}</p>
     </div>`;
+  screen.querySelector('#pairing-retry')?.addEventListener('click', () => retryQRPairing(screen));
   screen.querySelector('#pairing-start').addEventListener('click', () => startConsentPairing(screen));
+}
+
+// Spends the secret still sitting in the address bar. A reload would do the
+// same thing, but on a phone that means finding the reload gesture on a page
+// whose only visible affordance said "start pairing".
+async function retryQRPairing(screen) {
+  const secret = readPairingSecretFromURL();
+  if (!secret) return paintPairingIntro(screen);
+  screen.innerHTML = `<div class="pairing-card"><div class="pairing-spinner" aria-hidden="true"></div><p>${esc(tr('pairRequesting'))}</p></div>`;
+  try {
+    const { token } = await pairingFetch('/api/pair/qr', { secret });
+    if (!token) throw new Error(tr('pairAgainNeeded'));
+    storeDeviceToken(token);
+    clearPairingSecretFromURL();
+    finishPairing(screen);
+  } catch (error) {
+    paintPairingIntro(screen, error.message);
+  }
 }
 
 async function startConsentPairing(screen) {

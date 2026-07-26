@@ -212,6 +212,14 @@ func openWindow(url string) {
 			Width:  900,
 			Height: 576,
 			Center: true,
+			// Resource ID of the icon embedded by rsrc (see
+			// .github/workflows/*.yml: `rsrc -ico assets/icon.ico`, no
+			// -manifest, so the icon group is always the first and only
+			// resource, ID 1). Left at the zero value, go-webview2 tries to
+			// load OEM resource 32512 from our own module instead of a system
+			// module, which doesn't exist here — the window silently falls
+			// back to the generic Windows icon instead of the TinyPlay logo.
+			IconId: 1,
 		},
 	})
 	if w == nil {

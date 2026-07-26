@@ -244,6 +244,10 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 			Width:  1280,
 			Height: 720,
 			Center: true,
+			// See the matching comment in shell_windows.go: without this the
+			// window falls back to the generic Windows icon instead of the
+			// brand logo (rsrc always assigns the icon group resource ID 1).
+			IconId: 1,
 		},
 	})
 	if w == nil {

@@ -2,7 +2,7 @@
 // cache-first, so a stale app.js would keep an installed PWA on code that
 // predates device pairing — it would call /api/ with no token and have no way to
 // handle the 401.
-const CACHE_NAME = 'tinyplay-shell-v20260725-pairing-v1';
+const CACHE_NAME = 'tinyplay-shell-v20260726-pairing-v2';
 const SHELL_ASSETS = [
   '/',
   '/index.html',

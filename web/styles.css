@@ -850,9 +850,18 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .website-row-2 { grid-template-columns: repeat(2, 1fr); }
 .website-row-3 { grid-template-columns: repeat(3, 1fr); }
 .website-row-4 { grid-template-columns: repeat(4, 1fr); }
+/* Four columns on a narrow phone: the default 12px side padding is what pushes
+   a four-character label ("进入全屏") onto a second line. */
+.website-row-4 .website-btn { padding: 0 6px; }
 .website-search-more-row { grid-template-columns: 1fr 3fr; }
 .website-search-more-row.only-search { grid-template-columns: 1fr; }
 .website-search-more-row.only-more { grid-template-columns: 1fr; }
+/* Temporary mouse (icon only) + select page element. `only-hint` is set when the
+   backend offers no desktop input, so the text button keeps the full width. */
+.website-hint-row { grid-template-columns: 1fr 3fr; }
+.website-hint-row.only-hint { grid-template-columns: 1fr; }
+.website-btn-mouse { padding: 0 8px; }
+.website-btn-mouse svg { width: 22px; height: 22px; flex: 0 0 auto; }
 /* Play/pause sits center and reads wider than the two seek buttons. */
 .website-row-play { grid-template-columns: 1fr 1.5fr 1fr; }
 .website-row .website-btn {
@@ -1147,15 +1156,30 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .desktop-input-entry-copy small { color:rgba(255,255,255,.48); font-size:12px; line-height:1.35; }
 .desktop-input-entry-arrow { color:rgba(255,255,255,.36); font-size:26px; }
 .desktop-input-sheet { max-width:560px; max-height:min(92dvh,860px); }
+/* The trackpad is the point of this sheet, so it takes every pixel the buttons
+   below it do not need. A `1fr` row can only do that against a definite height:
+   with the sheet auto-sizing to its content there is no leftover space to give
+   away. Set while the controls are on screen (JS), not permanently — the
+   permission state is three short buttons and must not stretch to full height. */
+.desktop-input-sheet.desktop-input-sheet-full { height:min(92dvh,860px); }
 .desktop-input-help { margin:4px 0 0; color:rgba(255,255,255,.52); font-size:12px; line-height:1.45; }
 .desktop-input-permission { display:grid; gap:10px; padding:0 14px 14px; flex-shrink:0; }
 .desktop-input-permission p { margin:0 0 2px; color:rgba(255,255,255,.65); font-size:13px; line-height:1.45; }
 .desktop-input-controls {
   flex:1; min-height:0; overflow-y:auto;
-  display:grid; gap:10px; grid-template-rows:minmax(220px,1fr) repeat(4,auto);
+  display:grid; gap:10px; grid-template-rows:minmax(140px,1fr) repeat(4,auto);
   padding:0 14px calc(14px + env(safe-area-inset-bottom,0px));
 }
-.desktop-trackpad { min-height:220px; display:grid; place-items:center; border:1px solid rgba(255,255,255,.16); border-radius:18px; background:linear-gradient(145deg,rgba(255,255,255,.09),rgba(255,255,255,.035)); color:rgba(255,255,255,.46); font-size:13px; touch-action:none; user-select:none; }
+/* min-height is the short-screen floor (the sheet scrolls below it), not the
+   target size — the `1fr` row above is what makes the pad fill the sheet. */
+.desktop-trackpad { min-height:140px; display:grid; place-items:end center; padding:0 14px 14px; border:1px solid rgba(255,255,255,.16); border-radius:18px; background:linear-gradient(145deg,rgba(255,255,255,.09),rgba(255,255,255,.035)); color:rgba(255,255,255,.46); font-size:13px; touch-action:none; }
+/* The pad swallows drags, so nothing inside it may become a selection target: a
+   long press on the hint would otherwise raise iOS's selection handles and the
+   callout menu in the middle of a pointer gesture. `pointer-events:none` keeps
+   the hint from being a target at all, so a tap that lands on the text is still
+   a tap on the pad. */
+.desktop-trackpad, .desktop-trackpad-hint { -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+.desktop-trackpad-hint { pointer-events:none; }
 .desktop-input-buttons { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .desktop-input-buttons-3 { grid-template-columns:repeat(3,1fr); }
 .desktop-input-buttons button,.desktop-input-arrow-keys button,.desktop-input-type-row button { min-height:44px; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:rgba(255,255,255,.075); color:rgba(255,255,255,.9); font:700 14px inherit; }

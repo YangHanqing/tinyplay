@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -213,7 +214,7 @@ func Load() *Config {
 	defer mu.Unlock()
 	cfg, migrated := loadLocked()
 	if migrated {
-		_ = saveLocked(cfg)
+		logSaveFailure(saveLocked(cfg))
 	}
 	return cfg
 }
@@ -373,11 +374,23 @@ func saveLocked(cfg *Config) error {
 }
 
 // patch loads, mutates via fn, and saves atomically under the lock.
+//
+// A failed write cannot be surfaced to the caller without changing every
+// accessor's signature, but it must not be invisible either: a config.json that
+// silently refuses to persist looks like the app forgetting things at random —
+// a paired phone whose token never lands is rejected on its very next request,
+// which reads as pairing being broken rather than as a disk problem.
 func patch(fn func(*Config)) *Config {
 	mu.Lock()
 	defer mu.Unlock()
 	cfg, _ := loadLocked() // always saved below regardless of migration
 	fn(cfg)
-	_ = saveLocked(cfg)
+	logSaveFailure(saveLocked(cfg))
 	return cfg
+}
+
+func logSaveFailure(err error) {
+	if err != nil {
+		log.Printf("config: could not write %s: %v", ConfigFile(), err)
+	}
 }

@@ -294,3 +294,41 @@ func TestDesktopDLNAStatusReflectsLiveReceiverState(t *testing.T) {
 		t.Fatalf("disabled receiver should not appear on the desktop page: %s", got)
 	}
 }
+
+// The standby (HTPC idle) screen shows the same QR code as the compact view,
+// but both pairing cards live in the compact tree — so standby used to display
+// a bare QR with no way to understand or answer it. Two concrete failures came
+// out of that: while QR pairing is locked, pairingURL() drops the secret and
+// the standby code silently pairs nothing; and a phone waiting on four digits
+// had no visible approve card. Lock the three mechanics that fix it.
+func TestDesktopStandbyQRFollowsPairingState(t *testing.T) {
+	s := &Server{port: 1980}
+	req := httptest.NewRequest(http.MethodGet, "/desktop", nil)
+	rec := httptest.NewRecorder()
+	s.desktopPage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		// The standby QR is wrapped so a locked state can swap it for prose.
+		`id="standby-qr-stage"`,
+		`id="standby-qr"`,
+		`id="standby-pair-note"`,
+		`.standby-qr-stage.is-locked .standby-qr { display: none; }`,
+		// A refreshed secret has to reach both copies of the image.
+		`if (standbyQR) standbyQR.src = src;`,
+		// A consent request needs a human, and the card is compact-only.
+		`if (pending && wantStandby) setStandby(false);`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered desktop page is missing %q", want)
+		}
+	}
+	// The page is one large Sprintf; a mismatched placeholder would otherwise
+	// only show up as garbled chrome in a window nobody has open.
+	if strings.Contains(body, "%!s(") || strings.Contains(body, "%!(EXTRA") {
+		t.Error("Sprintf placeholder mismatch in the desktop page")
+	}
+}

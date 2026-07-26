@@ -245,13 +245,11 @@
             <!-- 页面控制 -->
             <div class="website-section">
               <div class="website-section-title" data-i18n="websitePageSection">Page</div>
-              <div class="website-row website-row-2">
+              <div class="website-row website-row-4">
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteFullscreenEnter"
                         onclick="websiteAction('fullscreen_enter')">Enter Fullscreen</button>
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteFullscreenExit"
                         onclick="websiteAction('fullscreen_exit')">Exit Fullscreen</button>
-              </div>
-              <div class="website-row website-row-2">
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteScrollUp" onclick="websiteAction('scroll_up')">Scroll Up</button>
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteScrollDown" onclick="websiteAction('scroll_down')">Scroll Down</button>
               </div>
@@ -272,7 +270,21 @@
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteForward" onclick="websiteAction('forward')">Forward</button>
                 <button type="button" class="website-btn website-control-action" data-i18n="websiteRefresh" onclick="websiteAction('refresh')">Refresh</button>
               </div>
-              <div class="website-row website-row-1">
+              <!-- The temporary mouse rides along here because it is the way out
+                   when a page control does not apply: it drives the computer's
+                   own pointer, so unlike its neighbours it is NOT a
+                   website-control-action and stays live for an unrecognized
+                   site. Hidden entirely (row collapses to one column) when no
+                   native shell offers desktop input. -->
+              <div class="website-row website-hint-row only-hint" id="website-hint-row">
+                <button type="button" class="website-btn website-btn-mouse hidden" id="website-btn-mouse"
+                        onclick="openDesktopInputSheet()" aria-label="Temporary mouse">
+                  <!-- Lucide Mouse icon (MIT); keep Web icons local and inline. -->
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect width="18" height="20" x="3" y="2" rx="9"/>
+                    <path d="M12 6v4"/>
+                  </svg>
+                </button>
                 <button type="button" class="website-btn website-btn-accent website-control-action" id="website-btn-hint-enter"
                         data-i18n="websiteClickPage" onclick="openWebsiteHintSheet()">Select page element</button>
               </div>
@@ -688,7 +700,7 @@
     <!-- Global temporary desktop-control sheet. It deliberately lives outside
          the Website workspace: this controls the whole set-top-box desktop. -->
     <div class="sheet-backdrop hidden" id="desktop-input-backdrop" onclick="onDesktopInputBackdropClick(event)">
-      <section class="video-sheet desktop-input-sheet sheet-tall" role="dialog" aria-modal="true" aria-labelledby="desktop-input-title">
+      <section class="video-sheet desktop-input-sheet sheet-tall" id="desktop-input-sheet" role="dialog" aria-modal="true" aria-labelledby="desktop-input-title">
         <div class="sheet-handle"></div>
         <div class="sheet-header">
           <h3 id="desktop-input-title" data-i18n="desktopInputTitle">Temporary mouse</h3>
@@ -702,7 +714,7 @@
         </div>
         <div class="desktop-input-controls hidden" id="desktop-input-controls">
           <div class="desktop-trackpad" id="desktop-trackpad" aria-label="Touchpad">
-            <span data-i18n="desktopInputTrackpadHint">Slide to move the mouse</span>
+            <span class="desktop-trackpad-hint" data-i18n="desktopInputTrackpadHint">Slide to move the mouse, tap to click</span>
           </div>
           <div class="desktop-input-buttons">
             <button type="button" onclick="desktopInputAction('left_click')" data-i18n="desktopInputLeftClick">Left click</button>
