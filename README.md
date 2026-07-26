@@ -1,12 +1,12 @@
 # TinyPlay
 
-> Turn an idle Windows mini PC, laptop, or Mac mini into a living-room media player — controlled from your phone.
+> Turn an idle Windows mini PC, laptop, or Mac mini into a lightweight living-room media player — controlled from your phone.
 
 [中文说明](README.zh-CN.md) · **[View the TinyPlay website](https://yanghanqing.github.io/tinyplay/)**
 
-TinyPlay is designed for idle Windows mini PCs, laptops, and Mac minis. Connect one to
-your television and it becomes a living-room media player driven by mpv, with your phone
-serving as the remote control.
+TinyPlay is a lightweight living-room media player for idle Windows mini PCs, laptops,
+and Mac minis. Connect one to your television and it becomes an mpv-powered playback
+device, with your phone serving as the remote control.
 
 These machines vastly outperform set-top boxes, yet a keyboard and mouse feel awkward
 in front of a TV and a traditional remote is no good at typing searches or scrubbing
@@ -15,25 +15,28 @@ through a timeline.
 TinyPlay lets each device do what it does best: **let hardware handle playback, let the
 phone handle interaction.**
 
-Common hardware already has more than enough video-decode capability:
-
-- Intel 8th-gen iGPUs (UHD 630) hardware-decode 4K HEVC and VP9 10-bit; AV1 support
-  arrives on 11th-gen.
-- Apple M-series chips hardware-decode 4K HEVC 10-bit across the board, with AV1 on M3.
-- A dedicated playback engine generally handles HDR and Dolby Vision more reliably than
-  a TV's built-in player, though actual results depend on the source material, system
-  settings, and display device.
+<p align="center">
+  <img src="docs/public/hero.jpg" alt="A phone controlling content played by a computer connected to a TV" width="760">
+</p>
 
 ## Features
 
 - **Phone browser remote** — scan the QR code and you're ready; no app to install
+- **Web browser** — browse common streaming sites such as YouTube and Netflix on the TV without reaching for a keyboard or mouse
 - **Media servers** — connect to Emby, Jellyfin, or Plex for poster walls, episode browsing, search, and resume playback
 - **File browsing** — navigate SMB, WebDAV shares, or local directories and play files directly
 - **Live TV** — integrate IPTV channel lists with favorites and recent-view history
 - **DLNA casting** — cast streams from compatible apps on your local network; the phone remote remains available for playback control
 - **Multi-server** — mount multiple media sources simultaneously and switch between them at will
-- **Cross-platform** — available for Windows and macOS, including Apple Silicon and Intel
+- **Cross-platform** — available for Windows and macOS, including Apple Silicon and Intel; a separate [Apple TV edition](https://apps.apple.com/app/tinyplay-video-remote/id6788041703) is available too
 - **mpv under the hood** — MKV, HDR, Dolby Vision, TrueHD, PGS subtitles and more
+
+## See it in action
+
+<p align="center">
+  <img src="docs/public/screenshot-library.png" alt="TinyPlay phone library" height="320">
+  <img src="docs/public/screenshot-online-video.png" alt="A phone controlling web video on the computer" height="320">
+</p>
 
 ## Download
 
@@ -54,6 +57,21 @@ The phone and the computer running TinyPlay must be on the same local network.
 
 For screenshots, feature walkthroughs, and the living-room player buying guide,
 visit the **[TinyPlay introduction page](https://yanghanqing.github.io/tinyplay/)**.
+
+## TinyPlay and Kodi
+
+Kodi suits people who want to turn a TV into a deeply customisable media centre. TinyPlay
+suits people who want less setup, a phone remote, and a quick way to play video.
+
+**TinyPlay is likely a better fit if you:**
+
+- 💡 Want to get set up quickly, without a long configuration session
+- 📱 Prefer controlling playback from your phone and do not want another app to install
+- 🎬 Mainly want to play video rather than maintain a complex media-library taxonomy
+- 🔧 Value a lightweight, ready-to-use setup
+
+In short: **Kodi = an all-purpose media centre; TinyPlay = a lightweight computer TV box
+with a phone remote.**
 
 ## License
 

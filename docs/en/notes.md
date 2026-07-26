@@ -1,50 +1,13 @@
 # Notes and safety
 
-## Screensaver
+## Screensaver and TV care
 
-TinyPlay's simple screensaver helps avoid leaving a TV on the same still frame for a long time.
+TinyPlay's screensaver has one job: help avoid leaving a TV on the same still frame for a long time and reduce burn-in risk.
 
-After a video has been paused for more than five minutes, the screensaver appears. It darkens the current video's poster and shows the time, date, and title. The background image changes roughly once a minute.
+Also enable Windows' or macOS's own screensaver and set the computer not to sleep automatically; use the remote to turn the TV screen on and off in day-to-day use. macOS's built-in screensavers are already a great fit for a living room.
 
-Resume playback, press a remote-control button, or stop playback to dismiss the screensaver.
+## Device pairing and safety
 
-This is not a full system screensaver and is not designed for power saving or privacy. Its main purpose is to avoid leaving one static image on the TV.
+To stop arbitrary devices on the local network from controlling the computer, a new phone pairs once: scan the QR code in TinyPlay's window, or confirm the request on the computer after entering the address by hand.
 
-## Device pairing
-
-Every phone pairs with the computer once before it can control anything. Until it
-does, TinyPlay answers nothing.
-
-Scanning the QR code in the TinyPlay window is the normal way in — the code
-carries a long random secret, so pairing completes with nothing to confirm. If
-you type the computer's address into a browser instead, TinyPlay asks for
-permission on the computer: your phone shows four digits, the TinyPlay window
-asks whether to allow that same number, and you choose Allow.
-
-If some device repeatedly submits a wrong pairing code, the QR code switches
-itself off and the window explains why. **Show a new QR code** in that window
-turns it back on with a fresh secret. Already-paired phones keep working
-throughout — a stranger cannot lock you out of your own remote.
-
-A paired phone stays paired. Add the remote to your Home Screen so the pairing
-survives: otherwise iOS Safari clears website storage after about a week without
-a visit, and the phone has to scan again. **Unpair all** in the TinyPlay window
-revokes every phone at once and replaces the QR code, which is what to use if a
-phone is lost or was lent out.
-
-## Safety reminder
-
-TinyPlay is designed for use on a trusted home LAN. Pairing stops other devices
-on the same network from controlling the computer, but the connection is plain
-HTTP and there is no account system, so it is not hardened for direct internet
-access.
-
-Do not expose TinyPlay's phone control page to the public internet through port forwarding, a reverse proxy, or a network tunnel. Keep your phone and the computer running TinyPlay on a network you trust.
-
-This warning concerns the control page served by TinyPlay on your computer, not the TinyPlay product website hosted on GitHub Pages.
-
-## Boundaries for web services
-
-Web control operates websites already opened on the user's own Windows or macOS computer. Sign in yourself and follow each service's rules.
-
-TinyPlay does not provide a VPN, proxy, regional-access bypass, ad or membership bypass, device-limit bypass, downloading, recording, rebroadcasting, or stream URL export. If a service changes its website, membership, or device rules, those rules apply.
+TinyPlay's control page is for local-network devices only; the current build does not enable internet remote control. Do not use port forwarding, a reverse proxy, or a tunnel to bypass that boundary. Keep your phone and TinyPlay computer on a network you trust.

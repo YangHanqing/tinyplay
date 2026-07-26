@@ -2,6 +2,13 @@
 
 If you want a poster wall, episode browsing, search, and resume history, set up a media server first and then connect TinyPlay to it. The server organises the content; TinyPlay lets you choose titles on your phone and plays them on the computer connected to the TV.
 
+## Beginner installation guides
+
+If you do not have a server yet, choose either Jellyfin or Plex, get one test folder working, then connect TinyPlay:
+
+- **Jellyfin**: start with the official [installation guide](https://jellyfin.org/docs/general/installation/) and [setup-wizard walkthrough](https://jellyfin.org/docs/general/post-install/setup-wizard/).
+- **Plex**: follow Plex's official [Quick-Start & Step-by-Step Guide](https://support.plex.tv/articles/200264746-quick-start-step-by-step-guides/).
+
 ## What is a poster wall?
 
 A poster wall is a media library laid out like shelves of covers: each film or series has a poster tile, often with a title, year, or rating underneath. Tap a poster to open details, pick an episode, or continue watching.

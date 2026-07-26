@@ -2,6 +2,13 @@
 
 如果你希望拥有海报墙、剧集选集、搜索和续播体验，先搭建一个媒体服务器，再让 TinyPlay 连接它会更合适。服务器整理内容，TinyPlay 让你用手机选片、由接电视的电脑播放。
 
+## 新手安装指南
+
+还没有服务器时，先任选 Jellyfin 或 Plex，把一个测试文件夹跑通，再连接 TinyPlay 即可：
+
+- **Jellyfin**：可先看 [Jellyfin 新手安装与使用（中文）](https://post.smzdm.com/p/a07omlr8/)；具体平台的最新安装方式以 [Jellyfin 官方安装说明](https://jellyfin.org/docs/general/installation/) 为准。
+- **Plex**：群晖用户可看 [Plex 媒体中心入门（中文）](https://zhongce.sina.com.cn/iframe/article/view/180619/)；其他平台建议按 [Plex 官方快速入门](https://support.plex.tv/articles/200264746-quick-start-step-by-step-guides/) 操作。
+
 ## 什么是海报墙
 
 海报墙，可以理解成把电影和电视剧的封面，像书店货架一样整齐排布在界面里：每一部作品有一张海报，下面通常还有片名、年份或评分等信息。点击海报，即可进入详情、选集或继续观看。
