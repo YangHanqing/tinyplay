@@ -47,6 +47,38 @@ func TestFindUpdateUsesAPIAndComparesSemver(t *testing.T) {
 	}
 }
 
+func TestFindUpdateFallsBackToGiteeBeforeGitHubReleasePage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/github/latest":
+			http.Error(w, "GitHub unavailable", http.StatusBadGateway)
+		case "/gitee/latest":
+			_, _ = w.Write([]byte(`{"tag_name":"v1.0.0","prerelease":false}`))
+		case "/github/releases/latest":
+			t.Fatal("GitHub release-page fallback should not run after a successful Gitee response")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	release, err := findUpdate(context.Background(), "0.9.9", server.Client(), updateEndpoints{
+		API:       server.URL + "/github/latest",
+		Page:      server.URL + "/github/releases/latest",
+		GiteeAPI:  server.URL + "/gitee/latest",
+		GiteePage: server.URL + "/gitee/releases/tag",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil || release.Version != "v1.0.0" {
+		t.Fatalf("release = %#v", release)
+	}
+	if want := server.URL + "/gitee/releases/tag/v1.0.0"; release.PageURL != want {
+		t.Fatalf("PageURL = %q, want %q", release.PageURL, want)
+	}
+}
+
 func TestReleaseTagFromURLAcceptsOnlyTinyPlayGitHubRelease(t *testing.T) {
 	valid, _ := url.Parse("https://github.com/YangHanqing/tinyplay/releases/tag/v1.0.0")
 	if tag, ok := releaseTagFromURL(valid); !ok || tag != "v1.0.0" {

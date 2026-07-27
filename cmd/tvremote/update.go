@@ -22,6 +22,8 @@ import (
 const (
 	tinyPlayReleaseAPI  = "https://api.github.com/repos/YangHanqing/tinyplay/releases/latest"
 	tinyPlayReleasePage = "https://github.com/YangHanqing/tinyplay/releases/latest"
+	tinyPlayGiteeAPI    = "https://gitee.com/api/v5/repos/hanqingyang/tinyplay/releases/latest"
+	tinyPlayGiteePage   = "https://gitee.com/hanqingyang/tinyplay/releases/tag"
 	updateUserAgent     = "TinyPlay update checker"
 )
 
@@ -31,18 +33,23 @@ type updateRelease struct {
 }
 
 type updateEndpoints struct {
-	API  string
-	Page string
+	API       string
+	Page      string
+	GiteeAPI  string
+	GiteePage string
 }
 
 // findTinyPlayUpdate returns the latest stable release only when it is newer
-// than the running build. A GitHub API failure falls back to the documented
-// /releases/latest redirect, which is useful on networks where api.github.com
-// and github.com do not fail in the same way.
+// than the running build. If GitHub's API is unavailable, Gitee provides a
+// public, unauthenticated fallback for users whose network cannot reach
+// GitHub. The GitHub releases-page redirect remains a final fallback because
+// api.github.com and github.com do not always fail in the same way.
 func findTinyPlayUpdate(ctx context.Context, currentVersion string) (*updateRelease, error) {
 	return findUpdate(ctx, currentVersion, newUpdateHTTPClient(), updateEndpoints{
-		API:  tinyPlayReleaseAPI,
-		Page: tinyPlayReleasePage,
+		API:       tinyPlayReleaseAPI,
+		Page:      tinyPlayReleasePage,
+		GiteeAPI:  tinyPlayGiteeAPI,
+		GiteePage: tinyPlayGiteePage,
 	})
 }
 
@@ -56,10 +63,15 @@ func findUpdate(ctx context.Context, currentVersion string, client *http.Client,
 
 	release, err := fetchLatestRelease(ctx, client, endpoints.API)
 	if err != nil {
-		release, err = fetchLatestReleaseRedirect(ctx, client, endpoints.Page)
-	}
-	if err != nil {
-		return nil, err
+		githubAPIError := err
+		release, err = fetchLatestGiteeRelease(ctx, client, endpoints.GiteeAPI, endpoints.GiteePage)
+		if err != nil {
+			giteeError := err
+			release, err = fetchLatestReleaseRedirect(ctx, client, endpoints.Page)
+			if err != nil {
+				return nil, fmt.Errorf("GitHub API check failed: %v; Gitee fallback failed: %v; GitHub release-page fallback failed: %w", githubAPIError, giteeError, err)
+			}
+		}
 	}
 	latest, ok := parseUpdateVersion(release.Version)
 	if !ok {
@@ -72,6 +84,46 @@ func findUpdate(ctx context.Context, currentVersion string, client *http.Client,
 		release.PageURL = endpoints.Page
 	}
 	return release, nil
+}
+
+// fetchLatestGiteeRelease mirrors the small stable-release contract used for
+// GitHub, but Gitee's API does not populate html_url. The destination page is
+// therefore constructed from the trusted, compile-time repository URL and the
+// API-provided tag. This checker only opens that page; it never downloads or
+// installs an update automatically.
+func fetchLatestGiteeRelease(ctx context.Context, client *http.Client, endpoint, pageBase string) (*updateRelease, error) {
+	if endpoint == "" || pageBase == "" {
+		return nil, errors.New("Gitee update fallback is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", updateUserAgent)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Gitee latest release returned HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		TagName    string `json:"tag_name"`
+		Prerelease bool   `json:"prerelease"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return nil, err
+	}
+	if payload.Prerelease || payload.TagName == "" {
+		return nil, errors.New("Gitee latest release is not a published stable release")
+	}
+	return &updateRelease{
+		Version: payload.TagName,
+		PageURL: strings.TrimRight(pageBase, "/") + "/" + url.PathEscape(payload.TagName),
+	}, nil
 }
 
 func newUpdateHTTPClient() *http.Client {

@@ -279,6 +279,18 @@ jobs:
           auth_header="Authorization: Bearer ${GITEE_TOKEN}"
           response=$(mktemp)
 
+          # Gitee sits across an international network from GitHub-hosted
+          # runners. Bound every request, abort a stalled upload, and let curl
+          # use its exponential retry backoff for transient connection errors.
+          gitee_curl() {
+            curl --silent --show-error \
+              --connect-timeout 15 \
+              --max-time 180 \
+              --speed-limit 1024 --speed-time 45 \
+              --retry 4 --retry-all-errors --retry-max-time 420 \
+              "$@"
+          }
+
           # Reuse the published GitHub title, notes, and prerelease flag so the
           # two release pages describe the same version.
           gh release view "$TAG_NAME" \
@@ -297,7 +309,7 @@ jobs:
             release_body="Release assets for TinyPlay $TAG_NAME."
           fi
 
-          status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+          status=$(gitee_curl --output "$response" --write-out '%{http_code}' \
             --header "$auth_header" \
             "$api/releases/tags/$TAG_NAME")
 
@@ -316,7 +328,7 @@ jobs:
                 cat "$response" >&2
                 exit 1
               fi
-              update_status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+              update_status=$(gitee_curl --output "$response" --write-out '%{http_code}' \
                 --request PATCH \
                 --header "$auth_header" \
                 --data-urlencode "tag_name=$TAG_NAME" \
@@ -333,7 +345,7 @@ jobs:
             404)
               # A release may be created before its tag exists on Gitee.  Use
               # the target repository's default branch to create that tag.
-              repo_status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+              repo_status=$(gitee_curl --output "$response" --write-out '%{http_code}' \
                 --header "$auth_header" \
                 "$api")
               if [ "$repo_status" != 200 ]; then
@@ -342,7 +354,7 @@ jobs:
                 exit 1
               fi
               target_branch=$(jq -r '.default_branch // "master"' "$response")
-              create_status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+              create_status=$(gitee_curl --output "$response" --write-out '%{http_code}' \
                 --request POST \
                 --header "$auth_header" \
                 --data-urlencode "tag_name=$TAG_NAME" \
@@ -373,12 +385,12 @@ jobs:
           # Replace the attachment set, not merely files with matching names:
           # a retagged release must not leave stale unsigned/signed artifacts
           # behind on Gitee when GitHub's asset set changes.
-          curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors \
+          gitee_curl --fail-with-body \
             --header "$auth_header" \
             "$api/releases/$release_id/attach_files" > "$response"
           while IFS= read -r asset_id; do
             [ -n "$asset_id" ] || continue
-            curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors \
+            gitee_curl --fail-with-body \
               --request DELETE \
               --header "$auth_header" \
               "$api/releases/$release_id/attach_files/$asset_id" > /dev/null
@@ -386,9 +398,14 @@ jobs:
 
           while IFS= read -r -d '' asset; do
             echo "Uploading $(basename "$asset") to Gitee Release $TAG_NAME"
-            curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors \
+            if ! gitee_curl --fail-with-body \
               --request POST \
               --header "$auth_header" \
               --form "file=@${asset}" \
-              "$api/releases/$release_id/attach_files" > /dev/null
+              "$api/releases/$release_id/attach_files" > "$response"; then
+              echo "Unable to upload $(basename "$asset") after retries" >&2
+              cat "$response" >&2
+              exit 1
+            fi
+            echo "Uploaded $(basename "$asset") successfully."
           done < <(find release-assets -maxdepth 1 -type f -print0)
