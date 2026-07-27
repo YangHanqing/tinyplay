@@ -290,6 +290,12 @@ jobs:
           if [ -z "$release_name" ]; then
             release_name="$TAG_NAME"
           fi
+          # Gitee rejects a Release with an empty description, while GitHub
+          # permits one. Keep the two releases compatible when a GitHub tag
+          # was created without notes.
+          if [ -z "$release_body" ]; then
+            release_body="Release assets for TinyPlay $TAG_NAME."
+          fi
 
           status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
             --header "$auth_header" \
@@ -313,6 +319,7 @@ jobs:
               update_status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
                 --request PATCH \
                 --header "$auth_header" \
+                --data-urlencode "tag_name=$TAG_NAME" \
                 --data-urlencode "name=$release_name" \
                 --data-urlencode "body=$release_body" \
                 --data-urlencode "prerelease=$prerelease" \
