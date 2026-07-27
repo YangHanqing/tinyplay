@@ -2,12 +2,52 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
+  english-commit-messages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require ASCII-only commit messages
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            commit_range="$PR_BASE_SHA..$PR_HEAD_SHA"
+          elif [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            commit_range="$PUSH_AFTER"
+          else
+            commit_range="$PUSH_BEFORE..$PUSH_AFTER"
+          fi
+
+          invalid=0
+          while IFS= read -r commit; do
+            message=$(git show -s --format=%B "$commit")
+            # English-only means printable ASCII plus normal line breaks in the
+            # subject and body. This permits conventional-commit punctuation but
+            # rejects Chinese and every other non-ASCII character.
+            if printf '%s' "$message" | LC_ALL=C grep -Pq '[^\x00-\x7F]'; then
+              echo "::error::Commit ${commit} has non-ASCII text. Public commit messages must be English-only."
+              invalid=1
+            fi
+          done < <(git rev-list "$commit_range")
+
+          exit "$invalid"
+
   go-test:
     strategy:
       matrix:
