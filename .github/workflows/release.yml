@@ -295,6 +295,13 @@ jobs:
             --header "$auth_header" \
             "$api/releases/tags/$TAG_NAME")
 
+          # Gitee represents a missing tag release as HTTP 200 with a JSON null
+          # body (rather than a 404) for some repositories. Normalize that
+          # response so it follows the create path below.
+          if [ "$status" = "200" ] && jq -e '. == null' "$response" > /dev/null; then
+            status=404
+          fi
+
           case "$status" in
             200)
               release_id=$(jq -r '.id' "$response")
