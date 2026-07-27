@@ -310,17 +310,18 @@ jobs:
                 cat "$response" >&2
                 exit 1
               fi
-              payload=$(jq -n \
-                --arg name "$release_name" \
-                --arg body "$release_body" \
-                --argjson prerelease "$prerelease" \
-                '{name: $name, body: $body, prerelease: $prerelease}')
-              curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors \
+              update_status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
                 --request PATCH \
                 --header "$auth_header" \
-                --header 'Content-Type: application/json' \
-                --data "$payload" \
-                "$api/releases/$release_id" > /dev/null
+                --data-urlencode "name=$release_name" \
+                --data-urlencode "body=$release_body" \
+                --data-urlencode "prerelease=$prerelease" \
+                "$api/releases/$release_id")
+              if [[ "$update_status" != 2* ]]; then
+                echo "Unable to update Gitee Release $TAG_NAME (HTTP $update_status)" >&2
+                cat "$response" >&2
+                exit 1
+              fi
               ;;
             404)
               # A release may be created before its tag exists on Gitee.  Use
@@ -334,19 +335,20 @@ jobs:
                 exit 1
               fi
               target_branch=$(jq -r '.default_branch // "master"' "$response")
-              payload=$(jq -n \
-                --arg tag "$TAG_NAME" \
-                --arg name "$release_name" \
-                --arg body "$release_body" \
-                --arg target "$target_branch" \
-                --argjson prerelease "$prerelease" \
-                '{tag_name: $tag, name: $name, body: $body, target_commitish: $target, prerelease: $prerelease}')
-              curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors \
+              create_status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
                 --request POST \
                 --header "$auth_header" \
-                --header 'Content-Type: application/json' \
-                --data "$payload" \
-                "$api/releases" > "$response"
+                --data-urlencode "tag_name=$TAG_NAME" \
+                --data-urlencode "name=$release_name" \
+                --data-urlencode "body=$release_body" \
+                --data-urlencode "target_commitish=$target_branch" \
+                --data-urlencode "prerelease=$prerelease" \
+                "$api/releases")
+              if [[ "$create_status" != 2* ]]; then
+                echo "Unable to create Gitee Release $TAG_NAME (HTTP $create_status)" >&2
+                cat "$response" >&2
+                exit 1
+              fi
               release_id=$(jq -r '.id' "$response")
               if [ -z "$release_id" ] || [ "$release_id" = "null" ]; then
                 echo "Gitee created a release without an id" >&2
