@@ -1,5 +1,5 @@
-// Package provider dispatches the shared desktop API to Emby, Jellyfin, Plex,
-// or a file source without coupling those clients to the HTTP server/player.
+// Package provider dispatches the shared desktop API to media and file sources
+// without coupling their clients to the HTTP server or playback layer.
 package provider
 
 import (

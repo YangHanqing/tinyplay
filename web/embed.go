@@ -1,5 +1,5 @@
-// Package web embeds TinyPlay's phone-facing frontend so the core binary is
-// self-contained.
+// Package web embeds TinyPlay's phone-facing frontend, keeping the core binary
+// self-contained for desktop distribution.
 package web
 
 import (
