@@ -412,7 +412,21 @@
 
   var STORAGE_KEY = 'tinyplay_site_lang';
 
+  // A valid ?lang= value is intentional for shareable links, so it wins over
+  // a previous toggle choice stored by the browser.
+  function languageFromURL() {
+    var value = null;
+    try { value = new URLSearchParams(window.location.search).get('lang'); } catch (e) {}
+    if (!value) return null;
+    value = value.toLowerCase();
+    if (value === 'en' || value === 'en-us') return EN;
+    if (value === 'zh' || value === 'zh-cn') return ZH;
+    return null;
+  }
+
   function detectLang() {
+    var requested = languageFromURL();
+    if (requested) return requested;
     var stored = null;
     try { stored = localStorage.getItem(STORAGE_KEY); } catch (e) {}
     if (stored === ZH || stored === EN) return stored;
