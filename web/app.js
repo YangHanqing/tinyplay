@@ -1224,17 +1224,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   await refreshServerSwitcher();
   await restorePlayerContext();
   _setViewMode('home');
+  // Local player/settings state is the control plane. Resolve it before a slow
+  // media source can occupy the browser's same-origin request slots.
+  await Promise.allSettled([
+    _fetchAndUpdateProps(),
+    loadSettings(),
+    fetchSystemVolume(),
+  ]);
   startPropPolling();
-  _fetchAndUpdateProps();
   // Settle which surface owns the device before painting the library. Running
   // this after loadActiveSource() meant a page restored into the website
   // workspace still did a full library load — skeletons, libraries, resume,
   // posters — whose result paintWorkspace() then immediately hid.
   await initWebsiteRemote();
   await loadActiveSource();
-  await loadSettings();
   await initDesktopInput();
-  fetchSystemVolume();
 });
 
 function registerPWA() {
@@ -1535,10 +1539,85 @@ function isCurrentLibraryLoad(load) {
   return load && load.generation === _libraryGeneration && load.serverId === _activeServerId && !load.signal.aborted;
 }
 
+// Keep browser connection capacity available for player state and commands.
+// The Go server supports keep-alive, but a request waiting on a remote media
+// server still occupies one same-origin browser slot until it completes.
+//
+// The budget is shared by every browse request that can block upstream — the
+// poster wall (libraryApi), the file browser and the IPTV lists (gatedApi) —
+// because they all contend for the same per-origin pool. Gating only one of
+// them would just move the exhaustion somewhere else.
+const LIBRARY_API_CONCURRENCY = 3;
+let _libraryApiInFlight = 0;
+const _libraryApiQueue = [];
+
+function _drainLibraryApiQueue() {
+  while (_libraryApiInFlight < LIBRARY_API_CONCURRENCY && _libraryApiQueue.length) {
+    const entry = _libraryApiQueue.shift();
+    if (entry.cancelled || entry.signal?.aborted) {
+      entry.reject(new DOMException('Superseded library load', 'AbortError'));
+      continue;
+    }
+    entry.started = true;
+    _libraryApiInFlight++;
+    Promise.resolve()
+      .then(entry.run)
+      .then(entry.resolve, entry.reject)
+      .finally(() => {
+        _libraryApiInFlight--;
+        entry.signal?.removeEventListener('abort', entry.onAbort);
+        _drainLibraryApiQueue();
+      });
+  }
+}
+
+function _withLibraryApiSlot(run, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Superseded library load', 'AbortError'));
+      return;
+    }
+    const entry = {
+      run,
+      signal,
+      resolve,
+      reject,
+      started: false,
+      cancelled: false,
+      onAbort: null,
+    };
+    entry.onAbort = () => {
+      if (entry.started || entry.cancelled) return;
+      entry.cancelled = true;
+      const index = _libraryApiQueue.indexOf(entry);
+      if (index >= 0) _libraryApiQueue.splice(index, 1);
+      reject(new DOMException('Superseded library load', 'AbortError'));
+    };
+    signal?.addEventListener('abort', entry.onAbort, { once: true });
+    _libraryApiQueue.push(entry);
+    _drainLibraryApiQueue();
+  });
+}
+
 function libraryApi(method, path, body, load = currentLibraryLoad()) {
+  // Don't spend a slot on a load the UI has already moved past: a queued
+  // request for the previous source would otherwise hold capacity that the
+  // current one needs.
+  if (!isCurrentLibraryLoad(load)) {
+    return Promise.reject(new DOMException('Superseded library load', 'AbortError'));
+  }
   let bound = path;
   if (load.serverId) bound += `${bound.includes('?') ? '&' : '?'}server_id=${encodeURIComponent(load.serverId)}`;
-  return api(method, bound, body, { signal: load.signal });
+  return _withLibraryApiSlot(
+    () => api(method, bound, body, { signal: load.signal }),
+    load.signal
+  );
+}
+
+// Browse requests that build their own URL (file browser, IPTV) but contend for
+// the same connection pool as the poster wall. Same budget, same cancellation.
+function gatedApi(method, path, body, opts = {}) {
+  return _withLibraryApiSlot(() => api(method, path, body, opts), opts.signal);
 }
 
 function libraryImageUrl(itemId, maxHeight, type = '', serverId = _activeServerId) {
@@ -3972,7 +4051,7 @@ function posterFrameHtml(itemId, title, className = 'poster-frame', maxHeight = 
         <span>${tr('noPoster')}</span>
       </div>
       <img src="${libraryImageUrl(itemId, maxHeight, '', serverId)}"
-           alt="${esc(title)}" loading="lazy" onload="showPoster(this)" onerror="retryPoster(this)">
+           alt="${esc(title)}" loading="lazy" fetchpriority="low" onload="showPoster(this)" onerror="retryPoster(this)">
       ${topOverlay}${bottomOverlay}
     </div>`;
 }
@@ -4019,7 +4098,7 @@ function resumeCardHtml(item, serverId = _activeServerId) {
   return `
     <div class="resume-card" onclick="openVideoSheet('${jsStr(item.Id)}', '${jsStr(serverId)}')">
       <div class="resume-poster-frame" id="rf-${item.Id}">
-        <img src="${imgSrc}" alt="${esc(title)}" loading="lazy" onload="showPoster(this)" onerror="retryPoster(this)">
+        <img src="${imgSrc}" alt="${esc(title)}" loading="lazy" fetchpriority="low" onload="showPoster(this)" onerror="retryPoster(this)">
         <div class="resume-gradient"></div>
         <button class="resume-play-btn" onclick="event.stopPropagation();openVideoSheet('${jsStr(item.Id)}', '${jsStr(serverId)}')" aria-label="${tr('play')}">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.14v13.72L19 12 8 5.14z"/></svg>
@@ -5815,7 +5894,7 @@ async function loadIPTVSourceStatus(libraryLoad = currentLibraryLoad()) {
   if (!el) return;
   el.innerHTML = `<span>${esc(tr('iptvRefreshing'))}</span>`;
   try {
-    const s = await api('GET', sourcePath('/api/iptv/summary', libraryLoad.serverId), undefined, { signal: libraryLoad.signal });
+    const s = await gatedApi('GET', sourcePath('/api/iptv/summary', libraryLoad.serverId), undefined, { signal: libraryLoad.signal });
     if (!isCurrentLibraryLoad(libraryLoad)) return;
     renderIPTVSourceStatus(s);
   } catch (e) {
@@ -5863,7 +5942,7 @@ async function refreshIPTVSource() {
 
 async function loadIPTVCategories(libraryLoad = currentLibraryLoad()) {
   try {
-    const categories = await api('GET', sourcePath('/api/iptv/categories', libraryLoad.serverId), undefined, { signal: libraryLoad.signal });
+    const categories = await gatedApi('GET', sourcePath('/api/iptv/categories', libraryLoad.serverId), undefined, { signal: libraryLoad.signal });
     if (!isCurrentLibraryLoad(libraryLoad)) return;
     renderIPTVCategoryPills(categories);
   } catch (e) {
@@ -5906,7 +5985,7 @@ async function loadIPTVChannels(libraryLoad = currentLibraryLoad()) {
     if (libraryLoad.serverId) params.set('server_id', libraryLoad.serverId);
     if (_iptvCategory && _iptvCategory !== 'all') params.set('category', _iptvCategory);
     if (_iptvSearch) params.set('search', _iptvSearch);
-    const channels = await api('GET', `/api/iptv/channels?${params.toString()}`, undefined, { signal: libraryLoad.signal });
+    const channels = await gatedApi('GET', `/api/iptv/channels?${params.toString()}`, undefined, { signal: libraryLoad.signal });
     if (requestId !== _iptvLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     _iptvChannels = channels;
     renderIPTVChannelList(channels);
@@ -6047,7 +6126,7 @@ async function loadDir(path = '', libraryLoad = currentLibraryLoad()) {
   try {
     const qs = new URLSearchParams({ path });
     if (libraryLoad.serverId) qs.set('server_id', libraryLoad.serverId);
-    const data = await api('GET', `/api/files/list?${qs}`, undefined, { signal: libraryLoad.signal });
+    const data = await gatedApi('GET', `/api/files/list?${qs}`, undefined, { signal: libraryLoad.signal });
     if (requestId !== _fileLoadSeq || !isCurrentLibraryLoad(libraryLoad)) return;
     renderFileBrowser(data);
   } catch (e) {
