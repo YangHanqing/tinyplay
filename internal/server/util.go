@@ -2,6 +2,8 @@ package server
 
 import (
 	"io/fs"
+	"net/url"
+	"strconv"
 
 	"tvremote/internal/player"
 )
@@ -19,6 +21,15 @@ func playOpts(serverID, itemID, seriesID, seasonID, title, seriesTitle, episodeL
 		StartSeconds:  startSeconds,
 		MediaSourceID: mediaSourceID,
 	}
+}
+
+// fileStreamPlayURL builds the loopback streaming-proxy URL used for every
+// file-source play (manual handler and host autoplay). Kept in one place so
+// the two call sites cannot drift on query shape or host/port.
+func (s *Server) fileStreamPlayURL(serverID, path string) string {
+	return "http://127.0.0.1:" + strconv.Itoa(s.port) +
+		"/api/files/stream?server_id=" + url.QueryEscape(serverID) +
+		"&path=" + url.QueryEscape(path)
 }
 
 func readWeb(s *Server, name string) ([]byte, error) {

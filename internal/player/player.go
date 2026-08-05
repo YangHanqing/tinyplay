@@ -77,10 +77,9 @@ type PlayContext struct {
 	SourceType string `json:"source_type"`
 	// PlaybackCompleted is set only when mpv exited on a natural EOF (which
 	// also covers a seek past the end — mpv reports both the same way) for a
-	// series episode. It survives the ctx-clearing that otherwise happens on
-	// process exit so the host can coordinate next-episode autoplay and so a
-	// connected UI can still reconstruct what just finished; a fresh Play()
-	// or an explicit Stop() both reset it to false.
+	// media-server series episode or a folder-based file source. It survives
+	// the ctx-clearing that otherwise happens on process exit so the host can
+	// coordinate autoplay; a fresh Play() or explicit Stop() resets it.
 	PlaybackCompleted bool `json:"playback_completed"`
 }
 
@@ -161,9 +160,10 @@ type Player struct {
 	// Optional; must be quick and non-blocking for the caller path.
 	BeforePlay func()
 	// NaturalEOFReporter fires after a natural end-file (including seek past
-	// EOF) for a series episode. The server owns autoplay policy, resolution,
-	// and the grace-period timer so a disconnected browser cannot block the
-	// transition. Non-series, live, error, and explicit-stop exits never fire.
+	// EOF) for a non-live item with playback context. The server owns source
+	// eligibility, resolution, and the grace-period timer so a disconnected
+	// browser cannot block the transition. Live, error, and explicit-stop exits
+	// never fire.
 	NaturalEOFReporter func(context PlayContext, revision uint64)
 	// LifecycleReporter is an optional, edge-triggered transport observer for
 	// consumers such as the DLNA MediaRenderer GENA path. It is called from
@@ -1189,21 +1189,8 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 					p.fireLifecycle(LifecycleStopped, "process_exit", p.durationSeconds())
 				}
 				p.mu.Lock()
-				completedSeries := naturalEOF && finished.SeriesID != "" && finished.ItemID != ""
-				var completed PlayContext
-				if completedSeries {
-					completed = PlayContext{
-						ServerID:          finished.ServerID,
-						ItemID:            finished.ItemID,
-						SeriesID:          finished.SeriesID,
-						SeasonID:          finished.SeasonID,
-						Title:             finished.Title,
-						SeriesTitle:       finished.SeriesTitle,
-						EpisodeLabel:      finished.EpisodeLabel,
-						PosterItemID:      finished.PosterItemID,
-						SourceType:        finished.SourceType,
-						PlaybackCompleted: true,
-					}
+				completed, autoplayEOF := completedAutoplayContext(finished, naturalEOF)
+				if autoplayEOF {
 					p.ctx = completed
 				} else {
 					p.ctx = PlayContext{}
@@ -1215,7 +1202,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 				p.propsMu.Lock()
 				p.liveProps = map[string]any{}
 				p.propsMu.Unlock()
-				if completedSeries && reporter != nil {
+				if autoplayEOF && reporter != nil {
 					reporter(completed, completedRevision)
 				}
 			}
@@ -1245,6 +1232,19 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	p.bumpPlaybackRevisionLocked()
 	p.mu.Unlock()
 	return result
+}
+
+// completedAutoplayContext is the production EOF hand-off gate. File-source
+// plays intentionally have no SeriesID: their ItemID is the relative path used
+// by the folder resolver. The player reports every completed non-live item and
+// leaves source-specific eligibility to the server, which already owns that
+// policy (and rejects movies, IPTV, DLNA, or disabled autoplay as appropriate).
+func completedAutoplayContext(finished PlayContext, naturalEOF bool) (PlayContext, bool) {
+	if !naturalEOF || finished.ItemID == "" || finished.IsLive {
+		return PlayContext{}, false
+	}
+	finished.PlaybackCompleted = true
+	return finished, true
 }
 
 // startingSafetyTimeout bounds how long the desktop "connecting/buffering"
@@ -1337,8 +1337,8 @@ func (p *Player) Stop() map[string]any {
 	return result
 }
 
-// ClearCompletedPlayback drops a post-EOF completed series context (used when
-// the host cancels pending autoplay without starting a new title).
+// ClearCompletedPlayback drops a post-EOF autoplay context (used when the host
+// cancels pending autoplay without starting a new title).
 func (p *Player) ClearCompletedPlayback() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

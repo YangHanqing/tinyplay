@@ -834,7 +834,7 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 		t.Fatal("bilibili/iqiyi SITE_KEYS host tests missing")
 	}
 	// Version gate must re-inject after controller upgrades.
-	if !contains(js, "__version >= 24") {
+	if !contains(js, "__version >= 25") {
 		t.Fatal("controller version gate missing")
 	}
 	// Site profiles keep their shortcut contracts even though speed is gone
@@ -873,11 +873,19 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 		"seek_backward: 'ArrowLeft'",
 		"fullscreen: 'f'",
 		"bilibili_like: 'q'",
-		"bilibili_triple: 'r'",
+		// 一键三连 is a hold of the *like* key; Bilibili has no separate triple
+		// key, and a short hold of it is an ordinary like. Both halves are pinned:
+		// the shared key, and the oracle that refuses to call that like a triple.
+		"bilibili_triple: 'q'",
 		"siteMoreActions",
 		"bilibiliDanmakuState",
 		"triggerBilibiliShortcut",
+		"triggerBilibiliTriple",
+		"bilibiliTripleChangedCount",
+		"changed >= 2",
 		"dispatchKeyHold",
+		"repeatOptions",
+		"copy.repeat = true",
 		"capabilities",
 		"after !== before",
 	}) {

@@ -191,6 +191,10 @@ var messages = map[string]map[string]string{
 		"mpv_custom_active_tip":            "当前使用自定义 mpv：%s",
 		"mpv_default_tip":                  "当前使用内嵌 mpv 播放器",
 		"mpv_custom_stale_tip":             "自定义路径已失效，正在使用内嵌 mpv",
+		"autostart_menu":                   "开机时启动 TinyPlay",
+		"autostart_menu_tip":               "登录系统后自动在后台运行",
+		"autostart_failed_title":           "无法修改开机自启动",
+		"autostart_failed_body":            "开机自启动设置未能保存：\n\n%s",
 	},
 	EN: {
 		"default_server_name":              "Emby Server",
@@ -344,6 +348,10 @@ var messages = map[string]map[string]string{
 		"mpv_custom_active_tip":            "Using custom mpv: %s",
 		"mpv_default_tip":                  "Using the bundled mpv player",
 		"mpv_custom_stale_tip":             "Custom path is no longer valid; using the bundled mpv",
+		"autostart_menu":                   "Start TinyPlay at Login",
+		"autostart_menu_tip":               "Run in the background after you sign in",
+		"autostart_failed_title":           "Couldn't Change Startup Setting",
+		"autostart_failed_body":            "The startup setting couldn't be saved:\n\n%s",
 	},
 	"zh-TW": {
 		"default_server_name":              "Emby 伺服器",
@@ -497,6 +505,10 @@ var messages = map[string]map[string]string{
 		"mpv_custom_active_tip":            "目前使用自訂 mpv：%s",
 		"mpv_default_tip":                  "目前使用內嵌 mpv 播放器",
 		"mpv_custom_stale_tip":             "自訂路徑已失效，正在使用內嵌 mpv",
+		"autostart_menu":                   "開機時啟動 TinyPlay",
+		"autostart_menu_tip":               "登入系統後自動在背景執行",
+		"autostart_failed_title":           "無法修改開機自動啟動",
+		"autostart_failed_body":            "開機自動啟動設定未能儲存：\n\n%s",
 	},
 	"ja": {
 		"default_server_name":              "Emby サーバー",
@@ -650,6 +662,10 @@ var messages = map[string]map[string]string{
 		"mpv_custom_active_tip":            "カスタム mpv を使用中: %s",
 		"mpv_default_tip":                  "内蔵の mpv プレーヤーを使用中",
 		"mpv_custom_stale_tip":             "カスタムパスが無効になったため、内蔵の mpv を使用しています",
+		"autostart_menu":                   "ログイン時に TinyPlay を起動",
+		"autostart_menu_tip":               "サインイン後にバックグラウンドで自動的に実行",
+		"autostart_failed_title":           "起動設定を変更できません",
+		"autostart_failed_body":            "起動設定を保存できませんでした：\n\n%s",
 	},
 	"ko": {
 		"default_server_name":              "Emby 서버",
@@ -803,6 +819,10 @@ var messages = map[string]map[string]string{
 		"mpv_custom_active_tip":            "사용자 지정 mpv 사용 중: %s",
 		"mpv_default_tip":                  "내장 mpv 플레이어 사용 중",
 		"mpv_custom_stale_tip":             "사용자 지정 경로가 더 이상 유효하지 않아 내장 mpv를 사용합니다",
+		"autostart_menu":                   "로그인 시 TinyPlay 시작",
+		"autostart_menu_tip":               "로그인 후 백그라운드에서 자동 실행",
+		"autostart_failed_title":           "시작 설정을 변경할 수 없음",
+		"autostart_failed_body":            "시작 설정을 저장하지 못했습니다:\n\n%s",
 	},
 	"es": {
 		"default_server_name":              "Servidor Emby",
@@ -956,6 +976,10 @@ var messages = map[string]map[string]string{
 		"mpv_custom_active_tip":            "Usando mpv personalizado: %s",
 		"mpv_default_tip":                  "Usando el reproductor mpv integrado",
 		"mpv_custom_stale_tip":             "La ruta personalizada ya no es válida; usando el mpv integrado",
+		"autostart_menu":                   "Iniciar TinyPlay al iniciar sesión",
+		"autostart_menu_tip":               "Ejecutar en segundo plano tras iniciar sesión",
+		"autostart_failed_title":           "No se pudo cambiar el inicio automático",
+		"autostart_failed_body":            "No se pudo guardar la configuración de inicio:\n\n%s",
 	},
 	"fr": {
 		"default_server_name":              "Serveur Emby",
@@ -1109,6 +1133,10 @@ var messages = map[string]map[string]string{
 		"mpv_custom_active_tip":            "Utilisation de mpv personnalisé : %s",
 		"mpv_default_tip":                  "Utilisation du lecteur mpv intégré",
 		"mpv_custom_stale_tip":             "Le chemin personnalisé n'est plus valide ; utilisation du mpv intégré",
+		"autostart_menu":                   "Lancer TinyPlay à l'ouverture de session",
+		"autostart_menu_tip":               "S'exécuter en arrière-plan après la connexion",
+		"autostart_failed_title":           "Impossible de modifier le démarrage automatique",
+		"autostart_failed_body":            "Le réglage de démarrage n'a pas pu être enregistré :\n\n%s",
 	},
 	"de": {
 		"default_server_name":              "Emby-Server",
@@ -1262,6 +1290,10 @@ var messages = map[string]map[string]string{
 		"mpv_custom_active_tip":            "Verwendet benutzerdefiniertes mpv: %s",
 		"mpv_default_tip":                  "Verwendet den integrierten mpv-Player",
 		"mpv_custom_stale_tip":             "Der benutzerdefinierte Pfad ist ungültig geworden; verwendet integriertes mpv",
+		"autostart_menu":                   "TinyPlay bei der Anmeldung starten",
+		"autostart_menu_tip":               "Nach der Anmeldung im Hintergrund ausführen",
+		"autostart_failed_title":           "Autostart konnte nicht geändert werden",
+		"autostart_failed_body":            "Die Autostart-Einstellung konnte nicht gespeichert werden:\n\n%s",
 	},
 }
 

@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 
@@ -135,7 +134,9 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, r, err)
 			return
 		}
-		playURL := "http://127.0.0.1:" + strconv.Itoa(s.port) + "/api/files/stream?server_id=" + url.QueryEscape(playbackServer.ID) + "&path=" + url.QueryEscape(req.Path)
+		// Shared with host autoplay so stream URL / resume / SourceType cannot
+		// drift between a manual play and a next-file transition.
+		playURL := s.fileStreamPlayURL(playbackServer.ID, req.Path)
 		opts := playOpts(playbackServer.ID, req.Path, "", "", req.Title, "", "", "", config.LocalPlaybackPosition(playbackServer.ID, req.Path), "")
 		opts.SourceType = config.NormalizeServerType(playbackServer.Type)
 		if !s.isCurrentPlay(generation) {

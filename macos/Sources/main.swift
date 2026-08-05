@@ -17,6 +17,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import ServiceManagement
 import WebKit
 import Network
 
@@ -71,6 +72,17 @@ private func L(_ key: String) -> String {
 		"mpv_custom_active_tip": ("当前使用自定义 mpv：%@", "Using custom mpv: %@"),
 		"mpv_default_tip": ("当前使用内嵌 mpv 播放器", "Using the bundled mpv player"),
 		"mpv_custom_stale_tip": ("自定义路径已失效，正在使用内嵌 mpv", "Custom path is no longer valid; using the bundled mpv"),
+		"autostart_menu": ("开机时启动 TinyPlay", "Start TinyPlay at Login"),
+		"autostart_menu_tip": ("登录系统后自动在后台运行", "Run in the background after you sign in"),
+		"autostart_failed_title": ("无法修改开机自启动", "Couldn't Change Startup Setting"),
+		"autostart_failed_body": ("开机自启动设置未能保存：\n\n%@", "The startup setting couldn't be saved:\n\n%@"),
+		"autostart_approval_title": ("请在系统设置中允许", "Approval Needed"),
+		"autostart_approval_body": (
+			"macOS 需要你确认后才能让 TinyPlay 开机启动。请在“系统设置 → 通用 → 登录项”中打开 TinyPlay。",
+			"macOS needs your approval before TinyPlay can start at login. Turn TinyPlay on in System Settings → General → Login Items."
+		),
+		"open_login_items": ("打开登录项设置", "Open Login Items"),
+		"cancel": ("取消", "Cancel"),
 		"quit": ("\u{9000}\u{51FA}", "Quit"),
 		"language": ("\u{8BED}\u{8A00}", "Language"),
 		"automatic": ("\u{81EA}\u{52A8}", "Automatic"),
@@ -402,6 +414,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	/// so it reflects whichever mpv is actually in effect right now, including
 	/// the "custom path went stale, fell back to bundled" state.
 	private var mpvAdvancedMenuItem: NSMenuItem?
+	/// "高级设置 → 开机时启动 TinyPlay" checkbox. Its state is read back from
+	/// SMAppService (never cached in UserDefaults) each time the menu opens, so
+	/// a login item the user removed in System Settings shows as off here too.
+	private var autostartMenuItem: NSMenuItem?
 	private static let fullscreenMessageName = "tinyplaySetFullscreen"
 	private static let checkForUpdatesMessageName = "tinyplayCheckForUpdates"
 	private static let showAboutMessageName = "tinyplayShowAbout"
@@ -430,6 +446,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private let toastPanel = ToastPanelController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+		// Must be read here: the launch Apple event is only the "current" one
+		// while the app is still starting up.
+		let openedAtLogin = Self.launchedAtLogin()
         primeLocalNetworkAccess()
         startCore()
         setupMenuBar()
@@ -439,10 +458,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 			self?.startWebsiteShell()
 			self?.startDesktopInputShell()
 			self?.startPairingRequestWatcher()
-			self?.openMainWindow()
+			// …but not when the system started us at login: the point of
+			// start-at-login is to be ready in the menu bar, not to put a
+			// window in front of whatever the person actually signed in to do.
+			if !openedAtLogin { self?.openMainWindow() }
 			self?.scheduleAutomaticUpdateCheck()
 		}
     }
+
+	/// Whether macOS launched TinyPlay as a login item rather than the user
+	/// opening it. The launch Apple event carries this; there is no property to
+	/// ask for it later, which is why the answer is captured at startup.
+	private static func launchedAtLogin() -> Bool {
+		guard let event = NSAppleEventManager.shared().currentAppleEvent,
+			event.eventID == AEEventID(kAEOpenApplication),
+			let property = event.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))
+		else { return false }
+		return property.enumCodeValue == AEKeyword(keyAELaunchedAsLogInItem)
+	}
 
     // MARK: - Local network permission
 
@@ -760,6 +793,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		let advancedMenu = NSMenu()
 		advancedMenu.addItem(NSMenuItem(title: L("mpv_custom_menu"), action: #selector(chooseCustomMPV), keyEquivalent: ""))
 		advancedMenu.addItem(NSMenuItem(title: L("mpv_restore_default_menu"), action: #selector(restoreDefaultMPV), keyEquivalent: ""))
+		advancedMenu.addItem(.separator())
+		let autostart = NSMenuItem(title: L("autostart_menu"), action: #selector(toggleAutostart), keyEquivalent: "")
+		autostart.toolTip = L("autostart_menu_tip")
+		advancedMenu.addItem(autostart)
+		autostartMenuItem = autostart
+		refreshAutostartCheckbox()
 		advanced.submenu = advancedMenu
 		menu.addItem(advanced)
 		mpvAdvancedMenuItem = advanced
@@ -782,7 +821,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	func menuWillOpen(_ menu: NSMenu) {
 		if menu === statusItem.menu {
 			reloadMPVStatus()
+			refreshAutostartCheckbox()
 		}
+	}
+
+	// MARK: - Start at login
+
+	/// Whether TinyPlay is registered as a login item right now. `.enabled` is
+	/// the only state that actually starts the app: `.requiresApproval` means
+	/// the registration exists but macOS is waiting for the user to allow it in
+	/// System Settings, and showing that as a checked box would promise
+	/// something that will not happen.
+	private var autostartEnabled: Bool {
+		SMAppService.mainApp.status == .enabled
+	}
+
+	private func refreshAutostartCheckbox() {
+		autostartMenuItem?.state = autostartEnabled ? .on : .off
+	}
+
+	/// SMAppService registers *this app bundle*, which is why start-at-login is
+	/// menu-bar-shell work rather than something the Go core could do — the
+	/// core runs as this bundle's child process and has no bundle of its own.
+	@objc private func toggleAutostart() {
+		let service = SMAppService.mainApp
+		do {
+			if autostartEnabled {
+				try service.unregister()
+			} else {
+				try service.register()
+				// A first registration on macOS 13+ commonly lands in
+				// `.requiresApproval`: the item is filed but switched off until
+				// the person allows it. Say so and offer the exact settings
+				// pane, instead of leaving a checkbox that silently stays off.
+				if service.status == .requiresApproval {
+					showAutostartApprovalAlert()
+				}
+			}
+		} catch {
+			showAutostartFailureAlert(error.localizedDescription)
+		}
+		refreshAutostartCheckbox()
+	}
+
+	private func showAutostartApprovalAlert() {
+		let alert = NSAlert()
+		alert.messageText = L("autostart_approval_title")
+		alert.informativeText = L("autostart_approval_body")
+		alert.addButton(withTitle: L("open_login_items"))
+		alert.addButton(withTitle: L("cancel"))
+		NSApp.activate(ignoringOtherApps: true)
+		if alert.runModal() == .alertFirstButtonReturn {
+			SMAppService.openSystemSettingsLoginItems()
+		}
+	}
+
+	private func showAutostartFailureAlert(_ detail: String) {
+		let alert = NSAlert()
+		alert.alertStyle = .warning
+		alert.messageText = L("autostart_failed_title")
+		alert.informativeText = String(format: L("autostart_failed_body"), detail)
+		alert.addButton(withTitle: L("ok"))
+		NSApp.activate(ignoringOtherApps: true)
+		alert.runModal()
 	}
 
 	/// Some Macs have a web browser — not a mail app — registered as the

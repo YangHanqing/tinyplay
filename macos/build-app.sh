@@ -33,7 +33,7 @@ echo "==> compiling Swift shell (target $ARCH)"
 mkdir -p "$HERE/../build"
 SHELL_BIN="$HERE/../build/TVRemoteShell"
 swiftc -O -target "$ARCH-apple-macosx13.0" -o "$SHELL_BIN" "$HERE/Sources/main.swift" \
-    -framework AppKit -framework WebKit
+    -framework AppKit -framework WebKit -framework ServiceManagement
 
 echo "==> assembling bundle: $OUT"
 rm -rf "$OUT"

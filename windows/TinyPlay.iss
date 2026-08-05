@@ -49,6 +49,13 @@ Source: "..\dist\TinyPlay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\mpv\*"; DestDir: "{app}\mpv"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
+[Registry]
+; The tray's "Advanced Settings -> Start TinyPlay at Login" writes this value at
+; runtime (see internal/autostart); ValueType: none means setup neither creates
+; nor changes it. It is declared only so the uninstaller removes it — otherwise
+; uninstalling would leave a startup entry pointing at a deleted executable.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "TinyPlay"; ValueType: none; Flags: uninsdeletevalue
+
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\TinyPlay.exe"; WorkingDir: "{app}"; IconFilename: "{app}\TinyPlay.exe"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\TinyPlay.exe"; WorkingDir: "{app}"; IconFilename: "{app}\TinyPlay.exe"

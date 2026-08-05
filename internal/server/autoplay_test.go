@@ -1,6 +1,8 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -262,6 +264,133 @@ func TestAutoplaySkipsNonSeriesAndDisabled(t *testing.T) {
 	}
 	if s.autoplaySnapshot().status != "" {
 		t.Fatal("autoplay should stay idle when disabled")
+	}
+}
+
+func TestAutoplayEligibleFileSource(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("TVREMOTE_DATA_DIR", data)
+	fileSrv := config.AddServer(config.Server{
+		Name: "Local Movies", Type: "local", RootPath: data,
+	})
+	ctx := player.PlayContext{
+		ServerID: fileSrv.ID, ItemID: "Show/S01E01.mkv",
+		PlaybackCompleted: true, SourceType: "local",
+	}
+	if !autoplayEligible(ctx) {
+		t.Fatal("file source with path ItemID should be autoplay-eligible")
+	}
+	ctx.ItemID = ""
+	if autoplayEligible(ctx) {
+		t.Fatal("file source without path must not be eligible")
+	}
+	// IPTV still rejected even with an ItemID.
+	iptv := config.AddServer(config.Server{Name: "IPTV", Type: "iptv", Hosts: []string{"x"}})
+	if autoplayEligible(player.PlayContext{
+		ServerID: iptv.ID, ItemID: "ch1", PlaybackCompleted: true, SourceType: "iptv",
+	}) {
+		t.Fatal("iptv must not be autoplay-eligible")
+	}
+}
+
+func TestLookupNextFileNFSUsesNaturalFilenameOrder(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("TVREMOTE_DATA_DIR", filepath.Join(data, "config"))
+	media := filepath.Join(data, "media")
+	if err := os.MkdirAll(media, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"01.mkv", "02.mkv", "10.mkv", "subtitle.srt", "poster.jpg"} {
+		if err := os.WriteFile(filepath.Join(media, name), []byte("fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fileSrv := config.AddServer(config.Server{Name: "Mounted NFS", Type: "nfs", RootPath: media})
+	s := New(player.New())
+
+	next, err := s.lookupNextFile(player.PlayContext{
+		ServerID: fileSrv.ID, ItemID: "01.mkv", Title: "01", SourceType: "nfs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == nil || !next.IsFile || next.Path != "02.mkv" {
+		t.Fatalf("NFS next = %+v, want 02.mkv", next)
+	}
+
+	next, err = s.lookupNextFile(player.PlayContext{
+		ServerID: fileSrv.ID, ItemID: "02.mkv", Title: "02", SourceType: "nfs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == nil || next.Path != "10.mkv" {
+		t.Fatalf("NFS next = %+v, want 10.mkv", next)
+	}
+}
+
+func TestAutoplayPlayOptionsAlwaysStartAtZero(t *testing.T) {
+	media := mediaAutoplayPlayOpts(autoplayNext{
+		ServerID: "emby", ItemID: "e2", SeriesID: "series", SeasonID: "season",
+		Title: "Two",
+	}, "source")
+	if media.StartSeconds != 0 {
+		t.Fatalf("media autoplay start = %v, want 0", media.StartSeconds)
+	}
+
+	file := fileAutoplayPlayOpts("nfs", "Season/02.mkv", "02")
+	if file.StartSeconds != 0 {
+		t.Fatalf("file autoplay start = %v, want 0", file.StartSeconds)
+	}
+}
+
+func TestAutoplayFileBranchPlaysResolvedPath(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("TVREMOTE_DATA_DIR", data)
+	fileSrv := config.AddServer(config.Server{
+		Name: "Local", Type: "local", RootPath: data,
+	})
+	s := New(player.New())
+
+	var played atomic.Value
+	s.resolveNextEpisode = func(finished player.PlayContext) (*autoplayNext, error) {
+		return &autoplayNext{
+			ServerID: finished.ServerID,
+			ItemID:   "Show/S01E02.mkv",
+			Path:     "Show/S01E02.mkv",
+			Title:    "S01E02",
+			IsFile:   true,
+		}, nil
+	}
+	s.playAutoplayNext = func(next autoplayNext) map[string]any {
+		played.Store(next)
+		return map[string]any{"ok": true}
+	}
+	var fireFn func()
+	armed := make(chan struct{}, 1)
+	s.autoplayAfter = func(d time.Duration, fn func()) func() {
+		fireFn = fn
+		armed <- struct{}{}
+		return func() { fireFn = nil }
+	}
+
+	s.onNaturalEOF(player.PlayContext{
+		ServerID: fileSrv.ID, ItemID: "Show/S01E01.mkv", Title: "S01E01",
+		PlaybackCompleted: true, SourceType: "local",
+	}, 1)
+	waitAutoplayStatus(t, s, autoplayStatusNextAvailable)
+	snap := s.autoplaySnapshot()
+	if snap.next == nil || !snap.next.IsFile || snap.next.Path != "Show/S01E02.mkv" {
+		t.Fatalf("expected file next, got %+v", snap.next)
+	}
+	if snap.next.Title != "S01E02" || snap.next.EpisodeLabel != "" {
+		t.Fatalf("file next title/label = %q / %q", snap.next.Title, snap.next.EpisodeLabel)
+	}
+	waitAutoplayTimer(t, armed)
+	fireFn()
+	got, _ := played.Load().(autoplayNext)
+	if !got.IsFile || got.Path != "Show/S01E02.mkv" {
+		t.Fatalf("played = %+v", got)
 	}
 }
 

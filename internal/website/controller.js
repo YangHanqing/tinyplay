@@ -4,7 +4,7 @@
  */
 (function () {
   'use strict';
-  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 24) {
+  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 25) {
     return;
   }
 
@@ -39,7 +39,11 @@
       play_pause: ' ', seek_backward: 'ArrowLeft', seek_forward: 'ArrowRight',
       fullscreen: 'f',
       danmaku_toggle: 'd', bilibili_like: 'q', bilibili_coin: 'w',
-      bilibili_favorite: 'e', bilibili_follow: 'g', bilibili_triple: 'r'
+      bilibili_favorite: 'e', bilibili_follow: 'g',
+      // 一键三连 is the *same* key as 点赞, held down — Bilibili has no separate
+      // triple key. A tap on it is an ordinary like, which is why the triple
+      // oracle below must require more than one of the three surfaces to change.
+      bilibili_triple: 'q'
     } },
     { test: /(^|\.)iqiyi\.com$/i, keys: {
       fullscreen: 'f', iqiyi_previous_episode: 'Shift+P',
@@ -444,7 +448,14 @@
       code = key;
       keyCode = 0;
     }
-    return { key: key, code: code, keyCode: keyCode, which: keyCode, shiftKey: shiftKey, bubbles: true, cancelable: true };
+    return { key: key, code: code, keyCode: keyCode, which: keyCode, shiftKey: shiftKey, repeat: false, bubbles: true, cancelable: true };
+  }
+
+  function repeatOptions(opts) {
+    var copy = {};
+    for (var k in opts) { if (Object.prototype.hasOwnProperty.call(opts, k)) copy[k] = opts[k]; }
+    copy.repeat = true;
+    return copy;
   }
 
   function dispatchKey(key) {
@@ -459,18 +470,37 @@
     }
   }
 
+  // A real key hold is not one keydown held open: the OS emits an initial
+  // keydown, then a stream of keydown events with repeat === true, and finally
+  // one keyup. Sites detect a long press either by elapsed keydown→keyup time or
+  // by counting those repeats, so a lone keydown reads as a plain tap on half of
+  // them. Emit the autorepeat stream too, at a rate close to a real keyboard.
+  var KEY_REPEAT_DELAY_MS = 400;
+  var KEY_REPEAT_INTERVAL_MS = 40;
+
   function dispatchKeyHold(key, durationMs) {
     var target = keyboardTarget();
     try {
       var opts = keyboardOptions(key);
+      var repeated = repeatOptions(opts);
       target.dispatchEvent(new KeyboardEvent('keydown', opts));
       return new Promise(function (resolve) {
-        setTimeout(function () {
+        var start = Date.now();
+        var repeatTimer = 0;
+        function stop(ok) {
+          if (repeatTimer) { clearInterval(repeatTimer); repeatTimer = 0; }
           try {
             target.dispatchEvent(new KeyboardEvent('keyup', opts));
-            resolve(true);
+            resolve(ok);
           } catch (_) { resolve(false); }
-        }, durationMs);
+        }
+        setTimeout(function () {
+          if (Date.now() - start >= durationMs) return;
+          repeatTimer = setInterval(function () {
+            try { target.dispatchEvent(new KeyboardEvent('keydown', repeated)); } catch (_) {}
+          }, KEY_REPEAT_INTERVAL_MS);
+        }, Math.min(KEY_REPEAT_DELAY_MS, durationMs));
+        setTimeout(function () { stop(true); }, durationMs);
       });
     } catch (_) {
       return Promise.resolve(false);
@@ -619,9 +649,15 @@
       bilibili_like: '.video-like[title*="点赞"]',
       bilibili_coin: '.video-coin[title*="投币"]',
       bilibili_favorite: '.video-fav[title*="收藏"]',
-      bilibili_follow: '.bpx-player-follow, .bpx-player-top-left-follow',
-      bilibili_triple: '.video-like[title*="点赞"], .video-coin[title*="投币"], .video-fav[title*="收藏"]'
+      bilibili_follow: '.bpx-player-follow, .bpx-player-top-left-follow'
     };
+    // Triple has no surface of its own: it is the like/coin/favourite trio
+    // driven by one held key. Report it as available only when all three are
+    // present, because its oracle reads all three — a page showing just one of
+    // them could never confirm the effect and would fail every time.
+    if (action === 'bilibili_triple') {
+      return bilibiliTripleSurfaces() ? bilibiliShortcutSurface('bilibili_like') : null;
+    }
     var selector = selectors[action];
     if (!selector || !isBilibiliHost()) return null;
     try {
@@ -643,6 +679,31 @@
     ].join('|');
   }
 
+  var BILIBILI_TRIPLE_PARTS = ['bilibili_like', 'bilibili_coin', 'bilibili_favorite'];
+
+  function bilibiliTripleSurfaces() {
+    var nodes = [];
+    for (var i = 0; i < BILIBILI_TRIPLE_PARTS.length; i++) {
+      var node = bilibiliShortcutSurface(BILIBILI_TRIPLE_PARTS[i]);
+      if (!node) return null;
+      nodes.push(node);
+    }
+    return nodes;
+  }
+
+  function bilibiliTripleSignatures() {
+    return BILIBILI_TRIPLE_PARTS.map(bilibiliSurfaceSignature);
+  }
+
+  function bilibiliTripleChangedCount(before) {
+    var after = bilibiliTripleSignatures();
+    var changed = 0;
+    for (var i = 0; i < after.length; i++) {
+      if (after[i] !== before[i]) changed++;
+    }
+    return changed;
+  }
+
   function bilibiliOverlaySignature() {
     var nodes;
     try { nodes = document.querySelectorAll('[role="dialog"], [class*="dialog"], [class*="modal"], [class*="popup"]'); } catch (_) { nodes = []; }
@@ -654,19 +715,43 @@
     return labels.join('||');
   }
 
+  // Bilibili's long-press threshold is seconds, not milliseconds — the ring
+  // animation on the like button has to fill before the triple commits. Holding
+  // for less simply registers as a like, so this budget is deliberately generous.
+  var BILIBILI_TRIPLE_HOLD_MS = 2600;
+  var BILIBILI_TRIPLE_SETTLE_MS = 1800;
+
   function triggerBilibiliShortcut(action) {
     if (!isBilibiliHost() || !bilibiliShortcutSurface(action)) return failed('action_unavailable');
     var key = siteKey(action);
     if (!key) return failed('action_unavailable');
+    if (action === 'bilibili_triple') return triggerBilibiliTriple(key);
     var beforeControl = bilibiliSurfaceSignature(action);
     var beforeOverlay = bilibiliOverlaySignature();
-    var fired = action === 'bilibili_triple' ? dispatchKeyHold(key, 700) : Promise.resolve(dispatchKey(key));
-    return fired.then(function (sent) {
+    if (!dispatchKey(key)) return failed('effect_unconfirmed');
+    return settle(function () {
+      return bilibiliSurfaceSignature(action) !== beforeControl || bilibiliOverlaySignature() !== beforeOverlay;
+    }, 900).then(function (changed) {
+      return changed ? { ok: true, status: action } : failed('effect_unconfirmed');
+    });
+  }
+
+  // Triple shares its key with 点赞, so "the like button changed" is exactly what
+  // a *failed* long press looks like and must not count as success. A committed
+  // triple moves at least two of the three surfaces (one may already be on).
+  // Zero moved with a fresh overlay is the already-tripled toast — a plain like
+  // would have toggled its own button, so it cannot produce that shape.
+  function triggerBilibiliTriple(key) {
+    var beforeParts = bilibiliTripleSignatures();
+    var beforeOverlay = bilibiliOverlaySignature();
+    return dispatchKeyHold(key, BILIBILI_TRIPLE_HOLD_MS).then(function (sent) {
       if (!sent) return failed('effect_unconfirmed');
       return settle(function () {
-        return bilibiliSurfaceSignature(action) !== beforeControl || bilibiliOverlaySignature() !== beforeOverlay;
-      }, 900).then(function (changed) {
-        return changed ? { ok: true, status: action } : failed('effect_unconfirmed');
+        var changed = bilibiliTripleChangedCount(beforeParts);
+        if (changed >= 2) return true;
+        return changed === 0 && bilibiliOverlaySignature() !== beforeOverlay;
+      }, BILIBILI_TRIPLE_SETTLE_MS).then(function (confirmed) {
+        return confirmed ? { ok: true, status: 'bilibili_triple' } : failed('effect_unconfirmed');
       });
     });
   }
@@ -1992,7 +2077,7 @@
   }
 
   window.__tinyplayWebsite = {
-    __version: 24,
+    __version: 25,
     handle: handle,
     clearHints: clearHints,
     isHintActive: function () { return !!hintState.active; },

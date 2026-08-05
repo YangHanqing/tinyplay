@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tvremote/internal/config"
+	"tvremote/internal/filesource"
 	"tvremote/internal/player"
 	"tvremote/internal/provider"
 )
@@ -25,6 +26,9 @@ const (
 	autoplayStatusNextAvailable = "next_available"
 )
 
+// autoplayNext is the resolved transition target. Media-server episodes fill
+// SeriesID/SeasonID/EpisodeLabel/PosterItemID; file-source next items set
+// IsFile + Path (ItemID mirrors Path) and leave the media-server fields empty.
 type autoplayNext struct {
 	ServerID     string
 	ItemID       string
@@ -34,6 +38,9 @@ type autoplayNext struct {
 	SeriesTitle  string
 	EpisodeLabel string
 	PosterItemID string
+	// File-source branch (folder-based next-by-filename).
+	IsFile bool
+	Path   string
 }
 
 type autoplayState struct {
@@ -160,14 +167,17 @@ func (s *Server) onNaturalEOF(ctx player.PlayContext, revision uint64) {
 }
 
 // autoplayEligible reports whether a completed playback can be continued by
-// host autoplay at all: a media-server series episode with the setting on.
+// host autoplay at all. Two branches share one setting:
+//   - media server (emby/jellyfin/plex): requires SeriesID (same-season scan)
+//   - file source (webdav/smb/local/nfs): requires ItemID as the relative path
+//
+// IPTV / IPTV-catchup / DLNA / live never autoplay.
 func autoplayEligible(ctx player.PlayContext) bool {
-	if !ctx.PlaybackCompleted || ctx.ItemID == "" || ctx.SeriesID == "" {
+	if !ctx.PlaybackCompleted || ctx.ItemID == "" {
 		return false
 	}
-	// IPTV / DLNA / file sources never autoplay here — only media-server series.
 	if ctx.IsLive || ctx.SourceType == "iptv" || ctx.SourceType == "iptv-catchup" ||
-		ctx.SourceType == "dlna" || config.IsFileServerType(ctx.SourceType) {
+		ctx.SourceType == "dlna" {
 		return false
 	}
 	if !config.Load().AutoplayNextEpisode {
@@ -178,6 +188,13 @@ func autoplayEligible(ctx player.PlayContext) bool {
 		return false
 	}
 	kind := config.NormalizeServerType(srv.Type)
+	if config.IsFileServerType(kind) || config.IsFileServerType(ctx.SourceType) {
+		// ItemID holds the relative path written by the file play handler.
+		return true
+	}
+	if ctx.SeriesID == "" {
+		return false
+	}
 	return kind == "emby" || kind == "jellyfin" || kind == "plex"
 }
 
@@ -215,6 +232,13 @@ func (s *Server) lookupNextEpisode(finished player.PlayContext) (*autoplayNext, 
 	if s.resolveNextEpisode != nil {
 		return s.resolveNextEpisode(finished)
 	}
+	if config.IsFileServerType(finished.SourceType) {
+		return s.lookupNextFile(finished)
+	}
+	// Prefer the configured server type when SourceType is empty/legacy.
+	if srv := config.GetServer(finished.ServerID); srv != nil && config.IsFileServerType(srv.Type) {
+		return s.lookupNextFile(finished)
+	}
 	client, err := provider.FromServer(finished.ServerID)
 	if err != nil {
 		return nil, err
@@ -224,6 +248,48 @@ func (s *Server) lookupNextEpisode(finished player.PlayContext) (*autoplayNext, 
 		return nil, err
 	}
 	return parseNextEpisode(raw, finished.ItemID, finished.SeriesID, finished.SeasonID, finished.SeriesTitle, finished.ServerID)
+}
+
+// lookupNextFile resolves the next video in the finished file's parent
+// directory via one ListDir + the pure filesource.NextVideo decision table.
+func (s *Server) lookupNextFile(finished player.PlayContext) (*autoplayNext, error) {
+	client, err := filesource.FromServer(finished.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	// File playback stores the relative path in ItemID (and sometimes Title).
+	currentPath := finished.ItemID
+	parent := filesource.ParentDir(currentPath)
+	listing, err := client.ListDir(parent)
+	if err != nil {
+		return nil, err
+	}
+	if len(listing.Entries) > filesource.MaxAutoplayDirEntries {
+		log.Printf("autoplay: parent directory has %d entries (cap %d); giving up",
+			len(listing.Entries), filesource.MaxAutoplayDirEntries)
+		return nil, nil
+	}
+	next, ok := filesource.NextVideo(listing.Entries, currentPath)
+	if !ok {
+		return nil, nil
+	}
+	// Prefer the finished title (filename) for gap logging; fall back to path.
+	currentName := finished.Title
+	if currentName == "" {
+		currentName = currentPath
+	}
+	if gap, from, to := filesource.EpisodeGap(currentName, next.Name); gap {
+		log.Printf("autoplay: episode gap in folder %q: E%02d → E%02d (%s → %s)",
+			parent, from, to, currentPath, next.Path)
+	}
+	title := filesource.TitleWithoutExtension(next.Name)
+	return &autoplayNext{
+		ServerID: finished.ServerID,
+		ItemID:   next.Path,
+		Title:    title,
+		IsFile:   true,
+		Path:     next.Path,
+	}, nil
 }
 
 // parseNextEpisode finds the episode after currentItemID within the same
@@ -334,6 +400,9 @@ func (s *Server) startAutoplayNext(next autoplayNext) map[string]any {
 		return s.playAutoplayNext(next)
 	}
 	generation := s.beginPlay()
+	if next.IsFile || next.Path != "" {
+		return s.playResolvedFileItem(generation, next)
+	}
 	return s.playResolvedMediaItem(generation, next)
 }
 
@@ -346,11 +415,7 @@ func (s *Server) playResolvedMediaItem(generation uint64, next autoplayNext) map
 	if err != nil {
 		return map[string]any{"ok": false, "error": err.Error()}
 	}
-	// A partially-watched next episode still honours Emby resume (same as a
-	// manual play of that item).
-	startSeconds := client.ResumePositionSeconds(next.ItemID)
-	opts := playOpts(next.ServerID, next.ItemID, next.SeriesID, next.SeasonID,
-		next.Title, next.SeriesTitle, next.EpisodeLabel, next.PosterItemID, startSeconds, choice.MediaSourceID)
+	opts := mediaAutoplayPlayOpts(next, choice.MediaSourceID)
 	if srv := config.GetServer(next.ServerID); srv != nil {
 		opts.SourceType = config.NormalizeServerType(srv.Type)
 	}
@@ -362,6 +427,48 @@ func (s *Server) playResolvedMediaItem(generation uint64, next autoplayNext) map
 		client.ReportStart(next.ItemID, s.player.PlaySessionID(), choice.MediaSourceID)
 	}
 	return result
+}
+
+// playResolvedFileItem starts the next folder file. It reuses the same stream
+// URL builder as manual play, but autoplay deliberately starts from zero and
+// does not consume the stored local resume position. No media-server ReportStart.
+func (s *Server) playResolvedFileItem(generation uint64, next autoplayNext) map[string]any {
+	path := next.Path
+	if path == "" {
+		path = next.ItemID
+	}
+	files, err := provider.FileFromServer(next.ServerID)
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	if _, err := files.ResolvePlayURL(path); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	playURL := s.fileStreamPlayURL(next.ServerID, path)
+	title := next.Title
+	if title == "" {
+		title = filesource.TitleWithoutExtension(path)
+	}
+	opts := fileAutoplayPlayOpts(next.ServerID, path, title)
+	if srv := config.GetServer(next.ServerID); srv != nil {
+		opts.SourceType = config.NormalizeServerType(srv.Type)
+	}
+	if !s.isCurrentPlay(generation) {
+		return map[string]any{"ok": false, "superseded": true}
+	}
+	return s.player.Play(playURL, opts)
+}
+
+// mediaAutoplayPlayOpts and fileAutoplayPlayOpts deliberately do not accept a
+// saved position. An automatic transition is always a fresh play from 0;
+// manual handlers remain responsible for applying server/local resume state.
+func mediaAutoplayPlayOpts(next autoplayNext, mediaSourceID string) player.PlayOptions {
+	return playOpts(next.ServerID, next.ItemID, next.SeriesID, next.SeasonID,
+		next.Title, next.SeriesTitle, next.EpisodeLabel, next.PosterItemID, 0, mediaSourceID)
+}
+
+func fileAutoplayPlayOpts(serverID, path, title string) player.PlayOptions {
+	return playOpts(serverID, path, "", "", title, "", "", "", 0, "")
 }
 
 // mergeAutoplayState overlays host autoplay fields onto player state.

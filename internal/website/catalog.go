@@ -299,7 +299,7 @@ var siteMoreActions = map[string][]MoreAction{
 		{ID: ActionBilibiliCoin, Name: "投币（W）", Strategy: MoreActionStrategyShortcut},
 		{ID: ActionBilibiliFav, Name: "收藏（E）", Strategy: MoreActionStrategyShortcut},
 		{ID: ActionBilibiliFollow, Name: "关注 UP 主（G）", Strategy: MoreActionStrategyShortcut},
-		{ID: ActionBilibiliTriple, Name: "一键三连（长按 R）", Strategy: MoreActionStrategyShortcut},
+		{ID: ActionBilibiliTriple, Name: "一键三连（长按 Q）", Strategy: MoreActionStrategyShortcut},
 	},
 	SiteIQIYI: {
 		{ID: ActionIQIYIPrevious, Name: "上一集（Shift+P）", Strategy: MoreActionStrategyShortcut},

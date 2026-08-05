@@ -20,6 +20,7 @@ import (
 	"fyne.io/systray"
 	webview2 "github.com/jchv/go-webview2"
 
+	"tvremote/internal/autostart"
 	"tvremote/internal/config"
 	"tvremote/internal/i18n"
 )
@@ -79,6 +80,7 @@ func runShell(localURL string, httpSrv *http.Server) {
 		mAdvanced := systray.AddMenuItem(i18n.System("advanced_settings"), i18n.System("advanced_settings_tip"))
 		mMPVCustom := mAdvanced.AddSubMenuItem(i18n.System("mpv_custom_menu"), i18n.System("mpv_custom_menu_tip"))
 		mMPVRestore := mAdvanced.AddSubMenuItem(i18n.System("mpv_restore_default_menu"), i18n.System("mpv_restore_default_menu_tip"))
+		mAutostart := mAdvanced.AddSubMenuItemCheckbox(i18n.System("autostart_menu"), i18n.System("autostart_menu_tip"), readAutostart())
 		systray.AddSeparator()
 		mFeedback := systray.AddMenuItem(i18n.System("feedback"), i18n.System("feedback_tip"))
 		systray.AddSeparator()
@@ -97,6 +99,15 @@ func runShell(localURL string, httpSrv *http.Server) {
 		}
 		go refreshMPVTooltip()
 
+		// An in-place upgrade can land TinyPlay.exe in a different directory
+		// than the one recorded when autostart was switched on. Repair the
+		// entry here rather than leaving the user with a checkbox that reads
+		// "on" and a startup command that points at nothing.
+		if err := autostart.Sync(); err != nil {
+			log.Printf("autostart: sync failed: %v", err)
+		}
+		applyAutostartCheckbox(mAutostart)
+
 		applyLanguage := func(language string) {
 			config.SetLanguage(language)
 			mOpen.SetTitle(i18n.System("open_main"))
@@ -108,6 +119,8 @@ func runShell(localURL string, httpSrv *http.Server) {
 			mMPVCustom.SetTooltip(i18n.System("mpv_custom_menu_tip"))
 			mMPVRestore.SetTitle(i18n.System("mpv_restore_default_menu"))
 			mMPVRestore.SetTooltip(i18n.System("mpv_restore_default_menu_tip"))
+			mAutostart.SetTitle(i18n.System("autostart_menu"))
+			mAutostart.SetTooltip(i18n.System("autostart_menu_tip"))
 			refreshMPVTooltip()
 			mFeedback.SetTitle(i18n.System("feedback"))
 			mFeedback.SetTooltip(i18n.System("feedback_tip"))
@@ -140,6 +153,10 @@ func runShell(localURL string, httpSrv *http.Server) {
 					}()
 				case <-mMPVRestore.ClickedCh:
 					go runRestoreDefaultMPV(coreURL, func(mpvStatusResponse) { refreshMPVTooltip() })
+				case <-mAutostart.ClickedCh:
+					// Registry write plus a MessageBox on failure: off the
+					// menu-event loop, like the mpv items above.
+					go toggleAutostart(mAutostart)
 				case <-mFeedback.ClickedCh:
 					openFeedbackEmail()
 				case <-mQuit.ClickedCh:
@@ -178,8 +195,12 @@ func runShell(localURL string, httpSrv *http.Server) {
 			checkForTinyPlayUpdates(false)
 		}()
 
-		// Show the window once on first launch so users see the QR immediately.
-		go openWindow(desktopURL())
+		// Show the window once on first launch so users see the QR immediately —
+		// except when Windows started us at sign-in, where the point of the
+		// feature is to be ready in the tray without interrupting anyone.
+		if !launchedAtLogin() {
+			go openWindow(desktopURL())
+		}
 	}
 
 	onExit := func() {
