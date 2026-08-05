@@ -62,6 +62,15 @@ private func L(_ key: String) -> String {
 			"\u{8BF7}\u{5199}\u{660E}\u{4F60}\u{7684}\u{53CD}\u{9988}\u{5185}\u{5BB9}\u{3002}\n\n\u{2022} \u{529F}\u{80FD}\u{9700}\u{6C42}\u{FF1A}\u{76F4}\u{63A5}\u{63CF}\u{8FF0}\u{5E0C}\u{671B}\u{589E}\u{52A0}\u{7684}\u{529F}\u{80FD}\u{5373}\u{53EF}\u{3002}\n\u{2022} \u{95EE}\u{9898}\u{53CD}\u{9988}\u{FF08}Bug\u{FF09}\u{FF1A}\u{8BF7}\u{63CF}\u{8FF0}\u{73B0}\u{8C61}\u{4E0E}\u{590D}\u{73B0}\u{6B65}\u{9AA4}\u{FF0C}\u{5E76}\u{9644}\u{4E0A}\u{65E5}\u{5FD7}\u{76EE}\u{5F55}\u{4E2D}\u{7684}\u{65E5}\u{5FD7}\u{6587}\u{4EF6}\u{FF08}\u{53EF}\u{5728}\u{4E3B}\u{754C}\u{9762}\u{5E95}\u{90E8}\u{70B9}\u{51FB}\u{300C}\u{6253}\u{5F00}\u{65E5}\u{5FD7}\u{76EE}\u{5F55}\u{300D}\u{83B7}\u{53D6}\u{FF09}\u{3002}\n\n",
 			"Please describe your feedback.\n\n• Feature request: write what you would like to add.\n• Bug report: describe what happened and the steps to reproduce it, and attach the log files from the logs folder (use “Open Logs” at the bottom of the main window).\n\n"
 		),
+		"advanced_settings": ("高级设置", "Advanced Settings"),
+		"mpv_custom_menu": ("自定义 mpv 播放器…", "Custom mpv Player…"),
+		"mpv_restore_default_menu": ("恢复默认（使用内嵌 mpv）", "Restore Default (Use Bundled mpv)"),
+		"mpv_dialog_title": ("选择 mpv 可执行文件", "Choose an mpv Executable"),
+		"mpv_invalid_title": ("无法使用该文件", "Couldn't Use That File"),
+		"mpv_invalid_body": ("所选文件不是有效的 mpv 播放器：\n\n%@", "The selected file isn't a working mpv player:\n\n%@"),
+		"mpv_custom_active_tip": ("当前使用自定义 mpv：%@", "Using custom mpv: %@"),
+		"mpv_default_tip": ("当前使用内嵌 mpv 播放器", "Using the bundled mpv player"),
+		"mpv_custom_stale_tip": ("自定义路径已失效，正在使用内嵌 mpv", "Custom path is no longer valid; using the bundled mpv"),
 		"quit": ("\u{9000}\u{51FA}", "Quit"),
 		"language": ("\u{8BED}\u{8A00}", "Language"),
 		"automatic": ("\u{81EA}\u{52A8}", "Automatic"),
@@ -378,7 +387,7 @@ private final class ToastPanelController {
 	}
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
     private let core = Process()
@@ -388,6 +397,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private var webView: WKWebView?
 	private var localNetworkDenied = false
 	private var dlnaMenuItem: NSMenuItem?
+	/// "高级设置 → 自定义 mpv 播放器…" submenu item. Its tooltip is refreshed
+	/// from GET /desktop/mpv each time the tray menu opens (see menuWillOpen)
+	/// so it reflects whichever mpv is actually in effect right now, including
+	/// the "custom path went stale, fell back to bundled" state.
+	private var mpvAdvancedMenuItem: NSMenuItem?
 	private static let fullscreenMessageName = "tinyplaySetFullscreen"
 	private static let checkForUpdatesMessageName = "tinyplayCheckForUpdates"
 	private static let showAboutMessageName = "tinyplayShowAbout"
@@ -742,13 +756,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		language.submenu = languageMenu
 		menu.addItem(language)
 		menu.addItem(.separator())
+		let advanced = NSMenuItem(title: L("advanced_settings"), action: nil, keyEquivalent: "")
+		let advancedMenu = NSMenu()
+		advancedMenu.addItem(NSMenuItem(title: L("mpv_custom_menu"), action: #selector(chooseCustomMPV), keyEquivalent: ""))
+		advancedMenu.addItem(NSMenuItem(title: L("mpv_restore_default_menu"), action: #selector(restoreDefaultMPV), keyEquivalent: ""))
+		advanced.submenu = advancedMenu
+		menu.addItem(advanced)
+		mpvAdvancedMenuItem = advanced
+		menu.addItem(.separator())
 		menu.addItem(NSMenuItem(title: L("feedback"), action: #selector(sendFeedback), keyEquivalent: ""))
 		menu.addItem(.separator())
 		menu.addItem(NSMenuItem(title: L("quit"), action: #selector(quit), keyEquivalent: "q"))
 		// DLNA is toggled from the main window now; keep the stored item nil so
 		// a stale checkbox cannot reappear after a language refresh rebuilds the menu.
 		dlnaMenuItem = nil
+		menu.delegate = self
 		statusItem.menu = menu
+		reloadMPVStatus()
+	}
+
+	/// Refreshes the "高级设置" tooltip right before the tray menu is shown, so
+	/// it reflects whichever mpv is actually in effect (including a stale
+	/// custom path having silently fallen back to bundled) without needing a
+	/// standing poll.
+	func menuWillOpen(_ menu: NSMenu) {
+		if menu === statusItem.menu {
+			reloadMPVStatus()
+		}
 	}
 
 	/// Some Macs have a web browser — not a mail app — registered as the
@@ -944,6 +978,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 				return
 			}
 			completion(saved)
+		}.resume()
+	}
+
+	// MARK: - Advanced settings: custom mpv executable
+
+	/// Shows the native "choose an executable" panel, then hands the picked
+	/// path to the core to validate + persist. NSOpenPanel (not a save panel)
+	/// with directoryURL left at the default so the user can freely navigate
+	/// into /usr/local, /opt, etc. — mpv installed via Homebrew or a manual
+	/// build commonly lives outside the app's own sandboxed defaults.
+	@objc private func chooseCustomMPV() {
+		let panel = NSOpenPanel()
+		panel.title = L("mpv_dialog_title")
+		panel.canChooseFiles = true
+		panel.canChooseDirectories = false
+		panel.allowsMultipleSelection = false
+		panel.treatsFilePackagesAsDirectories = true
+		panel.directoryURL = URL(fileURLWithPath: "/usr/local/bin", isDirectory: true)
+		NSApp.activate(ignoringOtherApps: true)
+		guard panel.runModal() == .OK, let url = panel.url else { return }
+		postCustomMPVPath(url.path) { [weak self] errorDetail in
+			DispatchQueue.main.async {
+				guard let self else { return }
+				if let errorDetail {
+					self.showMPVInvalidAlert(errorDetail)
+				} else {
+					self.reloadMPVStatus()
+				}
+			}
+		}
+	}
+
+	/// Clears the persisted custom path — same request shape as setting one,
+	/// with an empty path. No confirmation dialog: unlike "unpair all", this
+	/// only affects a single local preference and is trivially reversible.
+	@objc private func restoreDefaultMPV() {
+		postCustomMPVPath("") { [weak self] errorDetail in
+			DispatchQueue.main.async {
+				guard let self else { return }
+				if let errorDetail {
+					self.showMPVInvalidAlert(errorDetail)
+				} else {
+					self.reloadMPVStatus()
+				}
+			}
+		}
+	}
+
+	private func showMPVInvalidAlert(_ detail: String) {
+		let alert = NSAlert()
+		alert.alertStyle = .warning
+		alert.messageText = L("mpv_invalid_title")
+		alert.informativeText = String(format: L("mpv_invalid_body"), detail)
+		alert.addButton(withTitle: L("ok"))
+		NSApp.activate(ignoringOtherApps: true)
+		alert.runModal()
+	}
+
+	/// POST /desktop/mpv — see internal/server/handlers_mpv.go. A non-empty
+	/// path is validated server-side (ValidateMPV: `<path> --version` must
+	/// look like mpv) before it is ever written to config.json, so a failure
+	/// here always means the path did not persist.
+	/// completion receives nil on success, or an error detail string on
+	/// failure — simpler than Result here since the only failure information
+	/// the caller needs is the human-readable detail for the alert.
+	private func postCustomMPVPath(_ path: String, completion: @escaping (String?) -> Void) {
+		guard let url = URL(string: coreURL + "/desktop/mpv") else {
+			completion("invalid core URL")
+			return
+		}
+		var request = URLRequest(url: url)
+		request.httpMethod = "POST"
+		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+		request.httpBody = try? JSONSerialization.data(withJSONObject: ["path": path])
+		URLSession.shared.dataTask(with: request) { data, response, _ in
+			guard let response = response as? HTTPURLResponse else {
+				completion("no response")
+				return
+			}
+			if (200..<300).contains(response.statusCode) {
+				completion(nil)
+				return
+			}
+			var detail = "HTTP \(response.statusCode)"
+			if let data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+				let text = body["detail"] as? String {
+				detail = text
+			}
+			completion(detail)
+		}.resume()
+	}
+
+	/// Refreshes the "高级设置" submenu tooltip from GET /desktop/mpv. Mirrors
+	/// reloadDLNAReceiverState's shape (best-effort GET, no error UI — this is
+	/// a status readout, not an action the user needs to know failed).
+	private func reloadMPVStatus() {
+		guard let url = URL(string: coreURL + "/desktop/mpv") else { return }
+		URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+			guard let self, let data,
+				let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+			let source = status["source"] as? String ?? ""
+			let path = status["path"] as? String ?? ""
+			let customConfigured = status["custom_configured"] as? Bool ?? false
+			let customValid = status["custom_valid"] as? Bool ?? false
+			let tooltip: String
+			if customConfigured && !customValid {
+				tooltip = L("mpv_custom_stale_tip")
+			} else if source == "custom" {
+				tooltip = String(format: L("mpv_custom_active_tip"), path)
+			} else {
+				tooltip = L("mpv_default_tip")
+			}
+			DispatchQueue.main.async { self.mpvAdvancedMenuItem?.toolTip = tooltip }
 		}.resume()
 	}
 

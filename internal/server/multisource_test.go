@@ -161,6 +161,18 @@ https://stream.example/live.m3u8?token=stream-secret|User-Agent=PrivateAgent&Coo
 		t.Fatal(err)
 	}
 	id, _ := created["id"].(string)
+
+	// An IPTV source has no credential, so it must still report logged_in once
+	// it has a playlist URL — a false here puts a "sign-in required" warning on
+	// every playlist in clients that trust the field. Mirrored on tvOS by
+	// appletv-swift/scripts/test-source-signin-status.sh.
+	req = httptest.NewRequest(http.MethodGet, "/api/servers", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"logged_in":true`) {
+		t.Fatalf("servers: %d %s", rec.Code, rec.Body.String())
+	}
+
 	for _, path := range []string{
 		"/api/iptv/channels?server_id=" + url.QueryEscape(id),
 		"/api/iptv/channel/tvg:news?server_id=" + url.QueryEscape(id),

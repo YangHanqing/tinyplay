@@ -81,10 +81,19 @@ type Server struct {
 
 // Config mirrors the top level of config.json.
 type Config struct {
-	Servers              []*Server            `json:"servers"`
-	ActiveServerID       string               `json:"active_server_id"`
-	ListenPort           int                  `json:"listen_port"`
-	MpvPipe              string               `json:"mpv_pipe"`
+	Servers        []*Server `json:"servers"`
+	ActiveServerID string    `json:"active_server_id"`
+	// InstallationID identifies this TinyPlay target to paired native clients.
+	// It is independent of media-server DeviceID values and the DLNA receiver
+	// UUID, which each have their own protocol semantics.
+	InstallationID string `json:"installation_id,omitempty"`
+	ListenPort     int    `json:"listen_port"`
+	MpvPipe        string `json:"mpv_pipe"`
+	// MpvExe is the user's advanced-settings custom mpv executable path (tray
+	// "高级设置 → 自定义 mpv 播放器…"), not a normal Go-desktop user setting in
+	// the everyday sense. Empty means "no custom path configured" — the
+	// bundled → system fallback stays the default, supported path; see
+	// internal/player.DetectMPV for the full priority order.
 	MpvExe               string               `json:"mpv_exe"`
 	MpvCacheSecs         int                  `json:"mpv_cache_secs"`
 	SeekBackwardSecs     int                  `json:"seek_backward_secs,omitempty"`
@@ -224,7 +233,7 @@ func loadLocked() (*Config, bool) {
 		Servers:             []*Server{},
 		ListenPort:          1980,
 		MpvPipe:             `\\.\pipe\mpvsocket`,
-		MpvExe:              "mpv",
+		MpvExe:              "",
 		MpvCacheSecs:        DefaultMpvCacheSecs,
 		SeekBackwardSecs:    5,
 		SeekForwardSecs:     30,
@@ -258,10 +267,29 @@ func loadLocked() (*Config, bool) {
 	if cfg.ListenPort == 0 || cfg.ListenPort == 8080 {
 		cfg.ListenPort = 1980
 	}
-	if cfg.MpvExe == "" {
-		cfg.MpvExe = "mpv"
+	// Unlike MpvCacheSecs below, MpvExe is not filled in with a default here:
+	// "" is the meaningful "no custom path configured" state (see MpvExe doc),
+	// not a hole. internal/player.DetectMPV treats "" as "fall through to the
+	// next candidate in the priority chain".
+	//
+	// The bare "mpv" it is cleared to below is the *old* default, which every
+	// pre-2026-08 install wrote to disk. Under the current priority order a
+	// non-empty MpvExe is a user-chosen custom runtime that outranks the
+	// bundled one, so leaving that legacy value in place would silently demote
+	// every existing installation to whatever mpv happens to be on PATH. A
+	// bare name is not something the shell's file picker can ever produce
+	// (it yields an absolute path), and as a custom value it would mean
+	// exactly what candidate 4 already does, so treating it as unset costs
+	// nothing.
+	if cfg.MpvExe == "mpv" {
+		cfg.MpvExe = ""
+		migrated = true
 	}
 	cfg.MpvCacheSecs = NormalizeMpvCacheSecs(cfg.MpvCacheSecs)
+	if cfg.InstallationID == "" {
+		cfg.InstallationID = newID()
+		migrated = true
+	}
 	if cfg.DLNAReceiverID == "" {
 		cfg.DLNAReceiverID = newID()
 		migrated = true

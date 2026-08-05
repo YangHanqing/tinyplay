@@ -8,8 +8,10 @@ import (
 	"tvremote/internal/config"
 	"tvremote/internal/emby"
 	"tvremote/internal/i18n"
+	"tvremote/internal/imagecache"
 	"tvremote/internal/iptv"
 	"tvremote/internal/player"
+	"tvremote/internal/plex"
 	"tvremote/internal/provider"
 )
 
@@ -53,6 +55,11 @@ func (s *Server) runtimeSettings() map[string]any {
 	mpv := player.DetectMPV()
 	settings["mpv_available"] = mpv.Available
 	settings["mpv_source"] = mpv.Source
+	// custom_configured/custom_invalid distinguish "using bundled because
+	// that's the default" from "using bundled because the user's custom path
+	// went stale" — see internal/player.MPVInfo.
+	settings["mpv_custom_configured"] = mpv.CustomConfigured
+	settings["mpv_custom_invalid"] = mpv.CustomInvalid
 	settings["dlna_receiver_status"] = s.dlnaReceiverStatus()
 	return settings
 }
@@ -109,6 +116,8 @@ func (s *Server) resetSettings(w http.ResponseWriter, r *http.Request) {
 	settings := config.ResetAll()
 	resetWebsiteState()
 	iptv.ClearCaches()
+	imagecache.Clear()
+	plex.ForgetAll()
 	// Drive the receiver from the actual post-reset value rather than a
 	// hardcoded true, so the two can't drift if the reset default changes.
 	enabled, _ := settings["dlna_receiver_enabled"].(bool)
@@ -287,6 +296,8 @@ func (s *Server) deleteServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	iptv.RemoveCache(id)
+	imagecache.RemoveServer(id)
+	plex.ForgetServer(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 

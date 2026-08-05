@@ -35,8 +35,10 @@ func (s *Server) playerDebugReport(w http.ResponseWriter, r *http.Request) {
 		"platform":              runtime.GOOS,
 		"arch":                  runtime.GOARCH,
 		"mpv": map[string]any{
-			"source":    mpvInfo.Source,
-			"available": mpvInfo.Available,
+			"source":            mpvInfo.Source,
+			"available":         mpvInfo.Available,
+			"custom_configured": mpvInfo.CustomConfigured,
+			"custom_invalid":    mpvInfo.CustomInvalid,
 		},
 		"session":          s.player.State(),
 		"source":           activeSourceSummary(),

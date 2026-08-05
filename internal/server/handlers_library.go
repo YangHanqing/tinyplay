@@ -2,10 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
 
+	"tvremote/internal/imagecache"
 	"tvremote/internal/provider"
 )
 
@@ -250,21 +252,65 @@ func (s *Server) embySeasons(w http.ResponseWriter, r *http.Request) {
 	writeRaw(w, r, body, err)
 }
 
+// imageCacheControl lets a phone reuse artwork it already holds for as long as
+// the disk cache considers it fresh, then fall back to a conditional request
+// rather than a download. stale-while-revalidate covers the gap between the two
+// windows: a browser that has it repaints from its own cache and revalidates in
+// the background, and one that does not sends a conditional request that this
+// server answers from disk without touching the media server.
+var imageCacheControl = fmt.Sprintf("private, max-age=%d, stale-while-revalidate=%d",
+	int(imagecache.FreshFor.Seconds()), int(imagecache.HardTTL.Seconds()))
+
 func (s *Server) embyImage(w http.ResponseWriter, r *http.Request) {
 	c, err := mediaClient(r)
 	if err != nil {
 		writeErr(w, r, err)
 		return
 	}
+	itemID := r.PathValue("item_id")
 	imageType := r.URL.Query().Get("type")
-	data, ct := c.ImageBytes(r.PathValue("item_id"), qInt(r, "max_height", 400), imageType)
-	if data == nil {
+	maxHeight := qInt(r, "max_height", 400)
+	entry, ok := imagecache.Fetch(imagecache.Key{
+		ServerID:  requestServerID(r),
+		ItemID:    itemID,
+		Type:      imageType,
+		MaxHeight: maxHeight,
+	}, func() ([]byte, string) {
+		return c.ImageBytes(itemID, maxHeight, imageType)
+	})
+	if !ok {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "private, max-age=300")
+	etag := `"` + entry.ETag + `"`
+	w.Header().Set("Content-Type", entry.ContentType)
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", imageCacheControl)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	w.Write(entry.Data)
+}
+
+// etagMatches reports whether a client's If-None-Match covers etag. The header
+// is a comma-separated list, entries may carry the weak prefix, and "*" matches
+// anything; weak and strong compare alike here because the only representation
+// of a given digest is byte-identical.
+func etagMatches(ifNoneMatch, etag string) bool {
+	if ifNoneMatch == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(ifNoneMatch, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }

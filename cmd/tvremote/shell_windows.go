@@ -76,9 +76,26 @@ func runShell(localURL string, httpSrv *http.Server) {
 			languageItems[entry.value] = mLanguage.AddSubMenuItemCheckbox(entry.title, "", selected == entry.value)
 		}
 		systray.AddSeparator()
+		mAdvanced := systray.AddMenuItem(i18n.System("advanced_settings"), i18n.System("advanced_settings_tip"))
+		mMPVCustom := mAdvanced.AddSubMenuItem(i18n.System("mpv_custom_menu"), i18n.System("mpv_custom_menu_tip"))
+		mMPVRestore := mAdvanced.AddSubMenuItem(i18n.System("mpv_restore_default_menu"), i18n.System("mpv_restore_default_menu_tip"))
+		systray.AddSeparator()
 		mFeedback := systray.AddMenuItem(i18n.System("feedback"), i18n.System("feedback_tip"))
 		systray.AddSeparator()
 		mQuit := systray.AddMenuItem(i18n.System("quit"), i18n.System("quit_tip"))
+
+		// Reflects the effective mpv source/path in the submenu tooltip so a
+		// user who set a custom path (or whose path went stale) can tell at a
+		// glance without opening the main window. Best-effort: the core may
+		// not have finished starting yet on the very first tick.
+		refreshMPVTooltip := func() {
+			status, err := fetchMPVStatus(coreURL)
+			if err != nil {
+				return
+			}
+			mAdvanced.SetTooltip(mpvStatusTooltip(status))
+		}
+		go refreshMPVTooltip()
 
 		applyLanguage := func(language string) {
 			config.SetLanguage(language)
@@ -86,6 +103,12 @@ func runShell(localURL string, httpSrv *http.Server) {
 			mOpen.SetTooltip(i18n.System("open_main_tip"))
 			mLanguage.SetTitle(i18n.System("language"))
 			languageItems["auto"].SetTitle(i18n.System("language_auto"))
+			mAdvanced.SetTitle(i18n.System("advanced_settings"))
+			mMPVCustom.SetTitle(i18n.System("mpv_custom_menu"))
+			mMPVCustom.SetTooltip(i18n.System("mpv_custom_menu_tip"))
+			mMPVRestore.SetTitle(i18n.System("mpv_restore_default_menu"))
+			mMPVRestore.SetTooltip(i18n.System("mpv_restore_default_menu_tip"))
+			refreshMPVTooltip()
 			mFeedback.SetTitle(i18n.System("feedback"))
 			mFeedback.SetTooltip(i18n.System("feedback_tip"))
 			mQuit.SetTitle(i18n.System("quit"))
@@ -105,6 +128,18 @@ func runShell(localURL string, httpSrv *http.Server) {
 				select {
 				case <-mOpen.ClickedCh:
 					openWindow(desktopURL())
+				case <-mMPVCustom.ClickedCh:
+					// GetOpenFileNameW blocks until the user picks a file or
+					// cancels; run it off the menu-event loop so other tray
+					// items stay responsive while the dialog is open.
+					go func() {
+						mainWindowMu.Lock()
+						owner := mainWindowHWND
+						mainWindowMu.Unlock()
+						runChooseCustomMPV(owner, coreURL, func(mpvStatusResponse) { refreshMPVTooltip() })
+					}()
+				case <-mMPVRestore.ClickedCh:
+					go runRestoreDefaultMPV(coreURL, func(mpvStatusResponse) { refreshMPVTooltip() })
 				case <-mFeedback.ClickedCh:
 					openFeedbackEmail()
 				case <-mQuit.ClickedCh:

@@ -60,8 +60,10 @@ func (s *Server) feedbackReport(w http.ResponseWriter, r *http.Request) {
 			"language":       cfg.Language,
 		},
 		"mpv": map[string]any{
-			"source":    mpvInfo.Source,
-			"available": mpvInfo.Available,
+			"source":            mpvInfo.Source,
+			"available":         mpvInfo.Available,
+			"custom_configured": mpvInfo.CustomConfigured,
+			"custom_invalid":    mpvInfo.CustomInvalid,
 		},
 		"settings": map[string]any{
 			"cache_seconds":         cfg.MpvCacheSecs,

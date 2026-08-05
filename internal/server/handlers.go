@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"tvremote/internal/config"
 	"tvremote/internal/i18n"
 )
 
@@ -69,4 +70,18 @@ func clientForRequest[T any](r *http.Request, fromServer func(string) (T, error)
 		return fromServer(id)
 	}
 	return active()
+}
+
+// requestServerID names the source clientForRequest would resolve to. Caching
+// keyed by item id alone would let two sources that number their items the same
+// way serve each other's artwork, so the caller's ?server_id= is used verbatim
+// and only an omitted one falls back to the active source.
+func requestServerID(r *http.Request) string {
+	if id := r.URL.Query().Get("server_id"); id != "" {
+		return id
+	}
+	if active := config.ActiveServer(); active != nil {
+		return active.ID
+	}
+	return ""
 }

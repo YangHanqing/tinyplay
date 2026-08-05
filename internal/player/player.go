@@ -11,6 +11,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -163,6 +165,11 @@ type Player struct {
 	// and the grace-period timer so a disconnected browser cannot block the
 	// transition. Non-series, live, error, and explicit-stop exits never fire.
 	NaturalEOFReporter func(context PlayContext, revision uint64)
+	// LifecycleReporter is an optional, edge-triggered transport observer for
+	// consumers such as the DLNA MediaRenderer GENA path. It is called from
+	// player goroutines with a PlayContext snapshot; keep handlers short or
+	// hand off work. Nil is fine.
+	LifecycleReporter func(event LifecycleEvent, ctx PlayContext, durationSeconds float64, reason string)
 
 	// ScreensaverImageProvider is injected by the server layer so player stays
 	// decoupled from Emby. It should return backdrop bytes for the requested
@@ -171,7 +178,25 @@ type Player struct {
 
 	screensaverMu sync.Mutex
 	screensaver   screensaverState
+
+	// lastPause / durationNotified edge-trigger LifecycleReporter without
+	// spamming every property tick.
+	lastPause        *bool
+	durationNotified bool
 }
+
+// LifecycleEvent names engine-level transport transitions used by DLNA GENA.
+type LifecycleEvent string
+
+const (
+	LifecyclePlaying  LifecycleEvent = "playing"  // playback-restart
+	LifecyclePaused   LifecycleEvent = "paused"   // pause true
+	LifecycleResumed  LifecycleEvent = "resumed"  // pause false after pause
+	LifecycleStopped  LifecycleEvent = "stopped"  // Stop() or non-EOF process exit
+	LifecycleEOF      LifecycleEvent = "eof"      // natural end-file
+	LifecycleError    LifecycleEvent = "error"    // end-file error
+	LifecycleDuration LifecycleEvent = "duration" // first duration > 0 for this load
+)
 
 // New creates the player and starts its background goroutines.
 func New() *Player {
@@ -204,26 +229,68 @@ func (p *Player) mpvExe() string {
 }
 
 // MPVInfo describes the usable mpv selected for playback. Source is one of
-// custom (TVREMOTE_MPV_EXE), bundled, system, or missing.
+// custom (the user's persisted advanced-settings path), env
+// (TVREMOTE_MPV_EXE), bundled, system, or missing.
 type MPVInfo struct {
 	Path      string
 	Source    string
 	Available bool
+	// CustomConfigured is true whenever the user has a non-empty persisted
+	// mpv path (config.MpvExe), regardless of whether it currently resolves.
+	// CustomInvalid is true when that path is configured but did not resolve
+	// to a usable executable, so DetectMPV fell through to a lower-priority
+	// candidate — the case the UI should render as "custom path is stale,
+	// falling back to bundled" rather than silently showing "bundled".
+	CustomConfigured bool
+	CustomInvalid    bool
 }
 
-// DetectMPV selects the first usable runtime. Invalid overrides deliberately
-// fall through so a stale developer setting cannot disable a bundled build.
+// DetectMPV selects the first usable runtime, in priority order:
+//  1. the user's persisted custom path (desktop shell "高级设置", stored as
+//     config.MpvExe) — the explicit, user-chosen escape hatch;
+//  2. TVREMOTE_MPV_EXE — an advanced *development* override, and also what
+//     the macOS AppKit shell always sets to point at the bundled mpv (see
+//     macos/Sources/main.swift's startCore), which is why it must rank below
+//     the user's own choice: otherwise a user-configured path would be
+//     silently overridden on every macOS launch;
+//  3. the bundled runtime shipped with the app;
+//  4. mpv found on the system PATH (development fallback only).
+//
+// Invalid candidates at any step deliberately fall through rather than
+// reporting "missing", so a stale developer env var or a moved/deleted
+// custom executable can never disable a working bundled build.
 func DetectMPV() MPVInfo {
+	custom := customMPVPath()
+	if custom != "" {
+		if exe := resolveMPV(custom); exe != "" {
+			return MPVInfo{Path: exe, Source: "custom", Available: true, CustomConfigured: true}
+		}
+	}
 	if exe := resolveMPV(os.Getenv("TVREMOTE_MPV_EXE")); exe != "" {
-		return MPVInfo{Path: exe, Source: "custom", Available: true}
+		return MPVInfo{Path: exe, Source: "env", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != ""}
 	}
 	if exe := bundledMPV(); exe != "" {
-		return MPVInfo{Path: exe, Source: "bundled", Available: true}
+		return MPVInfo{Path: exe, Source: "bundled", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != ""}
 	}
 	if exe := systemMPV(); exe != "" {
-		return MPVInfo{Path: exe, Source: "system", Available: true}
+		return MPVInfo{Path: exe, Source: "system", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != ""}
 	}
-	return MPVInfo{Source: "missing"}
+	return MPVInfo{Source: "missing", CustomConfigured: custom != "", CustomInvalid: custom != ""}
+}
+
+// customMPVPath returns the user's persisted custom mpv path, or "" when none
+// is configured. Only an absolute path counts: the desktop shells' file picker
+// can only ever produce one, whereas a bare name would be resolved through
+// PATH and so would mean exactly what the lowest-priority "system" candidate
+// already means — while wrongly outranking the bundled runtime. config.Load
+// already clears the historical bare "mpv" default for the same reason; this
+// is the second line of defence for a hand-edited config.json.
+func customMPVPath() string {
+	custom := strings.TrimSpace(config.MpvExe())
+	if custom == "" || !filepath.IsAbs(custom) {
+		return ""
+	}
+	return custom
 }
 
 // systemMPV finds an mpv supplied by the operating system. Finder-launched
@@ -259,6 +326,51 @@ func resolveMPV(candidate string) string {
 		return ""
 	}
 	return exe
+}
+
+// validateMPVTimeout bounds how long a user-supplied "custom mpv" path is
+// allowed to take to answer `--version` before it is rejected. A hung or
+// misbehaving binary must not stall the desktop shell's settings UI.
+const validateMPVTimeout = 4 * time.Second
+
+// ValidateMPV runs `<path> --version` and confirms both that the executable
+// starts and that its output is recognizably mpv's, so a path that happens to
+// point at some other program (or nothing at all) is rejected before it is
+// ever persisted to config.MpvExe. Used by the desktop shells' "自定义 mpv
+// 播放器…" flow (POST /desktop/mpv) — never call exec on an unvalidated
+// user-supplied path elsewhere.
+func ValidateMPV(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("empty path")
+	}
+	// Reject a bare name here rather than at the call site: a relative path
+	// would validate happily through PATH and then be ignored by DetectMPV
+	// (see customMPVPath), leaving the user with a setting that saved
+	// successfully and did nothing.
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%s is not an absolute path", path)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("cannot access %s: %w", path, err)
+	}
+	if st.IsDir() {
+		return fmt.Errorf("%s is a directory, not an executable", path)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), validateMPVTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("%s did not respond within %s", path, validateMPVTimeout)
+	}
+	if err != nil {
+		return fmt.Errorf("%s --version failed: %w", path, err)
+	}
+	if !strings.Contains(strings.ToLower(string(out)), "mpv") {
+		return fmt.Errorf("%s does not look like mpv", path)
+	}
+	return nil
 }
 
 func cacheConfig() (int, int, int) {
@@ -571,10 +683,12 @@ func (p *Player) handleEvent(line []byte) {
 			// just that the file was opened — the right signal to end the
 			// desktop "connecting/buffering" indicator (see armStartingLocked).
 			p.clearStarting()
+			p.fireLifecycle(LifecyclePlaying, "", p.durationSeconds())
 		case "end-file":
 			reason, _ := fields["reason"].(string)
 			if reason == "error" {
 				p.reportLiveInterruption(reason)
+				p.fireLifecycle(LifecycleError, reason, p.durationSeconds())
 			}
 		}
 		return
@@ -589,6 +703,56 @@ func (p *Player) handleEvent(line []byte) {
 			atomic.StoreInt64(&p.lastPosTicks, int64(f*1e7))
 		}
 	}
+	if msg.Name == "pause" {
+		paused, ok := data.(bool)
+		if ok {
+			p.mu.Lock()
+			prev := p.lastPause
+			p.lastPause = &paused
+			p.mu.Unlock()
+			if prev == nil || *prev != paused {
+				if paused {
+					p.fireLifecycle(LifecyclePaused, "", p.durationSeconds())
+				} else {
+					p.fireLifecycle(LifecycleResumed, "", p.durationSeconds())
+				}
+			}
+		}
+	}
+	if msg.Name == "duration" {
+		if f, ok := data.(float64); ok && f > 0 {
+			p.mu.Lock()
+			already := p.durationNotified
+			if !already {
+				p.durationNotified = true
+			}
+			p.mu.Unlock()
+			if !already {
+				p.fireLifecycle(LifecycleDuration, "", f)
+			}
+		}
+	}
+}
+
+func (p *Player) durationSeconds() float64 {
+	p.propsMu.Lock()
+	defer p.propsMu.Unlock()
+	if f, ok := p.liveProps["duration"].(float64); ok {
+		return f
+	}
+	return 0
+}
+
+// fireLifecycle invokes LifecycleReporter with a ctx snapshot. Safe with a nil reporter.
+func (p *Player) fireLifecycle(event LifecycleEvent, reason string, durationSeconds float64) {
+	reporter := p.LifecycleReporter
+	if reporter == nil {
+		return
+	}
+	p.mu.Lock()
+	ctx := p.ctx
+	p.mu.Unlock()
+	reporter(event, ctx, durationSeconds, reason)
 }
 
 func (p *Player) reportPlaybackStarted() {
@@ -913,6 +1077,10 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		// otherwise natural EOF never exits and host autoplay cannot run.
 		p.send([]any{"set_property", "keep-open", "no"})
 		result = p.send([]any{"loadfile", url, "replace"})
+		// loadfile keeps the previous pause flag. A prior Pause (remote or
+		// DLNA) would otherwise leave the new title frozen while still
+		// "loaded" — the classic stuck-cast symptom for reused mpv.
+		p.send([]any{"set_property", "pause", false})
 		if opt.Title != "" {
 			p.send([]any{"set_property", "title", opt.Title})
 		}
@@ -1013,6 +1181,13 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 				if finished.IsLive && !naturalEOF {
 					p.reportLiveInterruption("process_exit")
 				}
+				if naturalEOF {
+					p.fireLifecycle(LifecycleEOF, "eof", p.durationSeconds())
+				} else if exit != "clean" {
+					p.fireLifecycle(LifecycleError, exit, p.durationSeconds())
+				} else {
+					p.fireLifecycle(LifecycleStopped, "process_exit", p.durationSeconds())
+				}
 				p.mu.Lock()
 				completedSeries := naturalEOF && finished.SeriesID != "" && finished.ItemID != ""
 				var completed PlayContext
@@ -1050,6 +1225,8 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 
 	p.mu.Lock()
 	p.liveRecoveryNotified = false
+	p.lastPause = nil
+	p.durationNotified = false
 	p.ctx = PlayContext{
 		ServerID:     opt.ServerID,
 		ItemID:       opt.ItemID,
@@ -1127,6 +1304,9 @@ func (p *Player) Stop() map[string]any {
 	p.hideScreensaver()
 	p.appendDiagnosticEvent("stop_requested", map[string]any{})
 	p.finalizeDiagnostic("user_stop", "user_action")
+	// Snapshot before fireStopReport/clear so DLNA GENA still sees SourceType.
+	dur := p.durationSeconds()
+	p.fireLifecycle(LifecycleStopped, "user_stop", dur)
 	p.fireStopReport()
 	p.clearStarting()
 	p.mu.Lock()
@@ -1146,6 +1326,8 @@ func (p *Player) Stop() map[string]any {
 	}
 	p.mu.Lock()
 	p.liveRecoveryNotified = false
+	p.lastPause = nil
+	p.durationNotified = false
 	p.ctx = PlayContext{}
 	p.bumpPlaybackRevisionLocked()
 	p.mu.Unlock()

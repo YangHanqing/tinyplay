@@ -19,6 +19,7 @@ let browseMode = 'library'; // 'library' | 'resume' — what loadBrowse() fetche
 let browseStart = 0;
 const PAGE_SIZE = 60;
 const RESUME_PAGE_SIZE = 30;
+const HOME_SECTION_ITEM_LIMIT = 8;
 let browseHasMore = false;
 let libraryItems = [{ Id: '', Name: tr('all'), CollectionType: '' }];
 let currentLibraryName = tr('all');
@@ -3766,75 +3767,61 @@ async function loadAllCategoryChipCounts(libraryLoad = currentLibraryLoad()) {
   }));
 }
 
-/* ── Collection type sections on home ────────────────────────────────────── */
-const _COLLECTION_TYPE_LABEL = {
-  movies: 'movie', tvshows: 'series', boxsets: 'boxset',
-  playlists: 'playlist', music: 'music', homevideos: 'homeVideos',
-};
+/* ── Collection sections on home ─────────────────────────────────────────── */
+// A home section always belongs to one actual library.  Sorting by media kind
+// gives people a predictable entry point, while preserving server order inside
+// a kind keeps deliberately curated shelves in their intended order.
+const _HOME_SECTION_ORDER = ['movies', 'tvshows', 'boxsets', 'homevideos', 'musicvideos', '_other'];
+const _HOME_SECTION_TYPES = new Set(_HOME_SECTION_ORDER);
 
 async function loadHomeTypeSections(libraryLoad = currentLibraryLoad()) {
   const container = document.getElementById('home-type-sections');
   if (!container || !isCurrentLibraryLoad(libraryLoad)) return;
 
-  // Group libraries by CollectionType; keep order from Emby
-  const seen = new Set();
-  const groups = [];
-  for (const lib of _homeLibraries) {
-    const type = lib.CollectionType || '_other';
-    if (!seen.has(type)) { seen.add(type); groups.push({ type, libs: [] }); }
-    groups.find(g => g.type === type).libs.push(lib);
-  }
+  const videoLibraries = _homeLibraries
+    .map((lib, serverIndex) => ({ lib, serverIndex, type: lib.CollectionType || '_other' }))
+    .filter(entry => _HOME_SECTION_TYPES.has(entry.type))
+    .sort((a, b) => {
+      const ai = _HOME_SECTION_ORDER.indexOf(a.type);
+      const bi = _HOME_SECTION_ORDER.indexOf(b.type);
+      return ai === bi ? a.serverIndex - b.serverIndex : ai - bi;
+    });
 
-  if (!groups.length) { container.innerHTML = ''; return; }
+  if (!videoLibraries.length) { container.innerHTML = ''; return; }
 
-  // Render skeletons
-  container.innerHTML = groups.map(g => {
-    const label = _COLLECTION_TYPE_LABEL[g.type] ? tr(_COLLECTION_TYPE_LABEL[g.type]) : (g.libs[0]?.Name || g.type);
-    const skeletonRow = Array(4).fill(skeletonPosterCardHtml()).join('');
-    return `
-      <section class="home-section" id="home-sec-${g.type}">
-        <div class="section-header">
-          <h2 class="section-title-h">${esc(label)}</h2>
-          <button class="section-more-btn" onclick="viewAllByType('${g.type}')">
-            ${tr('viewAll')} <svg class="chevron-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>
-          </button>
-        </div>
-        <div class="poster-row-4" id="home-row-${g.type}">
-          ${skeletonRow}
-        </div>
-      </section>`;
-  }).join('');
+  container.innerHTML = videoLibraries.map(() => `
+    <section class="home-section">
+      <div class="section-header"><div class="skeleton-line skeleton-shine" style="height:13px;width:68px;border-radius:6px"></div></div>
+      <div class="poster-row-4">${Array(HOME_SECTION_ITEM_LIMIT).fill(skeletonPosterCardHtml()).join('')}</div>
+    </section>`).join('');
 
-  // Load items for each group in parallel
-  await Promise.all(groups.map(async g => {
-    const row = document.getElementById(`home-row-${g.type}`);
-    if (!row) return;
+  const results = await Promise.all(videoLibraries.map(async entry => {
     try {
-      const firstLib = g.libs[0];
-      const qs = new URLSearchParams({ start: 0, limit: 8 });
-      if (firstLib?.Id) qs.set('parent_id', firstLib.Id);
+      const qs = new URLSearchParams({ start: 0, limit: HOME_SECTION_ITEM_LIMIT, parent_id: entry.lib.Id });
       const data = await libraryApi('GET', `/api/library/items?${qs}`, undefined, libraryLoad);
-      if (!isCurrentLibraryLoad(libraryLoad)) return;
-      const items = (data.Items || []).slice(0, 8);
-      if (!items.length) {
-        document.getElementById(`home-sec-${g.type}`)?.classList.add('hidden');
-        return;
-      }
-      row.innerHTML = items.map(item => posterCardHtml(item)).join('');
+      return { ...entry, items: (data.Items || []).slice(0, HOME_SECTION_ITEM_LIMIT) };
     } catch (e) {
-      if (e?.name !== 'AbortError' && isCurrentLibraryLoad(libraryLoad) && row) {
-        row.innerHTML = `<div class="row-error">${tr('loadFailed')}</div>`;
-      }
+      if (e?.name === 'AbortError') throw e;
+      return { ...entry, items: [], loadError: true };
     }
-  }));
-}
+  })).catch(e => e?.name === 'AbortError' ? null : Promise.reject(e));
 
-function viewAllByType(type) {
-  // Match the same grouping key loadHomeTypeSections uses; libraries with no
-  // CollectionType are grouped under '_other' and previously matched nothing,
-  // so their View All button did nothing.
-  const lib = _homeLibraries.find(l => (l.CollectionType || '_other') === type);
-  if (lib) switchLibrary(lib.Id, lib.Name);
+  if (!results || !isCurrentLibraryLoad(libraryLoad)) return;
+  const visibleSections = results.filter(result => result.items.length > 0);
+  if (!visibleSections.length && results.some(result => result.loadError)) {
+    container.innerHTML = `<div class="row-error">${tr('loadFailed')}</div>`;
+    return;
+  }
+  container.innerHTML = visibleSections.map(({ lib, items }) => `
+    <section class="home-section">
+      <div class="section-header">
+        <h2 class="section-title-h">${esc(lib.Name)}</h2>
+        <button class="section-more-btn" onclick="switchLibrary('${jsStr(lib.Id)}', '${jsStr(lib.Name)}')">
+          ${tr('viewAll')} <svg class="chevron-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+      </div>
+      <div class="poster-row-4">${items.map(item => posterCardHtml(item)).join('')}</div>
+    </section>`).join('');
 }
 
 async function viewAllResume() {

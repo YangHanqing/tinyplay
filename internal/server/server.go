@@ -306,6 +306,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /desktop/pairing/refresh", s.pairingRefresh)
 	mux.HandleFunc("POST /desktop/pairing/unpair-all", s.pairingUnpairAll)
 
+	// ── Native controller contract ──
+	mux.HandleFunc("GET /api/capabilities", s.capabilities)
+	mux.HandleFunc("GET /api/entitlements", s.entitlements)
+
 	// ── App settings ──
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.updateSettings)
@@ -315,6 +319,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dlna/{path...}", s.dlna.ServeHTTP)
 	mux.HandleFunc("POST /dlna/{path...}", s.dlna.ServeHTTP)
 	mux.HandleFunc("SUBSCRIBE /dlna/{path...}", s.dlna.ServeHTTP)
+	mux.HandleFunc("UNSUBSCRIBE /dlna/{path...}", s.dlna.ServeHTTP)
 
 	// ── Unified device activity (which surface owns the device right now) ──
 	// Read-only derivation over the player + website states; lets a reloaded
@@ -370,6 +375,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /desktop/qr.png", s.desktopQR)
 	mux.HandleFunc("GET /desktop/background.jpg", s.desktopBackground)
 	mux.HandleFunc("GET /desktop/open-logs", s.openLogs)
+
+	// ── Advanced settings: custom mpv executable (tray/menu-bar only) ──
+	mux.HandleFunc("GET /desktop/mpv", s.mpvStatus)
+	mux.HandleFunc("POST /desktop/mpv", s.mpvSetCustom)
 
 	// ── System output volume (remote's volume slider) ──
 	mux.HandleFunc("GET /api/system/volume", s.systemVolumeGet)

@@ -385,22 +385,58 @@ func (c *Client) Seasons(seriesID string) ([]byte, error) {
 }
 
 func (c *Client) ImageBytes(id string, maxHeight int, imageType string) ([]byte, string) {
+	serverID := ""
+	if c.server != nil {
+		serverID = c.server.ID
+	}
+	if paths, ok := lookupArtPaths(serverID, id); ok {
+		if data, ct := c.artBytes(paths, maxHeight, imageType); data != nil {
+			return data, ct
+		}
+		// Plex regenerated the artwork, so the memoised path 404s. Fall
+		// through to a fresh metadata lookup instead of serving nothing.
+		forgetArtPaths(serverID, id)
+	}
+	paths := c.fetchArtPaths(id)
+	if paths == nil {
+		return nil, ""
+	}
+	storeArtPaths(serverID, id, paths)
+	return c.artBytes(paths, maxHeight, imageType)
+}
+
+// artKeys are the Plex metadata fields that can hold usable artwork.
+var artKeys = []string{"thumb", "grandparentThumb", "art"}
+
+func (c *Client) fetchArtPaths(id string) map[string]string {
 	d, e := c.get("/library/metadata/"+url.PathEscape(id), nil)
 	if e != nil {
-		return nil, ""
+		return nil
 	}
 	ms := metadata(d)
 	if len(ms) == 0 {
-		return nil, ""
+		return nil
 	}
 	m := ms[0]
-	keys := []string{"thumb", "grandparentThumb", "art"}
+	paths := map[string]string{}
+	for _, key := range artKeys {
+		rel := stringValue(m[key])
+		if rel == "" || rel == "<nil>" {
+			continue
+		}
+		paths[key] = rel
+	}
+	return paths
+}
+
+func (c *Client) artBytes(paths map[string]string, maxHeight int, imageType string) ([]byte, string) {
+	keys := artKeys
 	if imageType == "Backdrop" {
 		keys = []string{"art", "thumb"}
 	}
 	for _, key := range keys {
-		rel := stringValue(m[key])
-		if rel == "" || rel == "<nil>" {
+		rel := paths[key]
+		if rel == "" {
 			continue
 		}
 		q := url.Values{"height": {strconv.Itoa(maxHeight)}, "width": {strconv.Itoa(maxHeight)}, "minSize": {"1"}, "upscale": {"1"}, "url": {rel}, "X-Plex-Token": {c.token()}}

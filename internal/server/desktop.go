@@ -55,16 +55,16 @@ func (s *Server) phoneURL() string {
 // HTML/CSS/JS) over loopback with ?lang=&version=. Platform differences stay
 // in the shells only:
 //
-//   • Window chrome size: both target ~900×540 content (Windows outer height
+//   - Window chrome size: both target ~900×540 content (Windows outer height
 //     is larger by the title-bar allowance).
-//   • Native bridges (same names on both sides):
-//       tinyplaySetFullscreen      — Win Bind / mac messageHandler
-//       tinyplayIsFullscreen       — Win Bind; mac re-syncs via didFinish instead
-//       tinyplayShowAbout          — version footer click
-//       tinyplayCheckForUpdates    — footer; both shells then call
-//                                    window.__tinyplayUpdateCheckDone()
-//       tinyplayRestart            — macOS: relaunch after Accessibility grant
-//   • macOS-only: ?local_network=denied for Local Network permission help.
+//   - Native bridges (same names on both sides):
+//     tinyplaySetFullscreen      — Win Bind / mac messageHandler
+//     tinyplayIsFullscreen       — Win Bind; mac re-syncs via didFinish instead
+//     tinyplayShowAbout          — version footer click
+//     tinyplayCheckForUpdates    — footer; both shells then call
+//     window.__tinyplayUpdateCheckDone()
+//     tinyplayRestart            — macOS: relaunch after Accessibility grant
+//   - macOS-only: ?local_network=denied for Local Network permission help.
 //
 // Compact is the default; Full Screen expands the same window into an HTPC
 // standby idle screen.
@@ -73,7 +73,7 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
 	lang := i18n.RequestLang(r)
 	help := i18n.T(lang, desktopNetworkHelpKey())
 	denied := runtime.GOOS == "darwin" && r.URL.Query().Get("local_network") == "denied"
-	notices := desktopNotices(lang, denied, player.DetectMPV().Available)
+	notices := desktopNotices(lang, denied, player.DetectMPV())
 	standbyDLNA := s.desktopStandbyDLNA(lang)
 	dlnaSection := s.desktopDLNASection(lang)
 	inputSection := desktopInputSection(lang)
@@ -309,8 +309,14 @@ func (s *Server) desktopPage(w http.ResponseWriter, r *http.Request) {
     border-color: rgba(220,38,38,.18);
     color: var(--danger-text);
   }
+  .notice.warning {
+    background: rgba(217,119,6,.08);
+    border-color: rgba(217,119,6,.20);
+    color: #92400e;
+  }
   .notice strong { font-size: 14px; color: var(--fg); }
   .notice.error strong { color: #9f1239; }
+  .notice.warning strong { color: #92400e; }
 
   /* —— Pairing: replace the QR plate in place (no page reflow) —— */
   .compact-qr-stage.has-card {
@@ -1318,16 +1324,22 @@ func (s *Server) desktopStandbyDLNA(lang string) string {
 
 // desktopNotices renders only actionable failures. A configured DLNA receiver
 // still answers discovery without mpv, so surface the missing runtime before a
-// phone sender reaches a generic casting error.
-func desktopNotices(lang string, denied, mpvAvailable bool) string {
+// phone sender reaches a generic casting error. A configured-but-stale custom
+// mpv path (advanced settings) also gets its own, lower-severity notice: the
+// app is not broken (it silently fell back to the bundled runtime), but a
+// user who set that path on purpose should know it stopped being used.
+func desktopNotices(lang string, denied bool, mpv player.MPVInfo) string {
 	notices := ""
 	if denied {
 		notices += fmt.Sprintf(`<section class="notice error" role="alert"><strong>%s</strong><span>%s</span></section>`,
 			i18n.T(lang, "desktop_network_denied_title"), i18n.T(lang, "desktop_network_denied_body"))
 	}
-	if !mpvAvailable {
+	if !mpv.Available {
 		notices += fmt.Sprintf(`<section class="notice error" role="alert"><strong>%s</strong><span>%s</span></section>`,
 			i18n.T(lang, "desktop_mpv_missing_title"), i18n.T(lang, "desktop_mpv_missing_body"))
+	} else if mpv.CustomInvalid {
+		notices += fmt.Sprintf(`<section class="notice warning" role="status"><strong>%s</strong><span>%s</span></section>`,
+			i18n.T(lang, "desktop_mpv_custom_invalid_title"), i18n.T(lang, "desktop_mpv_custom_invalid_body"))
 	}
 	return notices
 }

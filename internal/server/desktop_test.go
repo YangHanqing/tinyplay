@@ -9,6 +9,7 @@ import (
 
 	"tvremote/internal/config"
 	"tvremote/internal/i18n"
+	"tvremote/internal/player"
 )
 
 func TestDesktopPageIncludesLocalizedNetworkGuidance(t *testing.T) {
@@ -273,12 +274,15 @@ func TestDesktopPageShowsMacOSLocalNetworkDenial(t *testing.T) {
 
 func TestDesktopNoticesIncludeMissingMPV(t *testing.T) {
 	const lang = "zh-CN"
-	notices := desktopNotices(lang, false, false)
+	notices := desktopNotices(lang, false, player.MPVInfo{Available: false})
 	if !strings.Contains(notices, i18n.T(lang, "desktop_mpv_missing_title")) {
 		t.Fatalf("missing mpv runtime warning: %s", notices)
 	}
-	if got := desktopNotices(lang, false, true); got != "" {
+	if got := desktopNotices(lang, false, player.MPVInfo{Available: true}); got != "" {
 		t.Fatalf("available mpv should not produce a warning: %s", got)
+	}
+	if got := desktopNotices(lang, false, player.MPVInfo{Available: true, CustomConfigured: true, CustomInvalid: true}); !strings.Contains(got, i18n.T(lang, "desktop_mpv_custom_invalid_title")) {
+		t.Fatalf("stale custom mpv path should produce a warning: %s", got)
 	}
 }
 

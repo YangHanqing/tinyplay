@@ -91,6 +91,21 @@ func TestResetAllClearsWebsiteCustomSites(t *testing.T) {
 	}
 }
 
+func TestInstallationIDPersistsAcrossLoadsAndReset(t *testing.T) {
+	useTempData(t)
+	first := InstallationID()
+	if first == "" {
+		t.Fatal("fresh install has empty installation id")
+	}
+	if again := InstallationID(); again != first {
+		t.Fatalf("installation id changed across loads: %q -> %q", first, again)
+	}
+	ResetAll()
+	if afterReset := InstallationID(); afterReset != first {
+		t.Fatalf("installation id changed across settings reset: %q -> %q", first, afterReset)
+	}
+}
+
 func TestHostsCappedAtThree(t *testing.T) {
 	useTempData(t)
 	srv := AddServer(Server{Name: "Home", Hosts: []string{"a", " ", "b", "c", "d"}})

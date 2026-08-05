@@ -105,6 +105,11 @@ func RemindAboutUpdateAfter(version string, until time.Time) {
 // DLNAReceiverID is a stable UPnP device UUID, generated once and persisted.
 func DLNAReceiverID() string { return Load().DLNAReceiverID }
 
+// InstallationID is the stable identity advertised to paired native clients.
+// ResetAll intentionally leaves it untouched so a saved iPhone target does not
+// become a different device merely because the user reset media settings.
+func InstallationID() string { return Load().InstallationID }
+
 // SetDLNAReceiverEnabled persists the receiver toggle. The server owns the
 // socket lifecycle; callers apply this result immediately after saving.
 func SetDLNAReceiverEnabled(enabled bool) map[string]any {
@@ -136,6 +141,19 @@ func SetSeekSeconds(backward, forward int) map[string]any {
 func SetMpvCacheSecs(secs int) map[string]any {
 	patch(func(cfg *Config) { cfg.MpvCacheSecs = NormalizeMpvCacheSecs(secs) })
 	return Settings()
+}
+
+// MpvExe returns the user's persisted custom mpv executable path, or "" if
+// none is configured. This is distinct from the settings the phone UI edits
+// (Settings()/SetMpvCacheSecs/...): it is only reachable through the
+// desktop shell's "高级设置" menu (see internal/server's /desktop/mpv route).
+func MpvExe() string { return Load().MpvExe }
+
+// SetMpvExe persists (or, given "", clears) the user's custom mpv path. The
+// caller is responsible for validating a non-empty path before calling this
+// — see player.ValidateMPV — so that an unusable path never lands on disk.
+func SetMpvExe(path string) {
+	patch(func(cfg *Config) { cfg.MpvExe = strings.TrimSpace(path) })
 }
 
 // NormalizeLanguage maps a user/config language preference onto the shared
