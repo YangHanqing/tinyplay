@@ -3,6 +3,8 @@ package config
 import (
 	"testing"
 	"time"
+
+	"tvremote/internal/i18n"
 )
 
 func TestNormalizeLanguage(t *testing.T) {
@@ -94,3 +96,38 @@ func TestUpdatePromptPreferences(t *testing.T) {
 		t.Fatal("snoozed version should be offered after the reminder time")
 	}
 }
+
+// "Automatic" is read on the phone, so it has to mean the phone's language.
+// Resolving it against the desktop is what served an English page to a Chinese
+// phone from a Chinese Mac. An explicit selection is a deliberate choice and
+// must survive whatever the caller's Accept-Language says.
+func TestSettingsForResolvesAutoAgainstTheRequester(t *testing.T) {
+	useTempData(t)
+
+	SetLanguage("auto")
+	if got := SettingsFor("ja")["resolved_language"]; got != "ja" {
+		t.Errorf("auto + Japanese requester = %v, want ja", got)
+	}
+	if got := SettingsFor("zh-Hans-CN")["resolved_language"]; got != "zh-CN" {
+		t.Errorf("auto + zh-Hans-CN requester = %v, want zh-CN", got)
+	}
+	// No request in hand: fall back to this machine, never to a Normalize()
+	// default. "" must not be read as English.
+	if got := SettingsFor("")["resolved_language"]; got != i18nSystemLangForTest() {
+		t.Errorf("auto + no requester = %v, want the desktop locale %v", got, i18nSystemLangForTest())
+	}
+	// A language we do not ship is not a reason to ignore the desktop either.
+	if got := SettingsFor("cy-GB")["resolved_language"]; got != i18nSystemLangForTest() {
+		t.Errorf("auto + unshipped language = %v, want the desktop locale", got)
+	}
+
+	SetLanguage("en")
+	if got := SettingsFor("ja")["resolved_language"]; got != "en" {
+		t.Errorf("explicit en + Japanese requester = %v, want en", got)
+	}
+	if got := SettingsFor("ja")["language"]; got != "en" {
+		t.Errorf("explicit en should round-trip as the stored setting, got %v", got)
+	}
+}
+
+func i18nSystemLangForTest() string { return i18n.SystemLang() }

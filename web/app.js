@@ -78,7 +78,7 @@ let _moreSheetOpen = false;
 let _aspectSheetOpen = false;
 let _currentAspect = 'fit';
 let _loopFile = false;
-let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true, mpv_available: true, language: 'auto', autoplay_next_episode: true };
+let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true, mpv_available: true, language: 'auto', autoplay_next_episode: true, keep_playback_speed: true, remember_title_settings: false };
 // Display-only countdown: the Go host owns the 5s timer and next-episode
 // transition. These locals only mirror autoplay_remaining_ms from player state.
 let _autoplayCountdownTimer = null;
@@ -130,8 +130,14 @@ let _iptvSearch = '';
 let _iptvChannels = [];         // last-loaded channel rows for the active category/search
 let _iptvLoadSeq = 0;
 let currentItemIsLive = false;  // true while an IPTV channel is the now-playing item
+let currentItemIsAudioOnly = false; // true when /api/player/state reports audio_only
 let currentPlaybackSourceType = 'emby';
 let currentIPTVChannelId = '';
+
+// Lucide "music" path data — shared by the file-browser row and the remote
+// poster-card fallback so both surfaces agree on the glyph.
+const _LUCIDE_MUSIC_INNER = '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>';
+const _MUSIC_POSTER_ICON = `<svg class="remote-poster-music" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${_LUCIDE_MUSIC_INNER}</svg>`;
 let currentIPTVVariantIndex = 0;
 let currentIPTVVariantCount = 0;
 let currentIPTVHasProgramme = false;
@@ -1383,6 +1389,8 @@ async function restorePlayerContext(state = null) {
     if (state.item_id || state.title) {
       _playbackServerId = state.server_id || _activeServerId;
       currentPlaybackSourceType = state.source_type || 'emby';
+      // Missing field on older backends → false (not audio).
+      currentItemIsAudioOnly = state.audio_only === true;
       currentSeriesId  = state.series_id || '';
       currentSeasonId  = state.season_id || '';
       currentSeriesTitle = state.series_title || '';
@@ -1719,6 +1727,7 @@ async function stopPlayer() {
     currentEpisodeLabel = '';
     currentPosterItemId = '';
     currentItemIsSeries = false;
+    currentItemIsAudioOnly = false;
     currentPlaybackSourceType = 'emby';
     _loopFile = false;
     _currentAspect = 'fit';
@@ -1812,6 +1821,7 @@ async function playItem(itemId, seriesId, seasonId, title, seriesTitle = '', epi
   currentEpisodeLabel = episodeLabel || '';
   currentPosterItemId = resolvedPoster;
   currentItemIsSeries = !!currentSeriesId;
+  currentItemIsAudioOnly = false;
   currentPlaybackSourceType = browseSourceType(serverId);
   currentIPTVChannelId = '';
   currentIPTVVariantIndex = 0;
@@ -1923,6 +1933,7 @@ async function _stepEpisode(delta) {
 function _clearNowPlayingChrome() {
   currentItemId = '';
   currentItemIsSeries = false;
+  currentItemIsAudioOnly = false;
   _currentAspect = 'fit';
   _loopFile = false;
   setNowPlaying('');
@@ -2088,6 +2099,8 @@ function setNowPlaying(title, meta = {}) {
     document.getElementById('player-info-placeholder')?.classList.remove('hidden');
   }
   currentItemIsLive = !!meta.isLive;
+  if (!hasTitle) currentItemIsAudioOnly = false;
+  updatePosterFallback();
   updateEpisodeNavVisibility(currentItemIsSeries);
   updateLiveControlsVisibility(currentItemIsLive);
   if (posterItemId && hasTitle) {
@@ -2097,12 +2110,22 @@ function setNowPlaying(title, meta = {}) {
   }
 }
 
+// Secondary line on the now-playing card. IPTV wins over everything (a live
+// channel is a live channel); audio_only outranks the DLNA label so a cast
+// song reads "音乐" rather than "DLNA 接收器".
+function nowPlayingKindLabel() {
+  if (isCurrentIPTVPlayback()) return sourceTypeLabel('iptv');
+  if (currentItemIsAudioOnly) return tr('music');
+  if (isDLNAPlayback()) return tr('dlnaReceiver');
+  return tr('movie');
+}
+
 function updateEpisodeNavVisibility(isSeries) {
   document.getElementById('ep-controls')?.classList.toggle('hidden', !isSeries);
   const movieInfo = document.getElementById('now-playing-movie-info');
   if (movieInfo) {
     movieInfo.classList.toggle('hidden', isSeries);
-    if (!isSeries) movieInfo.textContent = isCurrentIPTVPlayback() ? sourceTypeLabel('iptv') : (isDLNAPlayback() ? tr('dlnaReceiver') : tr('movie'));
+    if (!isSeries) movieInfo.textContent = nowPlayingKindLabel();
   }
 }
 
@@ -2118,9 +2141,13 @@ function isDLNAPlayback() { return currentPlaybackSourceType === 'dlna'; }
 // has no subtitle source, and "speed" is meaningless for a live broadcast.
 // Audio track switching stays — multi-language channels commonly multiplex
 // alternate audio.
+// Audio-only items (mp3/flac from a file source or DLNA) additionally hide
+// aspect / subtitle / audio-track tiles — they mean nothing for a song.
+// Speed, seek, progress and transport stay (a song is still seekable).
 function updateLiveControlsVisibility(isLive) {
   const live = isLive || isCurrentIPTVPlayback();
   const dlna = isDLNAPlayback();
+  const audioOnly = currentItemIsAudioOnly;
   setLiveProgressHidden(live);
   document.getElementById('btn-seek-backward')?.classList.toggle('hidden', live);
   document.getElementById('btn-seek-forward')?.classList.toggle('hidden', live);
@@ -2129,12 +2156,28 @@ function updateLiveControlsVisibility(isLive) {
   document.getElementById('tool-tile-iptv-live')?.classList.toggle('hidden', !live);
   // DLNA contributes the stream URL, but does not standardise runtime audio or
   // subtitle track selection. Keep those local-player controls out of its UI.
-  document.getElementById('tool-tile-audio')?.classList.toggle('hidden', dlna);
-  document.getElementById('tool-tile-subtitle')?.classList.toggle('hidden', live || dlna);
+  // Audio-only layers on top (an item can be both DLNA and audio).
+  document.getElementById('tool-tile-aspect')?.classList.toggle('hidden', audioOnly);
+  document.getElementById('tool-tile-audio')?.classList.toggle('hidden', dlna || audioOnly);
+  document.getElementById('tool-tile-subtitle')?.classList.toggle('hidden', live || dlna || audioOnly);
   document.getElementById('tool-tile-speed')?.classList.toggle('hidden', live);
   _setText('tool-tile-iptv-quality-label', tr('iptvQualitySwitcher'));
   _setText('tool-tile-iptv-guide-label', tr('iptvProgrammeGuide'));
   _setText('tool-tile-iptv-live-label', tr('iptvBackToLive'));
+}
+
+// Poster card has no artwork for a song — swap the literal "TV" placeholder
+// for the same Lucide music glyph the file browser uses.
+function updatePosterFallback() {
+  const el = document.getElementById('remote-poster-fallback');
+  if (!el) return;
+  if (currentItemIsAudioOnly) {
+    el.classList.add('is-audio');
+    el.innerHTML = _MUSIC_POSTER_ICON;
+  } else {
+    el.classList.remove('is-audio');
+    el.textContent = 'TV';
+  }
 }
 
 function updateLibraryEmptyState(isEmpty) {
@@ -2390,16 +2433,17 @@ function _applyProps(p) {
   _setText('info-sub-delay',   _fmtDelay(subDly));
   _setText('info-audio-delay', _fmtDelay(audDly));
 
-  // Movie info line (duration shown when not a series; IPTV is live, no duration).
+  // Movie/music info line (duration shown when not a series; IPTV is live, no duration).
   if (!currentItemIsSeries) {
     const movieInfo = document.getElementById('now-playing-movie-info');
     if (movieInfo && !movieInfo.classList.contains('hidden')) {
       if (isCurrentIPTVPlayback()) {
         movieInfo.textContent = sourceTypeLabel('iptv');
       } else {
+        const kind = nowPlayingKindLabel();
         const dur = p['duration'];
         const durStr = (dur != null && Number.isFinite(dur) && dur > 0) ? fmtRuntime(dur * 1e7) : '';
-        movieInfo.textContent = durStr ? `${tr('movie')} · ${durStr}` : tr('movie');
+        movieInfo.textContent = durStr ? `${kind} · ${durStr}` : kind;
       }
     }
   }
@@ -2811,6 +2855,7 @@ async function playIPTVCatchup(start, stop, programmeTitle) {
   currentPlaybackSourceType = 'iptv-catchup';
   currentIPTVIsCatchup = true;
   currentItemIsLive = false;
+  currentItemIsAudioOnly = false;
   currentItemId = currentIPTVChannelId;
   setNowPlaying(title, { isLive: false });
   document.getElementById('play-loading-tag')?.classList.remove('hidden');
@@ -4765,6 +4810,8 @@ async function loadSettings() {
       mpv_available: settings.mpv_available !== false,
       language: settings.language || 'auto',
       autoplay_next_episode: settings.autoplay_next_episode !== false,
+      keep_playback_speed: settings.keep_playback_speed !== false,
+      remember_title_settings: settings.remember_title_settings === true,
     };
     _supportedFileProtocols = Array.isArray(settings.supported_file_protocols)
       ? settings.supported_file_protocols
@@ -4819,6 +4866,22 @@ function renderSettingsUi() {
   document.getElementById('autoplay-next-episode-on-btn')?.classList.toggle('active', autoplayEnabled);
   document.getElementById('autoplay-next-episode-off-btn')?.classList.toggle('active', !autoplayEnabled);
 
+  _setText('keep-playback-speed-title', tr('keepPlaybackSpeedTitle'));
+  _setText('keep-playback-speed-hint', tr('keepPlaybackSpeedHint'));
+  const keepSpeedEnabled = _settings.keep_playback_speed !== false;
+  _setText('keep-playback-speed-on-btn', tr('keepPlaybackSpeedOn'));
+  _setText('keep-playback-speed-off-btn', tr('keepPlaybackSpeedOff'));
+  document.getElementById('keep-playback-speed-on-btn')?.classList.toggle('active', keepSpeedEnabled);
+  document.getElementById('keep-playback-speed-off-btn')?.classList.toggle('active', !keepSpeedEnabled);
+
+  _setText('remember-title-settings-title', tr('rememberTitleSettingsTitle'));
+  _setText('remember-title-settings-hint', tr('rememberTitleSettingsHint'));
+  const rememberTitleEnabled = _settings.remember_title_settings === true;
+  _setText('remember-title-settings-on-btn', tr('rememberTitleSettingsOn'));
+  _setText('remember-title-settings-off-btn', tr('rememberTitleSettingsOff'));
+  document.getElementById('remember-title-settings-on-btn')?.classList.toggle('active', rememberTitleEnabled);
+  document.getElementById('remember-title-settings-off-btn')?.classList.toggle('active', !rememberTitleEnabled);
+
   // Seek settings
   _renderSeekSelect('seek-backward-select', _settings.seek_backward_secs || 5);
   _renderSeekSelect('seek-forward-select', _settings.seek_forward_secs || 30);
@@ -4847,6 +4910,28 @@ async function setAutoplayNextEpisode(enabled) {
     const saved = await api('PUT', '/api/settings', { autoplay_next_episode: enabled });
     _settings.autoplay_next_episode = saved.autoplay_next_episode !== false;
     toast(tr(enabled ? 'autoplayNextEpisodeEnabled' : 'autoplayNextEpisodeDisabled'), 'success');
+  } catch (e) {
+    toast(tr('settingsSaveFailed'), 'error');
+  }
+  renderSettingsUi();
+}
+
+async function setKeepPlaybackSpeed(enabled) {
+  try {
+    const saved = await api('PUT', '/api/settings', { keep_playback_speed: enabled });
+    _settings.keep_playback_speed = saved.keep_playback_speed !== false;
+    toast(tr(enabled ? 'keepPlaybackSpeedEnabled' : 'keepPlaybackSpeedDisabled'), 'success');
+  } catch (e) {
+    toast(tr('settingsSaveFailed'), 'error');
+  }
+  renderSettingsUi();
+}
+
+async function setRememberTitleSettings(enabled) {
+  try {
+    const saved = await api('PUT', '/api/settings', { remember_title_settings: enabled });
+    _settings.remember_title_settings = saved.remember_title_settings === true;
+    toast(tr(enabled ? 'rememberTitleSettingsEnabled' : 'rememberTitleSettingsDisabled'), 'success');
   } catch (e) {
     toast(tr('settingsSaveFailed'), 'error');
   }
@@ -6081,6 +6166,7 @@ async function playIPTVChannel(channelId, variantCount = 1, serverId) {
   currentEpisodeLabel = '';
   currentPosterItemId = '';
   currentItemIsSeries = false;
+  currentItemIsAudioOnly = false;
   _playbackServerId = serverId;
   currentPlaybackSourceType = 'iptv';
   currentIPTVChannelId = channelId;
@@ -6153,6 +6239,9 @@ function renderBreadcrumb(crumbs) {
 
 const _FOLDER_ICON = '<svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const _VIDEO_ICON = '<svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2.5"/><path d="m10 9 5 3-5 3z" fill="currentColor" stroke="none"/></svg>';
+// Lucide "music" — decorative; row button carries the accessible label.
+// Path data lives in _LUCIDE_MUSIC_INNER (shared with the remote poster fallback).
+const _AUDIO_ICON = `<svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${_LUCIDE_MUSIC_INNER}</svg>`;
 const _CHEVRON_ICON = '<svg class="file-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
 
 function fileRowHtml(e) {
@@ -6164,8 +6253,9 @@ function fileRowHtml(e) {
       ${_CHEVRON_ICON}
     </button>`;
   }
-  return `<button class="file-row file-video" onclick="playFile('${jsStr(e.path)}', '${jsStr(e.name)}', '${jsStr(serverId)}')">
-    ${_VIDEO_ICON}
+  const icon = e.is_audio ? _AUDIO_ICON : _VIDEO_ICON;
+  return `<button class="file-row file-video" onclick="playFile('${jsStr(e.path)}', '${jsStr(e.name)}', '${jsStr(serverId)}', ${e.is_audio ? 'true' : 'false'})">
+    ${icon}
     <span class="file-name">${esc(e.name)}</span>
     <span class="file-size">${fmtSize(e.size)}</span>
   </button>`;
@@ -6180,7 +6270,7 @@ function fmtSize(n) {
   return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
 }
 
-async function playFile(path, name, serverId) {
+async function playFile(path, name, serverId, isAudio = false) {
   if (!serverId) return;
   _hadProps = false;
   _currentAspect = 'fit';
@@ -6192,6 +6282,11 @@ async function playFile(path, name, serverId) {
   currentEpisodeLabel = '';
   currentPosterItemId = '';
   currentItemIsSeries = false;
+  // Optimistic: the listing's is_audio comes from the same extension table the
+  // backend will answer audio_only from, so trusting it here only removes the
+  // flash of "电影" and the "TV" placeholder before the first state poll lands.
+  // The backend's verdict still overwrites this on the next poll.
+  currentItemIsAudioOnly = isAudio === true;
   _playbackServerId = serverId;
   setNowPlaying(name, {});
   switchTab('remote');

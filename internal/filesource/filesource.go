@@ -36,7 +36,11 @@ type Entry struct {
 	Path    string `json:"path"`
 	IsDir   bool   `json:"is_dir"`
 	IsVideo bool   `json:"is_video"`
-	Size    int64  `json:"size"`
+	// IsAudio is independent of IsVideo: a playable audio file, never a
+	// video. Clients that only understand is_video keep working; the phone
+	// UI uses is_audio for the music glyph.
+	IsAudio bool  `json:"is_audio"`
+	Size    int64 `json:"size"`
 }
 type Crumb struct {
 	Name string `json:"name"`
@@ -75,7 +79,27 @@ func (c *Client) kind() string { return config.NormalizeServerType(c.server.Type
 
 var videoExtensions = map[string]bool{".mkv": true, ".mp4": true, ".m4v": true, ".avi": true, ".ts": true, ".m2ts": true, ".mts": true, ".mov": true, ".webm": true, ".flv": true, ".wmv": true, ".mpg": true, ".mpeg": true, ".iso": true, ".rmvb": true, ".rm": true, ".vob": true, ".ogv": true, ".divx": true, ".asf": true, ".3gp": true, ".f4v": true, ".mpv": true, ".dav": true}
 
+// audioExtensions are formats mpv can play as audio. Kept disjoint from
+// videoExtensions so IsVideo stays a strict video contract (published to
+// clients) and AudioOnly presentation is never set for a real video track.
+var audioExtensions = map[string]bool{
+	".mp3": true, ".flac": true, ".m4a": true, ".aac": true, ".ogg": true,
+	".opus": true, ".wav": true, ".wma": true, ".alac": true, ".aiff": true,
+	".aif": true, ".ape": true, ".wv": true, ".dsf": true, ".dff": true,
+	".mka": true, ".mp2": true, ".ac3": true, ".dts": true, ".tta": true,
+	".spx": true, ".oga": true, ".m4b": true,
+}
+
 func isVideo(name string) bool { return videoExtensions[strings.ToLower(filepath.Ext(name))] }
+
+// IsAudio reports whether name's extension is a playable audio file. Exported
+// because the player wiring decides mpv's AudioOnly presentation from it, and
+// that decision must be made from this one table — never guessed.
+func IsAudio(name string) bool { return audioExtensions[strings.ToLower(filepath.Ext(name))] }
+
+// isListedFile keeps directories plus playable video/audio; everything else
+// (subs, nfo, images, …) stays hidden from the folder browser.
+func isListedFile(name string) bool { return isVideo(name) || IsAudio(name) }
 func segments(path string) ([]string, error) {
 	out := []string{}
 	for _, raw := range strings.Split(strings.ReplaceAll(path, "\\", "/"), "/") {
@@ -119,7 +143,14 @@ func (c *Client) listing(segs []string, entries []Entry) Listing {
 	return Listing{strings.Join(segs, "/"), parent, crumbs, entries}
 }
 func entry(segs []string, name string, dir bool, size int64) Entry {
-	return Entry{name, strings.Join(append(append([]string{}, segs...), name), "/"), dir, !dir && isVideo(name), size}
+	return Entry{
+		Name:    name,
+		Path:    strings.Join(append(append([]string{}, segs...), name), "/"),
+		IsDir:   dir,
+		IsVideo: !dir && isVideo(name),
+		IsAudio: !dir && IsAudio(name),
+		Size:    size,
+	}
 }
 
 // Verify validates reachability/credentials without requiring a chosen
@@ -244,7 +275,7 @@ func (c *Client) listLocal(segs []string) (Listing, error) {
 	out := []Entry{}
 	for _, item := range items {
 		dir := item.IsDir()
-		if !dir && !isVideo(item.Name()) {
+		if !dir && !isListedFile(item.Name()) {
 			continue
 		}
 		size := int64(0)
@@ -381,7 +412,7 @@ func (c *Client) listWebDAV(segs []string) (Listing, error) {
 				size = ps.Prop.Length
 			}
 		}
-		if !dir && !isVideo(name) {
+		if !dir && !isListedFile(name) {
 			continue
 		}
 		out = append(out, entry(segs, name, dir, size))
@@ -537,7 +568,7 @@ func (c *Client) listSMB(segs []string) (Listing, error) {
 		}
 		for _, item := range items {
 			dir := item.IsDir()
-			if !dir && !isVideo(item.Name()) {
+			if !dir && !isListedFile(item.Name()) {
 				continue
 			}
 			out = append(out, entry(segs, item.Name(), dir, item.Size()))

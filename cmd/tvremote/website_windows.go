@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -19,7 +18,6 @@ import (
 
 	webview2 "github.com/jchv/go-webview2"
 
-	"tvremote/internal/config"
 	"tvremote/internal/website"
 )
 
@@ -76,6 +74,9 @@ func startWebsiteShell(coreURL string) {
 		dispatch: make(chan websiteCmd, 8),
 		quit:     make(chan struct{}),
 	}
+	// The tray's web-cache menu needs to know whether a window is open before
+	// it deletes anything underneath one.
+	publishWebsiteHost(h)
 	go h.pollLoop()
 }
 
@@ -235,7 +236,7 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	dataPath := filepath.Join(config.DataDir(), "webview2-website")
+	dataPath := websiteProfileRoot()
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:    false,
 		DataPath: dataPath,

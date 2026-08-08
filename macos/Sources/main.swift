@@ -64,16 +64,28 @@ private func L(_ key: String) -> String {
 			"Please describe your feedback.\n\n• Feature request: write what you would like to add.\n• Bug report: describe what happened and the steps to reproduce it, and attach the log files from the logs folder (use “Open Logs” at the bottom of the main window).\n\n"
 		),
 		"advanced_settings": ("高级设置", "Advanced Settings"),
-		"mpv_custom_menu": ("自定义 mpv 播放器…", "Custom mpv Player…"),
-		"mpv_restore_default_menu": ("恢复默认（使用内嵌 mpv）", "Restore Default (Use Bundled mpv)"),
+		"mpv_menu": ("自定义 MPV 播放器", "Custom MPV Player"),
+		"mpv_custom_path_menu": ("选择自定义路径…", "Choose Custom Path…"),
+		"mpv_use_bundled_menu": ("使用内置 MPV 播放器", "Use Bundled MPV Player"),
 		"mpv_dialog_title": ("选择 mpv 可执行文件", "Choose an mpv Executable"),
 		"mpv_invalid_title": ("无法使用该文件", "Couldn't Use That File"),
 		"mpv_invalid_body": ("所选文件不是有效的 mpv 播放器：\n\n%@", "The selected file isn't a working mpv player:\n\n%@"),
 		"mpv_custom_active_tip": ("当前使用自定义 mpv：%@", "Using custom mpv: %@"),
 		"mpv_default_tip": ("当前使用内嵌 mpv 播放器", "Using the bundled mpv player"),
 		"mpv_custom_stale_tip": ("自定义路径已失效，正在使用内嵌 mpv", "Custom path is no longer valid; using the bundled mpv"),
-		"autostart_menu": ("开机时启动 TinyPlay", "Start TinyPlay at Login"),
+		"webcache_menu": ("网页缓存", "Web Cache"),
+		"webcache_menu_tip": ("内置浏览器的缓存占用与上限", "Built-in browser cache usage and limit"),
+		"webcache_clear": ("清除缓存", "Clear Cache"),
+		"webcache_clear_tip": ("清空内置浏览器的缓存文件，不会退出网站登录", "Delete the built-in browser's cache files; site logins are kept"),
+		"webcache_clear_done": ("网页缓存已清除", "Web Cache Cleared"),
+		"webcache_busy_title": ("请先关闭网页窗口", "Close the Web Window First"),
+		"webcache_busy_body": ("正在浏览网页时无法清除缓存。关闭网页窗口后再试。", "The cache can't be cleared while a web page is open. Close the web window and try again."),
+		"webcache_limit_menu": ("缓存上限", "Cache Limit"),
+		"webcache_limit_unlimited": ("不限制", "Unlimited"),
+		"autostart_menu": ("开机启动", "Start at Login"),
 		"autostart_menu_tip": ("登录系统后自动在后台运行", "Run in the background after you sign in"),
+		"autostart_on_menu": ("开启", "On"),
+		"autostart_off_menu": ("关闭", "Off"),
 		"autostart_failed_title": ("无法修改开机自启动", "Couldn't Change Startup Setting"),
 		"autostart_failed_body": ("开机自启动设置未能保存：\n\n%@", "The startup setting couldn't be saved:\n\n%@"),
 		"autostart_approval_title": ("请在系统设置中允许", "Approval Needed"),
@@ -409,15 +421,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private var webView: WKWebView?
 	private var localNetworkDenied = false
 	private var dlnaMenuItem: NSMenuItem?
-	/// "高级设置 → 自定义 mpv 播放器…" submenu item. Its tooltip is refreshed
+	/// "高级设置 → 自定义 MPV 播放器" submenu item. Its tooltip is refreshed
 	/// from GET /desktop/mpv each time the tray menu opens (see menuWillOpen)
 	/// so it reflects whichever mpv is actually in effect right now, including
 	/// the "custom path went stale, fell back to bundled" state.
 	private var mpvAdvancedMenuItem: NSMenuItem?
-	/// "高级设置 → 开机时启动 TinyPlay" checkbox. Its state is read back from
-	/// SMAppService (never cached in UserDefaults) each time the menu opens, so
-	/// a login item the user removed in System Settings shows as off here too.
-	private var autostartMenuItem: NSMenuItem?
+	/// "高级设置 → 开机启动 → 开启/关闭" leaf items. Their state is read back
+	/// from SMAppService (never cached in UserDefaults) each time the menu
+	/// opens, so a login item the user removed in System Settings shows as
+	/// off here too.
+	private var autostartOnMenuItem: NSMenuItem?
+	private var autostartOffMenuItem: NSMenuItem?
+	/// Retained so menuWillOpen can restate the measured cache size and the
+	/// selected budget instead of leaving whatever the last build wrote.
+	private var webCacheClearMenuItem: NSMenuItem?
+	private var webCacheLimitMenuItems: [NSMenuItem] = []
 	private static let fullscreenMessageName = "tinyplaySetFullscreen"
 	private static let checkForUpdatesMessageName = "tinyplayCheckForUpdates"
 	private static let showAboutMessageName = "tinyplayShowAbout"
@@ -539,6 +557,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	private var pairingWatcher: PairingRequestWatcher?
 
 	private func startWebsiteShell() {
+		// Trim the browser store before the shell can put a window on it. The
+		// walk touches only cache directories, so it is cheap, but keep it off
+		// the main thread: a multi-gigabyte cache is exactly the case this
+		// exists for, and that is the case where the walk is slowest.
+		DispatchQueue.global(qos: .utility).async { WebCache.enforceLimit() }
 		websiteShell?.stop()
 		let shell = WebsiteShellController(coreURL: coreURL)
 		websiteShell = shell
@@ -791,17 +814,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		menu.addItem(.separator())
 		let advanced = NSMenuItem(title: L("advanced_settings"), action: nil, keyEquivalent: "")
 		let advancedMenu = NSMenu()
-		advancedMenu.addItem(NSMenuItem(title: L("mpv_custom_menu"), action: #selector(chooseCustomMPV), keyEquivalent: ""))
-		advancedMenu.addItem(NSMenuItem(title: L("mpv_restore_default_menu"), action: #selector(restoreDefaultMPV), keyEquivalent: ""))
-		advancedMenu.addItem(.separator())
-		let autostart = NSMenuItem(title: L("autostart_menu"), action: #selector(toggleAutostart), keyEquivalent: "")
+		let mpv = NSMenuItem(title: L("mpv_menu"), action: nil, keyEquivalent: "")
+		let mpvMenu = NSMenu()
+		mpvMenu.addItem(NSMenuItem(title: L("mpv_custom_path_menu"), action: #selector(chooseCustomMPV), keyEquivalent: ""))
+		mpvMenu.addItem(NSMenuItem(title: L("mpv_use_bundled_menu"), action: #selector(restoreDefaultMPV), keyEquivalent: ""))
+		mpv.submenu = mpvMenu
+		advancedMenu.addItem(mpv)
+		mpvAdvancedMenuItem = mpv
+		let autostart = NSMenuItem(title: L("autostart_menu"), action: nil, keyEquivalent: "")
 		autostart.toolTip = L("autostart_menu_tip")
-		advancedMenu.addItem(autostart)
-		autostartMenuItem = autostart
+		let autostartMenu = NSMenu()
+		let autostartOn = NSMenuItem(title: L("autostart_on_menu"), action: #selector(setAutostart(_:)), keyEquivalent: "")
+		autostartOn.representedObject = true
+		let autostartOff = NSMenuItem(title: L("autostart_off_menu"), action: #selector(setAutostart(_:)), keyEquivalent: "")
+		autostartOff.representedObject = false
+		autostartMenu.addItem(autostartOn)
+		autostartMenu.addItem(autostartOff)
+		autostartOnMenuItem = autostartOn
+		autostartOffMenuItem = autostartOff
+		autostart.submenu = autostartMenu
 		refreshAutostartCheckbox()
+		advancedMenu.addItem(autostart)
+
+		// Web cache. The built-in browser is the one part of TinyPlay whose
+		// on-disk footprint has no ceiling of its own.
+		let webCache = NSMenuItem(title: L("webcache_menu"), action: nil, keyEquivalent: "")
+		webCache.toolTip = L("webcache_menu_tip")
+		let webCacheMenu = NSMenu()
+		let clearItem = NSMenuItem(title: L("webcache_clear"), action: #selector(clearWebCache), keyEquivalent: "")
+		clearItem.toolTip = L("webcache_clear_tip")
+		webCacheMenu.addItem(clearItem)
+		webCacheClearMenuItem = clearItem
+
+		let limit = NSMenuItem(title: L("webcache_limit_menu"), action: nil, keyEquivalent: "")
+		let limitMenu = NSMenu()
+		var limitItems: [NSMenuItem] = []
+		for (mb, title) in [
+			(512, "512 MB"),
+			(WebCache.defaultLimitMB, "1 GB"),
+			(2048, "2 GB"),
+			(WebCache.unlimited, L("webcache_limit_unlimited")),
+		] {
+			let item = NSMenuItem(title: title, action: #selector(setWebCacheLimit(_:)), keyEquivalent: "")
+			item.representedObject = mb
+			limitMenu.addItem(item)
+			limitItems.append(item)
+		}
+		limit.submenu = limitMenu
+		webCacheLimitMenuItems = limitItems
+		refreshWebCacheLimitCheckbox()
+		webCacheMenu.addItem(limit)
+		webCache.submenu = webCacheMenu
+		advancedMenu.addItem(webCache)
+
 		advanced.submenu = advancedMenu
 		menu.addItem(advanced)
-		mpvAdvancedMenuItem = advanced
 		menu.addItem(.separator())
 		menu.addItem(NSMenuItem(title: L("feedback"), action: #selector(sendFeedback), keyEquivalent: ""))
 		menu.addItem(.separator())
@@ -822,7 +889,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		if menu === statusItem.menu {
 			reloadMPVStatus()
 			refreshAutostartCheckbox()
+			refreshWebCacheMenu()
 		}
+	}
+
+	// MARK: - Web cache
+
+	/// Restates the measured size and the selected budget each time the menu
+	/// opens, for the same reason the autostart checkbox is re-read from the OS:
+	/// a number the user is about to act on should not be a cached guess.
+	private func refreshWebCacheMenu() {
+		webCacheClearMenuItem?.title = "\(L("webcache_clear")) (\(WebCache.formatBytes(WebCache.usageBytes())))"
+		refreshWebCacheLimitCheckbox()
+	}
+
+	private func refreshWebCacheLimitCheckbox() {
+		let active = WebCache.limitMB
+		for item in webCacheLimitMenuItems {
+			item.state = (item.representedObject as? Int) == active ? .on : .off
+		}
+	}
+
+	@objc private func clearWebCache() {
+		if websiteShell?.isWindowOpen == true {
+			let alert = NSAlert()
+			alert.messageText = L("webcache_busy_title")
+			alert.informativeText = L("webcache_busy_body")
+			alert.runModal()
+			return
+		}
+		WebCache.clear { [weak self] freed in
+			DispatchQueue.main.async {
+				let alert = NSAlert()
+				alert.messageText = L("webcache_clear_done")
+				alert.informativeText = WebCache.formatBytes(freed)
+				alert.runModal()
+				self?.refreshWebCacheMenu()
+			}
+		}
+	}
+
+	@objc private func setWebCacheLimit(_ sender: NSMenuItem) {
+		guard let mb = sender.representedObject as? Int else { return }
+		WebCache.limitMB = mb
+		refreshWebCacheLimitCheckbox()
 	}
 
 	// MARK: - Start at login
@@ -837,26 +947,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	}
 
 	private func refreshAutostartCheckbox() {
-		autostartMenuItem?.state = autostartEnabled ? .on : .off
+		autostartOnMenuItem?.state = autostartEnabled ? .on : .off
+		autostartOffMenuItem?.state = autostartEnabled ? .off : .on
 	}
 
 	/// SMAppService registers *this app bundle*, which is why start-at-login is
 	/// menu-bar-shell work rather than something the Go core could do — the
 	/// core runs as this bundle's child process and has no bundle of its own.
-	@objc private func toggleAutostart() {
+	/// Each leaf ("开启"/"关闭") sets an explicit target via representedObject,
+	/// unlike a single checkbox's implicit flip — mirroring the Windows tray's
+	/// two-leaf submenu.
+	@objc private func setAutostart(_ sender: NSMenuItem) {
+		guard let target = sender.representedObject as? Bool else { return }
 		let service = SMAppService.mainApp
 		do {
-			if autostartEnabled {
-				try service.unregister()
-			} else {
-				try service.register()
-				// A first registration on macOS 13+ commonly lands in
-				// `.requiresApproval`: the item is filed but switched off until
-				// the person allows it. Say so and offer the exact settings
-				// pane, instead of leaving a checkbox that silently stays off.
-				if service.status == .requiresApproval {
-					showAutostartApprovalAlert()
+			if target {
+				if !autostartEnabled {
+					try service.register()
+					// A first registration on macOS 13+ commonly lands in
+					// `.requiresApproval`: the item is filed but switched off until
+					// the person allows it. Say so and offer the exact settings
+					// pane, instead of leaving the menu silently stay off.
+					if service.status == .requiresApproval {
+						showAutostartApprovalAlert()
+					}
 				}
+			} else if autostartEnabled {
+				try service.unregister()
 			}
 		} catch {
 			showAutostartFailureAlert(error.localizedDescription)
@@ -1423,6 +1540,162 @@ extension AppDelegate {
 	}
 }
 
+// MARK: - Web cache
+
+/// Bounds the built-in browser's on-disk data, mirroring the policy in Go's
+/// `internal/webcache` — same promise to the user (clearing the cache never
+/// signs them out), same default budget, same "sweep at launch, never under a
+/// live window" rule.
+///
+/// The plumbing is deliberately different, and simpler, than the Windows side.
+/// WebKit exposes `WKWebsiteDataStore.removeData(ofTypes:modifiedSince:)`,
+/// which separates caches from cookies as a first-class API, so nothing here
+/// has to reason about Chromium's directory layout the way Go's allow-list
+/// does. Two consequences follow:
+///
+/// - There is no "change cache location" action on macOS. `.default()` owns its
+///   own paths under ~/Library, and swapping in a non-default data store to
+///   move a few hundred megabytes is not a trade worth making on a platform
+///   where a single volume is the norm.
+/// - The budget lives in UserDefaults rather than the Go core's config.json.
+///   This store is WebKit's, entirely outside the core's knowledge, so routing
+///   the preference through an HTTP endpoint would add a hop that serves
+///   nothing. `TinyPlayLanguage` already sets that precedent.
+enum WebCache {
+	/// Kept in step with `config.DefaultWebsiteCacheLimitMB` on the Go side.
+	static let defaultLimitMB = 1024
+	/// Stored value meaning "never sweep". Not 0: an absent default reads back
+	/// as 0, and treating that as unlimited would leave every existing install
+	/// uncapped — the problem this setting exists to fix.
+	static let unlimited = -1
+
+	private static let limitKey = "TinyPlayWebCacheLimitMB"
+
+	/// Data kinds that are safe to discard. Cookies, local/session storage and
+	/// IndexedDB are absent on purpose: they hold the logins the "site logins
+	/// are kept" promise is about.
+	private static var cacheTypes: Set<String> {
+		var types: Set<String> = [
+			WKWebsiteDataTypeDiskCache,
+			WKWebsiteDataTypeMemoryCache,
+			WKWebsiteDataTypeOfflineWebApplicationCache,
+		]
+		types.insert(WKWebsiteDataTypeFetchCache)
+		types.insert(WKWebsiteDataTypeServiceWorkerRegistrations)
+		return types
+	}
+
+	static var limitMB: Int {
+		get {
+			let stored = UserDefaults.standard.integer(forKey: limitKey)
+			if stored == unlimited { return unlimited }
+			return stored > 0 ? stored : defaultLimitMB
+		}
+		set {
+			UserDefaults.standard.set(newValue == unlimited ? unlimited : max(newValue, 1), forKey: limitKey)
+		}
+	}
+
+	/// Byte budget, or nil when the user turned the cap off. Callers must keep
+	/// nil distinct from zero: a zero budget would mean "clear on every launch".
+	static var limitBytes: Int64? {
+		let mb = limitMB
+		return mb == unlimited ? nil : Int64(mb) << 20
+	}
+
+	/// Directories WebKit fills with the data `cacheTypes` covers. There is no
+	/// public API that reports the size of a data store, and `WKWebsiteDataRecord`
+	/// carries no byte count, so the number under the menu item is measured off
+	/// disk. It is an estimate of what clearing would reclaim, which is the
+	/// number the user is actually deciding on.
+	private static var measuredDirectories: [URL] {
+		let bundleID = Bundle.main.bundleIdentifier ?? "cn.hqyang.tinyplay.mac"
+		let home = FileManager.default.homeDirectoryForCurrentUser
+		let library = home.appendingPathComponent("Library", isDirectory: true)
+		let websiteData = library
+			.appendingPathComponent("WebKit", isDirectory: true)
+			.appendingPathComponent(bundleID, isDirectory: true)
+			.appendingPathComponent("WebsiteData", isDirectory: true)
+		return [
+			library.appendingPathComponent("Caches/\(bundleID)/WebKit", isDirectory: true),
+			websiteData.appendingPathComponent("CacheStorage", isDirectory: true),
+			websiteData.appendingPathComponent("ServiceWorkers", isDirectory: true),
+		]
+	}
+
+	/// Bytes that `clear` would reclaim. A directory that does not exist yet is
+	/// zero, not an error: the profile is created by the first web window.
+	static func usageBytes() -> Int64 {
+		measuredDirectories.reduce(0) { $0 + directorySize($1) }
+	}
+
+	private static func directorySize(_ url: URL) -> Int64 {
+		let fm = FileManager.default
+		guard let walker = fm.enumerator(
+			at: url,
+			includingPropertiesForKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey],
+			options: [.skipsHiddenFiles]
+		) else { return 0 }
+		var total: Int64 = 0
+		for case let item as URL in walker {
+			guard let values = try? item.resourceValues(
+				forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey]
+			), values.isRegularFile == true else { continue }
+			total += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+		}
+		return total
+	}
+
+	static func clear(completion: @escaping (Int64) -> Void) {
+		let freed = usageBytes()
+		WKWebsiteDataStore.default().removeData(
+			ofTypes: cacheTypes,
+			modifiedSince: Date(timeIntervalSince1970: 0)
+		) {
+			completion(freed)
+		}
+	}
+
+	/// Trims the store at launch when it has outgrown the budget. Called before
+	/// any web window can exist; `WKWebsiteDataStore` tolerates removal under a
+	/// live page far better than Chromium does, but keeping the two platforms on
+	/// the same rule means one behaviour to reason about.
+	static func enforceLimit() {
+		guard let limit = limitBytes else { return }
+		let used = usageBytes()
+		guard used > limit else { return }
+		// removeData directly rather than clear(): the size is already measured
+		// here, and re-walking a multi-gigabyte cache just to log the same
+		// number is the one cost this path should not pay.
+		WKWebsiteDataStore.default().removeData(
+			ofTypes: cacheTypes,
+			modifiedSince: Date(timeIntervalSince1970: 0)
+		) {
+			NSLog("webcache: over the \(formatBytes(limit)) budget, reclaimed \(formatBytes(used))")
+		}
+	}
+
+    /// Matches Go's `webcache.FormatBytes`. Units stay untranslated — they read
+    /// the same in every language this app ships.
+	static func formatBytes(_ n: Int64) -> String {
+		let unit: Int64 = 1024
+		if n < unit { return "\(n) B" }
+		var div = unit
+		var exp = 0
+		var v = n / unit
+		while v >= unit && exp < 3 {
+			div *= unit
+			exp += 1
+			v /= unit
+		}
+		let value = Double(n) / Double(div)
+		let suffix = ["KB", "MB", "GB", "TB"][exp]
+		return value < 10
+			? String(format: "%.1f %@", value, suffix)
+			: String(format: "%.0f %@", value, suffix)
+	}
+}
+
 // MARK: - Website shell (loopback command poll + Safari-style WKWebView)
 
 /// Rewrites the core's advertised LAN address to 127.0.0.1, keeping the port.
@@ -1670,6 +1943,11 @@ final class WebsiteShellController: NSObject, WKNavigationDelegate, WKUIDelegate
 		self.coreURL = coreURL
 		super.init()
 	}
+
+	/// Whether a web page is on screen right now. The web-cache menu asks before
+	/// deleting anything; it deliberately cannot close the window itself, since
+	/// "clear cache" has no business discarding a page the user is reading.
+	var isWindowOpen: Bool { window != nil }
 
 	/// WKWebView's default UA stops at "(KHTML, like Gecko)" — it carries no
 	/// "Version/<x> Safari/605.1.15" suffix the way Safari.app's does. Video

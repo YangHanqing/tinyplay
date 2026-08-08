@@ -46,22 +46,26 @@ func readAutostart() bool {
 	return on
 }
 
-// toggleAutostart flips the startup entry and re-syncs the menu checkbox from
-// what the OS reports afterwards, rather than from what we asked for, so a
-// failed write leaves the checkbox telling the truth.
-func toggleAutostart(item *systray.MenuItem) {
-	target := !readAutostart()
+// setAutostart writes an explicit target state (the "开启"/"关闭" leaf items
+// each set one, unlike a single checkbox's implicit flip) and re-syncs the
+// menu radio from what the OS reports afterwards, rather than from what we
+// asked for, so a failed write leaves the menu telling the truth.
+func setAutostart(target bool, onItem, offItem *systray.MenuItem) {
 	if err := autostart.SetEnabled(target); err != nil {
 		log.Printf("autostart: set %v failed: %v", target, err)
 		messageBoxOK(i18n.System("autostart_failed_title"), i18n.System("autostart_failed_body", err.Error()))
 	}
-	applyAutostartCheckbox(item)
+	applyAutostartRadio(onItem, offItem)
 }
 
-func applyAutostartCheckbox(item *systray.MenuItem) {
+// applyAutostartRadio checks exactly one of the on/off leaf items to match
+// the OS-reported state, mirroring the language submenu's radio pattern.
+func applyAutostartRadio(onItem, offItem *systray.MenuItem) {
 	if readAutostart() {
-		item.Check()
+		onItem.Check()
+		offItem.Uncheck()
 	} else {
-		item.Uncheck()
+		onItem.Uncheck()
+		offItem.Check()
 	}
 }

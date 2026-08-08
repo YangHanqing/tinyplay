@@ -139,6 +139,11 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 		playURL := s.fileStreamPlayURL(playbackServer.ID, req.Path)
 		opts := playOpts(playbackServer.ID, req.Path, "", "", req.Title, "", "", "", config.LocalPlaybackPosition(playbackServer.ID, req.Path), "")
 		opts.SourceType = config.NormalizeServerType(playbackServer.Type)
+		// Audio-only presentation (cover art + forced window) is set only for
+		// a genuine audio extension — never for video. A cover-art file on a
+		// video item makes mpv deselect the real video track (see player/
+		// audioart.go).
+		applyFileAudioPresentation(&opts, req.Path, s.port)
 		if !s.isCurrentPlay(generation) {
 			supersededPlay(w)
 			return

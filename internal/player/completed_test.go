@@ -1,6 +1,9 @@
 package player
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestClearCompletedPlayback(t *testing.T) {
 	p := New()
@@ -36,7 +39,7 @@ func TestCompletedAutoplayContextIncludesFileSources(t *testing.T) {
 				ServerID: "files", ItemID: "Season/02.mkv", Title: "02",
 				SourceType: sourceType,
 			}
-			completed, ok := completedAutoplayContext(finished, true)
+			completed, ok := completedAutoplayContext(finished, true, time.Hour)
 			if !ok {
 				t.Fatalf("natural EOF for %s did not reach autoplay hand-off", sourceType)
 			}
@@ -59,17 +62,32 @@ func TestCompletedAutoplayContextKeepsExistingExclusions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, ok := completedAutoplayContext(tc.ctx, tc.naturalEOF); ok {
+			if _, ok := completedAutoplayContext(tc.ctx, tc.naturalEOF, time.Hour); ok {
 				t.Fatal("unexpected autoplay EOF hand-off")
 			}
 		})
 	}
 }
 
+// A file opened at (or just before) its own tail hits EOF immediately. That is
+// a degenerate open, not a finished title, and must not chain into autoplay —
+// otherwise one poisoned resume point walks the whole folder in seconds.
+func TestCompletedAutoplayContextRejectsEOFWithoutProgress(t *testing.T) {
+	ctx := PlayContext{ServerID: "files", ItemID: "Season/02.mkv", SourceType: "smb"}
+	for _, progressed := range []time.Duration{0, 500 * time.Millisecond, -time.Second} {
+		if _, ok := completedAutoplayContext(ctx, true, progressed); ok {
+			t.Fatalf("EOF after %s of progress was treated as a completed playback", progressed)
+		}
+	}
+	if _, ok := completedAutoplayContext(ctx, true, minAutoplayProgress); !ok {
+		t.Fatal("a real viewing must still reach the autoplay hand-off")
+	}
+}
+
 func TestCompletedAutoplayContextDefersSourcePolicyToServer(t *testing.T) {
 	completed, ok := completedAutoplayContext(PlayContext{
 		ItemID: "movie", SourceType: "emby",
-	}, true)
+	}, true, time.Hour)
 	if !ok || !completed.PlaybackCompleted {
 		t.Fatal("player must hand completed items to the server eligibility policy")
 	}

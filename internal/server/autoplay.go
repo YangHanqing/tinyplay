@@ -41,6 +41,9 @@ type autoplayNext struct {
 	// File-source branch (folder-based next-by-filename).
 	IsFile bool
 	Path   string
+	// IsAudio marks the next item as a track rather than a video, which is
+	// what lets an album chain without a countdown. See autoplayGraceFor.
+	IsAudio bool
 }
 
 type autoplayState struct {
@@ -49,6 +52,12 @@ type autoplayState struct {
 	deadline   time.Time
 	finished   player.PlayContext
 	next       *autoplayNext
+	// silent suppresses every autoplay field on GET /api/player/state. A
+	// zero-grace transition has no countdown to render, and publishing
+	// next_available even for one poll would flash the card this exists to
+	// avoid — the phone falls back to a full 5s bar when no remaining time
+	// accompanies the status.
+	silent bool
 }
 
 func (s *Server) wireAutoplay() {
@@ -91,6 +100,7 @@ func (s *Server) cancelAutoplayLocked() {
 	s.autoplay.deadline = time.Time{}
 	s.autoplay.finished = player.PlayContext{}
 	s.autoplay.next = nil
+	s.autoplay.silent = false
 }
 
 // CancelAutoplay invalidates a pending next-episode transition. clearCompleted
@@ -218,14 +228,39 @@ func (s *Server) resolveAndArmAutoplay(gen uint64, finished player.PlayContext) 
 		s.clearCompletedContext()
 		return
 	}
+	grace := autoplayGraceFor(finished, next)
 	s.autoplay.next = next
 	s.autoplay.status = autoplayStatusNextAvailable
-	s.autoplay.deadline = s.now().Add(autoplayGrace)
+	s.autoplay.silent = grace <= 0
+	if grace > 0 {
+		s.autoplay.deadline = s.now().Add(grace)
+	}
 	s.autoplayMu.Unlock()
 
-	s.scheduleAfter(autoplayGrace, gen, func() {
+	s.scheduleAfter(grace, gen, func() {
 		s.fireAutoplay(gen)
 	})
+}
+
+// autoplayGraceFor decides how long the countdown runs before the transition.
+//
+// A song followed by another song gets none. Skipping straight to the next
+// track is what a music player does, and a five-second "up next" card between
+// every track turns an album into a slideshow. The grace is there so a series
+// cannot run away from someone across an evening — a real risk for a 45-minute
+// episode, not for a four-minute track, where stop is one tap away and the cost
+// of a wrong guess is seconds.
+//
+// Both ends must be audio, not just the finished one. Same-kind chaining
+// already guarantees that on the file branch, but the check is spelled out
+// rather than inferred: this is the only thing standing between "no countdown"
+// and a film starting unannounced, and a future resolver that stops chaining
+// same-kind would otherwise silently take the countdown with it.
+func autoplayGraceFor(finished player.PlayContext, next *autoplayNext) time.Duration {
+	if next != nil && finished.AudioOnly && next.IsAudio {
+		return 0
+	}
+	return autoplayGrace
 }
 
 func (s *Server) lookupNextEpisode(finished player.PlayContext) (*autoplayNext, error) {
@@ -289,6 +324,7 @@ func (s *Server) lookupNextFile(finished player.PlayContext) (*autoplayNext, err
 		Title:    title,
 		IsFile:   true,
 		Path:     next.Path,
+		IsAudio:  next.IsAudio,
 	}, nil
 }
 
@@ -415,7 +451,7 @@ func (s *Server) playResolvedMediaItem(generation uint64, next autoplayNext) map
 	if err != nil {
 		return map[string]any{"ok": false, "error": err.Error()}
 	}
-	opts := mediaAutoplayPlayOpts(next, choice.MediaSourceID)
+	opts := mediaAutoplayPlayOpts(next, choice.MediaSourceID, client.ResumePositionSeconds(next.ItemID))
 	if srv := config.GetServer(next.ServerID); srv != nil {
 		opts.SourceType = config.NormalizeServerType(srv.Type)
 	}
@@ -430,8 +466,8 @@ func (s *Server) playResolvedMediaItem(generation uint64, next autoplayNext) map
 }
 
 // playResolvedFileItem starts the next folder file. It reuses the same stream
-// URL builder as manual play, but autoplay deliberately starts from zero and
-// does not consume the stored local resume position. No media-server ReportStart.
+// URL builder and the same stored resume position as manual play. No
+// media-server ReportStart.
 func (s *Server) playResolvedFileItem(generation uint64, next autoplayNext) map[string]any {
 	path := next.Path
 	if path == "" {
@@ -453,22 +489,31 @@ func (s *Server) playResolvedFileItem(generation uint64, next autoplayNext) map[
 	if srv := config.GetServer(next.ServerID); srv != nil {
 		opts.SourceType = config.NormalizeServerType(srv.Type)
 	}
+	// Same audio presentation as a manual play of this path — autoplay must
+	// not drop cover art / force-window for the next track.
+	applyFileAudioPresentation(&opts, path, s.port)
 	if !s.isCurrentPlay(generation) {
 		return map[string]any{"ok": false, "superseded": true}
 	}
 	return s.player.Play(playURL, opts)
 }
 
-// mediaAutoplayPlayOpts and fileAutoplayPlayOpts deliberately do not accept a
-// saved position. An automatic transition is always a fresh play from 0;
-// manual handlers remain responsible for applying server/local resume state.
-func mediaAutoplayPlayOpts(next autoplayNext, mediaSourceID string) player.PlayOptions {
+// mediaAutoplayPlayOpts and fileAutoplayPlayOpts take the same saved position a
+// manual play of the next title would use. An automatic transition is not a
+// reason to discard a genuine half-watched bookmark — that is the one case a
+// person notices, and it is the only case where this choice is even visible:
+// a next title nobody has opened has no position, and one that was already
+// finished is sent back to 0 by the tail rule in the resume lookups. Without
+// that rule this would resume at the tail, flash a frame and chain onwards,
+// which is why autoplay used to pass 0 unconditionally.
+func mediaAutoplayPlayOpts(next autoplayNext, mediaSourceID string, startSeconds float64) player.PlayOptions {
 	return playOpts(next.ServerID, next.ItemID, next.SeriesID, next.SeasonID,
-		next.Title, next.SeriesTitle, next.EpisodeLabel, next.PosterItemID, 0, mediaSourceID)
+		next.Title, next.SeriesTitle, next.EpisodeLabel, next.PosterItemID, startSeconds, mediaSourceID)
 }
 
 func fileAutoplayPlayOpts(serverID, path, title string) player.PlayOptions {
-	return playOpts(serverID, path, "", "", title, "", "", "", 0, "")
+	return playOpts(serverID, path, "", "", title, "", "", "",
+		config.LocalPlaybackPosition(serverID, path), "")
 }
 
 // mergeAutoplayState overlays host autoplay fields onto player state.
@@ -476,6 +521,7 @@ func (s *Server) mergeAutoplayState(state map[string]any) map[string]any {
 	s.autoplayMu.Lock()
 	status := s.autoplay.status
 	deadline := s.autoplay.deadline
+	silent := s.autoplay.silent
 	var next *autoplayNext
 	if s.autoplay.next != nil {
 		cp := *s.autoplay.next
@@ -483,7 +529,7 @@ func (s *Server) mergeAutoplayState(state map[string]any) map[string]any {
 	}
 	s.autoplayMu.Unlock()
 
-	if status == "" {
+	if status == "" || silent {
 		return state
 	}
 	state["autoplay_status"] = status

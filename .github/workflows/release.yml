@@ -44,20 +44,9 @@ jobs:
 
       - name: Download & bundle mpv
         shell: bash
-        run: |
-          set -euo pipefail
-          api=$(curl -sL https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest)
-          # Pick the plain x86_64 build (not the -v3- or -dev- variants).
-          url=$(echo "$api" | grep -oE 'https://[^"]*mpv-x86_64-2[0-9]+[^"]*\.7z' | head -1)
-          echo "mpv archive: $url"
-          curl -L -o mpv.7z "$url"
-          7z x mpv.7z -ompv_extract
-          mpv_exe=$(find mpv_extract -name mpv.exe | head -1)
-          mpv_dir=$(dirname "$mpv_exe")
-          mkdir -p dist/mpv
-          cp "$mpv_exe" dist/mpv/
-          # These builds are mostly static, but copy any sibling DLLs just in case.
-          cp "$mpv_dir"/*.dll dist/mpv/ 2>/dev/null || true
+        # Also stages vulkan-1.dll (mpv imports it and Windows does not ship it)
+        # and fails the job if any bundled binary still has an unmet dependency.
+        run: bash ./windows/bundle-mpv.sh dist/mpv
 
       - name: Embed exe icon
         shell: bash

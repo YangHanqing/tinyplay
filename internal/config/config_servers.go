@@ -167,6 +167,17 @@ func DeleteServer(id string) bool {
 			}
 		}
 		cfg.LocalPlaybackHistory = history
+		// Per-title settings belong to a source the same way resume history
+		// does: once the source is gone the records have no key that can ever
+		// match again, and leaving them would keep a watch-history table for a
+		// source the user just deleted.
+		titleSettings := cfg.TitleSettingsHistory[:0:0]
+		for _, entry := range cfg.TitleSettingsHistory {
+			if entry.ServerID != id {
+				titleSettings = append(titleSettings, entry)
+			}
+		}
+		cfg.TitleSettingsHistory = titleSettings
 		if cfg.ActiveServerID == id {
 			if len(cfg.Servers) > 0 {
 				cfg.ActiveServerID = cfg.Servers[0].ID

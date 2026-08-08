@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"tvremote/internal/filesource"
 	"tvremote/internal/player"
 )
 
@@ -21,6 +22,17 @@ func playOpts(serverID, itemID, seriesID, seasonID, title, seriesTitle, episodeL
 		StartSeconds:  startSeconds,
 		MediaSourceID: mediaSourceID,
 	}
+}
+
+// applyFileAudioPresentation sets AudioOnly + CoverArtURL only when path is
+// a genuine audio extension. Uncertain or video paths are left zero so mpv
+// never gets cover art over a real video track.
+func applyFileAudioPresentation(opts *player.PlayOptions, path string, port int) {
+	if opts == nil || !filesource.IsAudio(path) {
+		return
+	}
+	opts.AudioOnly = true
+	opts.CoverArtURL = player.FallbackCoverArtURL(port)
 }
 
 // fileStreamPlayURL builds the loopback streaming-proxy URL used for every

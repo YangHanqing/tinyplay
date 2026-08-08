@@ -9,9 +9,18 @@ func video(name string) Entry {
 	return Entry{Name: name, Path: name, IsDir: false, IsVideo: true}
 }
 
+func audio(name string) Entry {
+	return Entry{Name: name, Path: name, IsDir: false, IsAudio: true}
+}
+
 func videoIn(dir, name string) Entry {
 	p := dir + "/" + name
 	return Entry{Name: name, Path: p, IsDir: false, IsVideo: true}
+}
+
+func audioIn(dir, name string) Entry {
+	p := dir + "/" + name
+	return Entry{Name: name, Path: p, IsDir: false, IsAudio: true}
 }
 
 func TestNextVideoSxxExxProgression(t *testing.T) {
@@ -342,5 +351,79 @@ func TestIsAutoplayExtra(t *testing.T) {
 	}
 	if isAutoplayExtra("Show.S01E02.mkv") {
 		t.Error("normal episode must not be extra")
+	}
+}
+
+func TestNextVideoAudioChainsToAudio(t *testing.T) {
+	entries := []Entry{
+		audio("01 Intro.mp3"),
+		audio("02 Verse.flac"),
+		audio("03 Chorus.m4a"),
+	}
+	next, ok := NextVideo(entries, "01 Intro.mp3")
+	if !ok || next.Name != "02 Verse.flac" {
+		t.Fatalf("after track 1 got %+v ok=%v, want track 2", next, ok)
+	}
+	next, ok = NextVideo(entries, "02 Verse.flac")
+	if !ok || next.Name != "03 Chorus.m4a" {
+		t.Fatalf("after track 2 got %+v ok=%v, want track 3", next, ok)
+	}
+	_, ok = NextVideo(entries, "03 Chorus.m4a")
+	if ok {
+		t.Fatal("expected end of album after last track")
+	}
+}
+
+func TestNextVideoVideoChainsToVideo(t *testing.T) {
+	// Existing video progression is covered elsewhere; this pins the kind
+	// field explicitly so an IsAudio regression cannot silently pass.
+	entries := []Entry{
+		video("Show.S01E01.mkv"),
+		video("Show.S01E02.mkv"),
+		video("Show.S01E03.mkv"),
+	}
+	next, ok := NextVideo(entries, "Show.S01E01.mkv")
+	if !ok || next.Name != "Show.S01E02.mkv" || !next.IsVideo || next.IsAudio {
+		t.Fatalf("video chain broke: %+v ok=%v", next, ok)
+	}
+}
+
+func TestNextVideoMixedFolderDoesNotCrossKinds(t *testing.T) {
+	// Natural order: theme.mp3, ep1.mkv, ep2.mkv, track2.flac
+	// Video mid-list must not jump into audio; audio must not jump into video.
+	entries := []Entry{
+		audio("01 theme.mp3"),
+		video("02 episode.mkv"),
+		video("03 episode.mkv"),
+		audio("04 track.flac"),
+	}
+
+	next, ok := NextVideo(entries, "02 episode.mkv")
+	if !ok || next.Name != "03 episode.mkv" {
+		t.Fatalf("video must chain to next video, got %+v ok=%v", next, ok)
+	}
+	_, ok = NextVideo(entries, "03 episode.mkv")
+	if ok {
+		t.Fatal("last video must not chain into following audio")
+	}
+
+	next, ok = NextVideo(entries, "01 theme.mp3")
+	if !ok || next.Name != "04 track.flac" {
+		t.Fatalf("audio must chain to next audio across intervening video, got %+v ok=%v", next, ok)
+	}
+	_, ok = NextVideo(entries, "04 track.flac")
+	if ok {
+		t.Fatal("last audio must not invent a next candidate")
+	}
+}
+
+func TestNextVideoAudioInSubdirPath(t *testing.T) {
+	entries := []Entry{
+		audioIn("Album", "01.mp3"),
+		audioIn("Album", "02.mp3"),
+	}
+	next, ok := NextVideo(entries, "Album/01.mp3")
+	if !ok || next.Path != "Album/02.mp3" {
+		t.Fatalf("got %+v ok=%v", next, ok)
 	}
 }

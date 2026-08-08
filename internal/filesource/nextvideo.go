@@ -24,6 +24,10 @@ const isoAutoplayExclude = ".iso"
 // NextVideo picks the next autoplay candidate after currentPath within the
 // same directory listing. Never crosses directories. Candidates are ordered by
 // filename using natural numeric order, regardless of naming convention.
+//
+// Chaining is same-kind only: video → next video, audio → next audio. An
+// album must not jump into a stray video file, and a TV episode must not
+// jump into an mp3 sitting in the same folder.
 func NextVideo(entries []Entry, currentPath string) (Entry, bool) {
 	if len(entries) == 0 || strings.TrimSpace(currentPath) == "" {
 		return Entry{}, false
@@ -33,7 +37,6 @@ func NextVideo(entries []Entry, currentPath string) (Entry, bool) {
 	}
 	currentPath = normalizeAutoplayPath(currentPath)
 
-	candidates := make([]Entry, 0, len(entries))
 	var current Entry
 	foundCurrent := false
 	for _, e := range entries {
@@ -45,19 +48,37 @@ func NextVideo(entries []Entry, currentPath string) (Entry, bool) {
 			current = e
 			current.Path = p
 			foundCurrent = true
+			break
 		}
-		if !isAutoplayVideoCandidate(e) {
+	}
+	if !foundCurrent {
+		return Entry{}, false
+	}
+	// Current may itself be filtered out (iso/extra/neither kind); then there
+	// is no chain. Kind is taken from the finished item so a mixed folder
+	// never crosses audio↔video.
+	if !isAutoplayCandidate(current) {
+		return Entry{}, false
+	}
+	wantAudio := current.IsAudio
+
+	candidates := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir {
+			continue
+		}
+		// Same-kind only (audio stays in the album; video stays in the season).
+		if e.IsAudio != wantAudio {
+			continue
+		}
+		if !isAutoplayCandidate(e) {
 			continue
 		}
 		cp := e
-		cp.Path = p
+		cp.Path = normalizeAutoplayPath(e.Path)
 		candidates = append(candidates, cp)
 	}
-	if !foundCurrent || len(candidates) == 0 {
-		return Entry{}, false
-	}
-	// Current may itself be filtered out (iso/extra); then there is no chain.
-	if !isAutoplayVideoCandidate(current) {
+	if len(candidates) == 0 {
 		return Entry{}, false
 	}
 
@@ -76,11 +97,16 @@ func NextVideo(entries []Entry, currentPath string) (Entry, bool) {
 	return candidates[idx+1], true
 }
 
-// isAutoplayVideoCandidate keeps only playable video files: never directories,
-// subtitles, images, metadata, or .iso. Extras (sample/trailer/OP/ED/…) are
-// excluded from the chain too.
-func isAutoplayVideoCandidate(e Entry) bool {
-	if e.IsDir || !e.IsVideo {
+// isAutoplayCandidate keeps only playable media of one kind: never
+// directories, subtitles, images, metadata, or .iso. Extras (sample/trailer/
+// OP/ED/…) are excluded from the chain too. Audio and video both use this
+// table; same-kind filtering is done by the caller.
+func isAutoplayCandidate(e Entry) bool {
+	if e.IsDir {
+		return false
+	}
+	// Exactly one of IsVideo / IsAudio — never both, never neither.
+	if e.IsVideo == e.IsAudio {
 		return false
 	}
 	ext := strings.ToLower(filepath.Ext(e.Name))

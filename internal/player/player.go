@@ -75,6 +75,12 @@ type PlayContext struct {
 	// SourceType is "dlna" for receiver playback. It tells the phone UI to
 	// remove library-specific controls and prevents media-server reporting.
 	SourceType string `json:"source_type"`
+	// AudioOnly carries PlayOptions.AudioOnly into the state the phone reads.
+	// Without it the remote cannot tell a song from a film and offers aspect
+	// ratio / subtitle / audio-track controls for a music file. The verdict is
+	// made once, from the same extension table (or DIDL class) that decides
+	// mpv's artwork handling — the frontend must never re-derive it.
+	AudioOnly bool `json:"audio_only"`
 	// PlaybackCompleted is set only when mpv exited on a natural EOF (which
 	// also covers a seek past the end — mpv reports both the same way) for a
 	// media-server series episode or a folder-based file source. It survives
@@ -99,6 +105,15 @@ type PlayOptions struct {
 	MediaSourceID string
 	IsLive        bool
 	SourceType    string
+	// AudioOnly marks an item with no video track (a cast song, an audio file
+	// picked from a file source). It drives mpv's window and artwork handling
+	// — see audioart.go, which explains why this must never be guessed "on"
+	// for something that might be video.
+	AudioOnly bool
+	// CoverArtURL is the picture mpv displays in place of the missing video
+	// track: the sender's album art when it supplied one, otherwise TinyPlay's
+	// own now-playing artwork. Ignored unless AudioOnly.
+	CoverArtURL string
 	// HTTPHeaders is populated only from the IPTV parser's allow-list. It is
 	// never returned through the LAN API or diagnostic report.
 	HTTPHeaders map[string]string
@@ -142,6 +157,10 @@ type Player struct {
 	playSessionID string
 	mediaSourceID string
 	lastPosTicks  int64 // atomic
+	// startPosTicks is where this play was asked to begin, kept so an EOF can
+	// be judged by how far playback actually advanced rather than by where it
+	// ended up. Written by Play, read on the process-exit path; atomic.
+	startPosTicks int64 // atomic
 	// liveRecoveryNotified de-duplicates mpv's end-file/property event burst.
 	// The server owns policy and URL re-resolution; Player only reports the
 	// engine fact after it has seen a live input terminate unexpectedly.
@@ -183,6 +202,18 @@ type Player struct {
 	// spamming every property tick.
 	lastPause        *bool
 	durationNotified bool
+
+	// sessionSpeed is the last speed observed during this process lifetime.
+	// It is never written to config.json: persisting it would mean a user who
+	// left 2x on last week silently gets 2x today, and keep_playback_speed is
+	// about continuity within a viewing session only.
+	sessionSpeed float64
+	// titleDirty is reset on every Play and set only by remote commands that
+	// touch one of the five remembered properties.
+	titleDirty titleSettingsDirty
+	// pendingRestore holds a per-title record whose tracks still need a
+	// track-list (applied on file-loaded / track-list updates).
+	pendingRestore *pendingTitleRestore
 }
 
 // LifecycleEvent names engine-level transport transitions used by DLNA GENA.
@@ -208,6 +239,7 @@ func New() *Player {
 		socket:          socket,
 		liveProps:       map[string]any{},
 		playbackRevWait: make(chan struct{}),
+		sessionSpeed:    1.0,
 	}
 	info := DetectMPV()
 	if info.Available {
@@ -677,11 +709,17 @@ func (p *Player) handleEvent(line []byte) {
 		p.recordMPVEvent(msg.Event, fields)
 		switch msg.Event {
 		case "file-loaded":
+			// Tracks cannot be selected before mpv has a track-list, so restore
+			// sid/aid here (and again on track-list updates if still empty).
+			// Speed/delays were applied earlier; re-trying tracks is silent.
+			p.tryRestoreTitleTracks()
 			p.reportPlaybackStarted()
 		case "playback-restart":
 			// mpv's confirmation that a frame is actually being produced, not
-			// just that the file was opened — the right signal to end the
+			// just that the file was opened — the fastest signal that ends the
 			// desktop "connecting/buffering" indicator (see armStartingLocked).
+			// It is not the only one, and must not be: see the core-idle branch
+			// below for why an event cannot own this on its own.
 			p.clearStarting()
 			p.fireLifecycle(LifecyclePlaying, "", p.durationSeconds())
 		case "end-file":
@@ -702,6 +740,36 @@ func (p *Player) handleEvent(line []byte) {
 		if f, ok := data.(float64); ok {
 			atomic.StoreInt64(&p.lastPosTicks, int64(f*1e7))
 		}
+	}
+	if msg.Name == "core-idle" {
+		// The authoritative end of a starting attempt, and the reason
+		// "playback-restart" above cannot be trusted alone.
+		//
+		// mpv events are one-shot and are only delivered to clients that are
+		// already connected. propReaderRun dials *after* the process is flagged
+		// running, on a 500ms retry cadence (the socket does not exist for the
+		// first moments of a cold start), so a title that reaches playback
+		// before that subscription lands loses "playback-restart" permanently —
+		// nothing replays it. Measured at roughly 1 in 10 cold starts with local
+		// audio, where mpv opens the file and its bundled cover art almost
+		// instantly; the desktop indicator then sat on screen for the full 20s
+		// safety timeout while the music was audibly playing.
+		//
+		// An observed property has the opposite delivery semantics: mpv pushes
+		// the *current* value the moment observe_property is issued. So this
+		// arrives however late the subscription is, which is exactly the
+		// property a state flag needs. core-idle false means mpv is actively
+		// decoding and presenting — the same fact "playback-restart" announces,
+		// expressed as state rather than as an edge.
+		if idle, ok := data.(bool); ok && !idle {
+			p.clearStarting()
+		}
+	}
+	if msg.Name == "speed" {
+		p.observeSessionSpeed(data)
+	}
+	if msg.Name == "track-list" {
+		p.tryRestoreTitleTracks()
 	}
 	if msg.Name == "pause" {
 		paused, ok := data.(bool)
@@ -888,6 +956,7 @@ func (p *Player) State() map[string]any {
 		"channel_id":             ctx.ChannelID,
 		"variant_index":          ctx.VariantIndex,
 		"source_type":            ctx.SourceType,
+		"audio_only":             ctx.AudioOnly,
 		"playback_completed":     ctx.PlaybackCompleted,
 		"debug_report_available": diagnosticAvailable,
 		"debug_report_scope":     diagnosticScope,
@@ -993,6 +1062,10 @@ func (p *Player) Command(cmd []any) map[string]any {
 	if !allowedRemoteCommand(cmd) {
 		return map[string]any{"ok": false, "error": "command not allowed"}
 	}
+	// Observe dirty fields here rather than from property-change events: mpv
+	// also auto-selects tracks at load time, and those must never count as a
+	// user choice that freezes the server's default forever.
+	p.noteDirtyFromCommand(cmd)
 	p.dismissScreensaver()
 	return p.send(cmd)
 }
@@ -1025,6 +1098,86 @@ func initialMPVArgs(url, socket string) []string {
 	}
 }
 
+// mpvCommandOK reads the {ok, error} shape send() returns. A nil result (the
+// command was never attempted) is not ok.
+func mpvCommandOK(result map[string]any) bool {
+	ok, _ := result["ok"].(bool)
+	return ok
+}
+
+// reuseFallbackWait bounds how long Play waits for a dying mpv to finish
+// exiting before it starts a fresh one. Long enough to cover the ordinary
+// exit-bookkeeping gap, short enough that a caller — a DLNA control point
+// waiting on SetAVTransportURI, say — is not left hanging.
+const reuseFallbackWait = 2 * time.Second
+
+// awaitProcessExit blocks until no mpv process is flagged running, or until
+// timeout. It reports whether the process is gone, which is the precondition
+// for launching a replacement.
+func (p *Player) awaitProcessExit(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if !p.isRunning() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// loadInReusedProcess hands a new item to an mpv that is already up. It
+// returns the loadfile result; every other command here is fire-and-forget
+// because none of them decides whether playback started.
+func (p *Player) loadInReusedProcess(url string, opt PlayOptions, startValue string, speed float64, subDelay, audioDelay *float64) map[string]any {
+	switch playbackCacheModeFor(opt.SourceType) {
+	case cacheOnDemand:
+		p.applyCacheOptions()
+	case cacheLive:
+		p.applyLiveCacheOptions()
+	default:
+		p.disableCacheOptions()
+	}
+	p.applyHTTPHeaders(opt.HTTPHeaders)
+	p.send([]any{"set_property", "start", startValue})
+	// Force completion even when the user's mpv.conf sets keep-open=yes;
+	// otherwise natural EOF never exits and host autoplay cannot run.
+	p.send([]any{"set_property", "keep-open", "no"})
+	// Before loadfile: mpv reads cover-art-files while opening the file, so
+	// setting it afterwards would apply to the item after this one. Sent
+	// unconditionally because this is also what clears a previous song's
+	// artwork — left in place it outranks the incoming item's video track
+	// and the film plays as a still image.
+	p.applyAudioPresentation(audioPresentation{opt.AudioOnly, opt.CoverArtURL})
+	result := p.send([]any{"loadfile", url, "replace"})
+	if !mpvCommandOK(result) {
+		// Nothing was loaded, so the settings below would only decorate the
+		// item that is still on screen. Leave them alone and let Play decide.
+		return result
+	}
+	// loadfile keeps the previous pause flag. A prior Pause (remote or
+	// DLNA) would otherwise leave the new title frozen while still
+	// "loaded" — the classic stuck-cast symptom for reused mpv.
+	p.send([]any{"set_property", "pause", false})
+	if opt.Title != "" {
+		p.send([]any{"set_property", "title", opt.Title})
+	}
+	p.send([]any{"set_property", "fullscreen", true})
+	p.send([]any{"set_property", "hwdec", "auto-safe"})
+	// The remote's volume slider controls the OS output level (see
+	// internal/sysvolume), so mpv itself is pinned at unity gain —
+	// otherwise the two controls would stack and fight each other.
+	p.send([]any{"set_property", "volume", 100})
+	p.resetAspectOptions()
+	// Deterministic speed/delay application on the reused-process path:
+	// without this, speed only survives a title change when mpv happens to
+	// be reused, which looks random to users.
+	p.applyEarlyTitleSettings(speed, subDelay, audioDelay)
+	p.appendDiagnosticEvent("mpv_loadfile_requested", map[string]any{"reused_process": true})
+	return result
+}
+
 func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	if p.BeforePlay != nil {
 		p.BeforePlay()
@@ -1032,13 +1185,17 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	p.hideScreensaver()
 	p.beginDiagnostic(url, opt)
 
-	// Switching to a different item while playing: stop-report the old one.
+	// Switching to a different item while playing: snapshot per-title settings
+	// and stop-report the old one before the context is overwritten.
 	p.mu.Lock()
 	prev := p.ctx.ItemID
 	p.mu.Unlock()
 	if prev != "" && prev != opt.ItemID {
+		p.snapshotTitleSettings()
 		p.fireStopReport()
 	}
+
+	speed, subDelay, audioDelay := p.prepareTitleRestore(opt)
 
 	// playSessionID/mediaSourceID are read by the progress + stop reporters
 	// (other goroutines), so all access is guarded by p.mu.
@@ -1055,6 +1212,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	// must not tell the server/local history the item was abandoned at 0:00 —
 	// that would erase the saved resume point the play was about to honour.
 	atomic.StoreInt64(&p.lastPosTicks, int64(opt.StartSeconds*1e7))
+	atomic.StoreInt64(&p.startPosTicks, int64(opt.StartSeconds*1e7))
 
 	startValue := "none"
 	if opt.StartSeconds > 0 {
@@ -1062,37 +1220,35 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	}
 
 	var result map[string]any
+	reused := false
 	if p.isRunning() {
-		switch playbackCacheModeFor(opt.SourceType) {
-		case cacheOnDemand:
-			p.applyCacheOptions()
-		case cacheLive:
-			p.applyLiveCacheOptions()
-		default:
-			p.disableCacheOptions()
+		result = p.loadInReusedProcess(url, opt, startValue, speed, subDelay, audioDelay)
+		reused = mpvCommandOK(result)
+		if !reused {
+			// mpv was flagged running but would not take the load. The usual
+			// cause is the moment the previous process is exiting: propReader
+			// has already dropped the IPC connection while the exit bookkeeping
+			// has not yet cleared `running`. A DLNA cast lands here often,
+			// because a cast typically arrives right after something else
+			// stopped — and the sender is then left on "connecting" forever
+			// against a renderer that quietly reported failure.
+			//
+			// Retrying in a fresh process is only safe once the old one is
+			// really gone. mpv can also be alive-but-not-yet-connected (a
+			// second play issued during a cold start's first moments), and a
+			// second player beside a live one is a worse outcome than the
+			// failure this repairs. So wait for the exit, and give up if it
+			// does not come.
+			log.Printf("mpv reuse failed (%v); waiting for the old process to exit before a fresh start", result["error"])
+			p.appendDiagnosticEvent("mpv_reuse_failed", map[string]any{"error": fmt.Sprint(result["error"])})
+			if !p.awaitProcessExit(reuseFallbackWait) {
+				p.appendDiagnosticEvent("mpv_reuse_fallback_abandoned", nil)
+				p.finalizeDiagnostic("engine_start_failed", "engine_start")
+				return result
+			}
 		}
-		p.applyHTTPHeaders(opt.HTTPHeaders)
-		p.send([]any{"set_property", "start", startValue})
-		// Force completion even when the user's mpv.conf sets keep-open=yes;
-		// otherwise natural EOF never exits and host autoplay cannot run.
-		p.send([]any{"set_property", "keep-open", "no"})
-		result = p.send([]any{"loadfile", url, "replace"})
-		// loadfile keeps the previous pause flag. A prior Pause (remote or
-		// DLNA) would otherwise leave the new title frozen while still
-		// "loaded" — the classic stuck-cast symptom for reused mpv.
-		p.send([]any{"set_property", "pause", false})
-		if opt.Title != "" {
-			p.send([]any{"set_property", "title", opt.Title})
-		}
-		p.send([]any{"set_property", "fullscreen", true})
-		p.send([]any{"set_property", "hwdec", "auto-safe"})
-		// The remote's volume slider controls the OS output level (see
-		// internal/sysvolume), so mpv itself is pinned at unity gain —
-		// otherwise the two controls would stack and fight each other.
-		p.send([]any{"set_property", "volume", 100})
-		p.resetAspectOptions()
-		p.appendDiagnosticEvent("mpv_loadfile_requested", map[string]any{"reused_process": true})
-	} else {
+	}
+	if !reused {
 		playerLog, mpvLog := openPlayerLog()
 		exe := p.mpvExe()
 		args := initialMPVArgs(url, p.socket)
@@ -1105,7 +1261,12 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 			args = append(args, "--cache=no")
 		}
 		args = append(args, aspectArgs()...)
+		args = append(args, audioPresentation{opt.AudioOnly, opt.CoverArtURL}.args()...)
 		args = append(args, mpvHTTPHeaderArgs(opt.HTTPHeaders)...)
+		// Startup flags, not set_property: the IPC pipe is not connected yet
+		// on a fresh process. Explicit --speed also covers keep_playback_speed
+		// off (1.0) so a fresh process never inherits a stale mpv.conf default.
+		args = append(args, earlyTitleSettingsArgs(speed, subDelay, audioDelay)...)
 		if playerLog != nil {
 			// Verbose output is captured by Go's bounded writer below, so a
 			// long-lived mpv process cannot grow the log without limit.
@@ -1128,11 +1289,19 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 			if playerLog != nil {
 				playerLog.Close()
 			}
-			p.appendDiagnosticEvent("mpv_process_start_failed", map[string]any{})
+			// mpv writes nothing when it never starts, so this error is the
+			// only record of why playback silently did nothing.
+			log.Printf("Could not start player %s: %v", exe, err)
+			p.appendDiagnosticEvent("mpv_process_start_failed", map[string]any{"error": err.Error()})
 			p.finalizeDiagnostic("engine_start_failed", "engine_start")
 			return map[string]any{"ok": false, "error": "Could not start the player: " + exe}
 		}
 		log.Printf("Started player %s (pid=%d), log: %s", exe, cmd.Process.Pid, mpvLog)
+		// Play() runs on an HTTP handler goroutine with no window/input behind
+		// it, which Windows' foreground-activation lock treats as unprivileged;
+		// without this, mpv's own window opens behind whatever currently holds
+		// the foreground (typically the QR window). No-op on other platforms.
+		allowForegroundActivation(cmd.Process.Pid)
 		p.mu.Lock()
 		p.proc = cmd
 		p.running = true
@@ -1143,13 +1312,27 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 			if playerLog != nil {
 				playerLog.Close()
 			}
+			hint := exitStatusHint(err)
 			if err != nil {
 				// A non-zero exit or signal is the process crash the user observes.
 				// Surfacing it here (with the log path) gives us something to act on.
-				log.Printf("mpv exited unexpectedly: %v; see %s", err, mpvLog)
+				if hint != "" {
+					log.Printf("mpv exited unexpectedly: %v — %s", err, hint)
+				} else {
+					log.Printf("mpv exited unexpectedly: %v; see %s", err, mpvLog)
+				}
 			}
 			p.mu.Lock()
 			isCurrent := p.proc == cmd
+			// Revision as of this exit. The bookkeeping below ends by clearing
+			// the play context, but it runs asynchronously and passes through
+			// a network stop report first — long enough for a *new* Play to
+			// have started and installed its own context, which clearing would
+			// then wipe. Comparing the revision is how the clear stays scoped
+			// to the playback that actually ended. Reachable in ordinary use:
+			// the reuse fallback above deliberately starts a fresh process the
+			// moment this goroutine clears `running`.
+			exitRevision := p.playbackRevision
 			if isCurrent {
 				p.running = false
 				p.proc = nil
@@ -1160,6 +1343,9 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 				exit := "clean"
 				if err != nil {
 					exit = err.Error()
+					if hint != "" {
+						exit += " (" + hint + ")"
+					}
 				}
 				p.diagMu.Lock()
 				if p.currentDiagnostic != nil {
@@ -1170,6 +1356,9 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 				p.diagMu.Lock()
 				naturalEOF := p.currentDiagnostic != nil && p.currentDiagnostic.MPVEndReason == "eof"
 				p.diagMu.Unlock()
+				// Same write timing as fireStopReport: once on process exit,
+				// not on every property change (config.json is rewritten whole).
+				p.snapshotTitleSettings()
 				p.fireStopReport()
 				p.finalizeDiagnostic("engine_process_exit", "engine_process")
 				p.mu.Lock()
@@ -1189,19 +1378,31 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 					p.fireLifecycle(LifecycleStopped, "process_exit", p.durationSeconds())
 				}
 				p.mu.Lock()
-				completed, autoplayEOF := completedAutoplayContext(finished, naturalEOF)
-				if autoplayEOF {
-					p.ctx = completed
+				progressed := time.Duration(atomic.LoadInt64(&p.lastPosTicks)-atomic.LoadInt64(&p.startPosTicks)) * 100
+				completed, autoplayEOF := completedAutoplayContext(finished, naturalEOF, progressed)
+				// A newer playback has already claimed the player: it owns the
+				// context and the live props now. Clearing them here would
+				// blank a running title, and handing its revision to autoplay
+				// would chain the next item off something still playing.
+				superseded := p.playbackRevision != exitRevision
+				if superseded {
+					autoplayEOF = false
 				} else {
-					p.ctx = PlayContext{}
+					if autoplayEOF {
+						p.ctx = completed
+					} else {
+						p.ctx = PlayContext{}
+					}
+					p.bumpPlaybackRevisionLocked()
 				}
-				p.bumpPlaybackRevisionLocked()
 				completedRevision := p.playbackRevision
 				reporter := p.NaturalEOFReporter
 				p.mu.Unlock()
-				p.propsMu.Lock()
-				p.liveProps = map[string]any{}
-				p.propsMu.Unlock()
+				if !superseded {
+					p.propsMu.Lock()
+					p.liveProps = map[string]any{}
+					p.propsMu.Unlock()
+				}
 				if autoplayEOF && reporter != nil {
 					reporter(completed, completedRevision)
 				}
@@ -1227,6 +1428,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		ChannelID:    opt.ChannelID,
 		VariantIndex: opt.VariantIndex,
 		SourceType:   opt.SourceType,
+		AudioOnly:    opt.AudioOnly,
 	}
 	p.armStartingLocked()
 	p.bumpPlaybackRevisionLocked()
@@ -1234,13 +1436,29 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	return result
 }
 
+// minAutoplayProgress is how far playback must advance past its start position
+// before an end-of-file counts as having finished the title. A file that opens
+// at (or just before) its own tail reaches EOF within a frame or two, which is
+// a degenerate open rather than a completed viewing — chaining autoplay off it
+// would walk the whole folder in seconds. The threshold only has to clear that
+// case, so it is deliberately small: a genuine viewing of even a very short
+// clip passes it easily.
+const minAutoplayProgress = 2 * time.Second
+
 // completedAutoplayContext is the production EOF hand-off gate. File-source
 // plays intentionally have no SeriesID: their ItemID is the relative path used
 // by the folder resolver. The player reports every completed non-live item and
 // leaves source-specific eligibility to the server, which already owns that
 // policy (and rejects movies, IPTV, DLNA, or disabled autoplay as appropriate).
-func completedAutoplayContext(finished PlayContext, naturalEOF bool) (PlayContext, bool) {
+//
+// progressed is how much playback actually advanced during this attempt; see
+// minAutoplayProgress. A negative value (the position moved backwards, which a
+// resume seed can produce when no time-pos ever arrived) is not progress.
+func completedAutoplayContext(finished PlayContext, naturalEOF bool, progressed time.Duration) (PlayContext, bool) {
 	if !naturalEOF || finished.ItemID == "" || finished.IsLive {
+		return PlayContext{}, false
+	}
+	if progressed < minAutoplayProgress {
 		return PlayContext{}, false
 	}
 	finished.PlaybackCompleted = true
@@ -1304,9 +1522,11 @@ func (p *Player) Stop() map[string]any {
 	p.hideScreensaver()
 	p.appendDiagnosticEvent("stop_requested", map[string]any{})
 	p.finalizeDiagnostic("user_stop", "user_action")
-	// Snapshot before fireStopReport/clear so DLNA GENA still sees SourceType.
+	// Snapshot before fireStopReport/clear so DLNA GENA still sees SourceType
+	// and per-title dirty fields still have a live context + props to read.
 	dur := p.durationSeconds()
 	p.fireLifecycle(LifecycleStopped, "user_stop", dur)
+	p.snapshotTitleSettings()
 	p.fireStopReport()
 	p.clearStarting()
 	p.mu.Lock()

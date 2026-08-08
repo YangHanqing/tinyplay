@@ -66,12 +66,17 @@ func (s *Server) feedbackReport(w http.ResponseWriter, r *http.Request) {
 			"custom_invalid":    mpvInfo.CustomInvalid,
 		},
 		"settings": map[string]any{
-			"cache_seconds":         cfg.MpvCacheSecs,
-			"seek_backward_secs":    cfg.SeekBackwardSecs,
-			"seek_forward_secs":     cfg.SeekForwardSecs,
-			"autoplay_next_episode": cfg.AutoplayNextEpisode,
-			"dlna_receiver_enabled": cfg.DLNAReceiverEnabled,
-			"custom_website_count":  len(cfg.WebsiteCustomSites),
+			"cache_seconds":           cfg.MpvCacheSecs,
+			"seek_backward_secs":      cfg.SeekBackwardSecs,
+			"seek_forward_secs":       cfg.SeekForwardSecs,
+			"autoplay_next_episode":   cfg.AutoplayNextEpisode,
+			"keep_playback_speed":     cfg.KeepPlaybackSpeed,
+			"remember_title_settings": cfg.RememberTitleSettings,
+			"dlna_receiver_enabled":   cfg.DLNAReceiverEnabled,
+			"custom_website_count":    len(cfg.WebsiteCustomSites),
+			// title_settings_history is deliberately omitted: the table is a
+			// watch-history of what the user played, and does not belong in a
+			// feedback report that may leave the device.
 		},
 		"pairing": map[string]any{
 			"device_count": auth.Default.DeviceCount(),

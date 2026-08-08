@@ -56,6 +56,14 @@ Source: "..\dist\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 ; uninstalling would leave a startup entry pointing at a deleted executable.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "TinyPlay"; ValueType: none; Flags: uninsdeletevalue
 
+[UninstallDelete]
+; The built-in browser's WebView2 profile lives in %AppData% (not {app}), so
+; nothing else removes it, and it is the one directory here without a size
+; ceiling. Config, logs and the artwork cache are deliberately left in place:
+; they are small, bounded, and a reinstall should find the user's servers and
+; pairings intact.
+Type: filesandordirs; Name: "{userappdata}\TinyPlay\webview2-website"
+
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\TinyPlay.exe"; WorkingDir: "{app}"; IconFilename: "{app}\TinyPlay.exe"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\TinyPlay.exe"; WorkingDir: "{app}"; IconFilename: "{app}\TinyPlay.exe"

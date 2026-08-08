@@ -489,7 +489,12 @@ func (r *Receiver) connectionManager(w http.ResponseWriter, req *http.Request) {
 	case "GetCurrentConnectionIDs":
 		soapOK(w, "GetCurrentConnectionIDs", "ConnectionManager", map[string]string{"ConnectionIDs": "0"})
 	case "GetCurrentConnectionInfo":
-		soapOK(w, "GetCurrentConnectionInfo", "ConnectionManager", map[string]string{"RcsID": "0", "AVTransportID": "0", "ProtocolInfo": "http-get:*:video/*:*", "PeerConnectionManager": "", "PeerConnectionID": "-1", "Direction": "Input", "Status": "OK"})
+		// Wildcard rather than "video/*": this renderer accepts audio too (see
+		// sinkProtocolInfo), and a music sender that reads this field to decide
+		// whether the connection can carry its track would refuse a renderer
+		// that advertises video only. Repeating the whole sink list here would
+		// just be a second copy to keep in sync.
+		soapOK(w, "GetCurrentConnectionInfo", "ConnectionManager", map[string]string{"RcsID": "0", "AVTransportID": "0", "ProtocolInfo": "http-get:*:*:*", "PeerConnectionManager": "", "PeerConnectionID": "-1", "Direction": "Input", "Status": "OK"})
 	default:
 		log.Printf("DLNA SOAP ConnectionManager unsupported action=%q", action)
 		soapFault(w, 401, "Invalid Action")
@@ -539,7 +544,15 @@ func (r *Receiver) avTransport(w http.ResponseWriter, req *http.Request) {
 		// until then makes control points time out even though playback eventually
 		// appears on screen. Start the engine in arrival order off-request and
 		// report its outcome through the authoritative state + GENA channel.
-		go r.startURIPlayback(gen, raw, title)
+		// The DIDL decides whether this is a song and which picture is shown,
+		// and senders disagree wildly about what they put in it. Recording it
+		// is what makes a "cast looks broken" report diagnosable at all —
+		// without it the metadata is gone the moment the goroutine returns.
+		log.Printf("DLNA SetAVTransportURI title=%q uri=%q meta=%q", title, raw, logSnippet(meta))
+		// audioFromMeta probes the sender's album art over the network, so it
+		// runs in the playback goroutine: doing it here would hold this SOAP
+		// response open and make control points time out.
+		go r.startURIPlayback(gen, raw, title, meta)
 		soapOK(w, action, "AVTransport", nil)
 	case "Play":
 		// Always force unpause — reading "pause" can race with a just-started load.
@@ -734,7 +747,99 @@ func (r *Receiver) transportState() string {
 	return r.snapState().TransportState
 }
 
-func (r *Receiver) startURIPlayback(gen uint64, raw, title string) {
+// castAudio carries what the DIDL metadata said about a cast song. A video
+// cast leaves it zero, which is what keeps mpv's artwork handling off.
+type castAudio struct {
+	audioOnly   bool
+	coverArtURL string
+}
+
+// logSnippet bounds a sender-supplied string before it reaches the log. DIDL
+// documents can carry long descriptions, and the log rotates at a fixed size.
+func logSnippet(s string) string {
+	const max = 600
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	// Cut on a rune boundary: DIDL titles are routinely CJK.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// artProbeTimeout bounds the album-art check. It is spent before playback
+// starts, so it buys certainty about the picture at the cost of delaying the
+// song — a second and a half is the most that trade is worth.
+const artProbeTimeout = 1500 * time.Millisecond
+
+// artProbeClient is separate from any other client in this package: it talks to
+// an address a sender chose, and must not inherit a longer timeout.
+var artProbeClient = &http.Client{Timeout: artProbeTimeout}
+
+// artworkUsable reports whether rawURL actually serves an image.
+//
+// A declared albumArtURI is not evidence that anything is there. Observed in
+// the wild: a NAS companion app announced its own origin with no path
+// ("http://host:5055"), mpv logged "Can not open external file", and the cast
+// played into a black window — the failure looked identical to no artwork
+// support at all. mpv opens cover art asynchronously and reports nothing back,
+// so the only place this can be caught is before the option is set.
+//
+// A range-limited GET rather than HEAD: it is one request that works on servers
+// which do not implement HEAD, and the body is discarded anyway.
+func artworkUsable(rawURL string) bool {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Range", "bytes=0-1023")
+	resp, err := artProbeClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return false
+	}
+	// Positive evidence only. A server that labels its JPEG
+	// application/octet-stream loses its artwork to TinyPlay's own, which is a
+	// far better outcome than mpv failing to open whatever it was.
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type"))), "image/")
+}
+
+// audioFromMeta reads the sender's metadata and, for a song, picks the picture
+// mpv will display. The sender's own album art is preferred but must prove it
+// exists; TinyPlay's artwork stands in otherwise, so a cast song is never a
+// blank screen.
+//
+// Blocking: call this off the SOAP handler goroutine — the probe would
+// otherwise hold SetAVTransportURI open and make control points time out.
+func (r *Receiver) audioFromMeta(meta string) castAudio {
+	if !didlIsAudio(meta) {
+		return castAudio{}
+	}
+	fallback := ""
+	if r.port != nil {
+		fallback = player.FallbackCoverArtURL(r.port())
+	}
+	art := didlAlbumArtURL(meta)
+	if art != "" && !artworkUsable(art) {
+		log.Printf("DLNA album art unusable, using TinyPlay artwork instead: %q", art)
+		art = ""
+	}
+	if art == "" {
+		art = fallback
+	}
+	return castAudio{audioOnly: true, coverArtURL: art}
+}
+
+func (r *Receiver) startURIPlayback(gen uint64, raw, title, meta string) {
 	r.playMu.Lock()
 	defer r.playMu.Unlock()
 
@@ -745,6 +850,8 @@ func (r *Receiver) startURIPlayback(gen uint64, raw, title string) {
 	if staleBeforeStart {
 		return
 	}
+	audio := r.audioFromMeta(meta)
+	log.Printf("DLNA cast presentation title=%q audio_only=%v cover_art=%q", title, audio.audioOnly, audio.coverArtURL)
 
 	play := r.playURI
 	if play == nil {
@@ -752,7 +859,13 @@ func (r *Receiver) startURIPlayback(gen uint64, raw, title string) {
 		r.finishURIPlayback(gen, raw, title, result)
 		return
 	}
-	result := play(raw, player.PlayOptions{ItemID: raw, Title: title, SourceType: "dlna"})
+	result := play(raw, player.PlayOptions{
+		ItemID:      raw,
+		Title:       title,
+		SourceType:  "dlna",
+		AudioOnly:   audio.audioOnly,
+		CoverArtURL: audio.coverArtURL,
+	})
 	r.finishURIPlayback(gen, raw, title, result)
 }
 
@@ -787,7 +900,13 @@ func (r *Receiver) finishURIPlayback(gen uint64, raw, title string, result map[s
 			r.state.setTransport("PLAYING", "OK")
 			r.notifyTransport()
 		}
+		return
 	}
+	// Not an error, but the sender is not going to see PLAYING from this cast.
+	// A control point stuck on "connecting" is otherwise indistinguishable from
+	// a renderer that never received anything.
+	log.Printf("DLNA cast started but transport stayed %q (uri matches=%v) title=%q",
+		snap.TransportState, snap.URI == raw, title)
 }
 
 // props / command / stopPlayer are the only paths from a SOAP handler to the
@@ -841,6 +960,7 @@ func xmlTag(body, wanted string) string {
 	}
 	return htmlUnescape(strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(match[1], "<![CDATA["), "]]>")))
 }
+
 // htmlUnescape decodes the entity forms a SOAP argument can legally carry.
 // It must resolve in a single left-to-right pass: decoding "&amp;" first and
 // then rescanning would turn a literal "&amp;lt;" inside a DIDL payload into

@@ -324,7 +324,7 @@
             <div class="poster-nav-wrap">
               <div class="remote-poster-card" id="remote-poster-card">
                 <img id="remote-poster-img" alt="" loading="lazy" onload="showPoster(this)" onerror="retryPoster(this)">
-                <div class="remote-poster-fallback">TV</div>
+                <div class="remote-poster-fallback" id="remote-poster-fallback">TV</div>
               </div>
             </div>
             <div class="now-playing-copy">
@@ -432,7 +432,7 @@
 
           <!-- Tool grid -->
           <div class="remote-tool-grid">
-            <button class="tool-tile" onclick="openAspectSheet()" aria-label="Aspect">
+            <button class="tool-tile" id="tool-tile-aspect" onclick="openAspectSheet()" aria-label="Aspect">
               <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5h3"/><path d="M17 5h3v3"/><path d="M20 16v3h-3"/><path d="M7 19H4v-3"/><rect x="7" y="8" width="10" height="8" rx="1.5"/></svg>
               <span>Aspect</span>
             </button>
@@ -611,6 +611,28 @@
           <div class="segmented-control" id="autoplay-next-episode-segments">
             <button class="segment-btn" onclick="setAutoplayNextEpisode(true)" id="autoplay-next-episode-on-btn"></button>
             <button class="segment-btn" onclick="setAutoplayNextEpisode(false)" id="autoplay-next-episode-off-btn"></button>
+          </div>
+        </section>
+
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2 id="keep-playback-speed-title"></h2>
+            <p id="keep-playback-speed-hint"></p>
+          </div>
+          <div class="segmented-control" id="keep-playback-speed-segments">
+            <button class="segment-btn" onclick="setKeepPlaybackSpeed(true)" id="keep-playback-speed-on-btn"></button>
+            <button class="segment-btn" onclick="setKeepPlaybackSpeed(false)" id="keep-playback-speed-off-btn"></button>
+          </div>
+        </section>
+
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2 id="remember-title-settings-title"></h2>
+            <p id="remember-title-settings-hint"></p>
+          </div>
+          <div class="segmented-control" id="remember-title-settings-segments">
+            <button class="segment-btn" onclick="setRememberTitleSettings(true)" id="remember-title-settings-on-btn"></button>
+            <button class="segment-btn" onclick="setRememberTitleSettings(false)" id="remember-title-settings-off-btn"></button>
           </div>
         </section>
 

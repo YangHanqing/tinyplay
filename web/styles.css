@@ -1368,6 +1368,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .remote-poster-card.missing img,
 .remote-poster-card:not(.missing) .remote-poster-fallback { display: none; }
 .remote-poster-fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,.42); font-size: 24px; font-weight: 900; letter-spacing: .08em; }
+.remote-poster-fallback.is-audio { font-size: inherit; font-weight: inherit; letter-spacing: normal; }
+.remote-poster-fallback .remote-poster-music { width: 36px; height: 36px; display: block; opacity: .9; }
 .ep-controls {
   display: flex; align-items: center; gap: 6px; margin-top: 10px;
 }

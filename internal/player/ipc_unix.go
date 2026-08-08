@@ -16,3 +16,7 @@ func platformDefaultSocket() string {
 func dialMPV(addr string) (net.Conn, error) {
 	return net.Dial("unix", addr)
 }
+
+// allowForegroundActivation is a Windows-only concern (see the counterpart in
+// ipc_windows.go): macOS activates a newly launched GUI process by default.
+func allowForegroundActivation(pid int) {}

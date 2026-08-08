@@ -7,23 +7,49 @@ import (
 	"tvremote/internal/i18n"
 )
 
-// Settings returns user-editable app settings.
-func Settings() map[string]any {
+// Settings returns user-editable app settings, resolving "auto" against this
+// machine's own locale. Prefer SettingsFor when a request is in hand.
+func Settings() map[string]any { return SettingsFor("") }
+
+// SettingsFor returns the same settings with "auto" resolved against the
+// language the *caller* asked for (the phone's Accept-Language, via
+// i18n.RequestLang).
+//
+// This UI is read on a phone, not on the desktop, so "automatic" has to mean
+// the phone's language — resolving it against the desktop's locale is why a
+// Chinese Mac served an English page to a Chinese phone while every other
+// website on that phone came up in Chinese. Two phones set to different
+// languages each get their own, which is what "automatic" already promises.
+// An explicit selection is a deliberate choice and is never overridden.
+//
+// requestLang may be empty (no request in hand), in which case the desktop's
+// locale is the fallback exactly as before.
+func SettingsFor(requestLang string) map[string]any {
 	cfg := Load()
 	lang := NormalizeLanguage(cfg.Language)
 	resolved := lang
 	if lang == "auto" {
-		// Explicit selections pass through as-is; only auto uses the system resolver.
+		// Explicit selections pass through as-is; only auto is resolved.
+		// Empty means "no request in hand" and must fall back to the desktop —
+		// it cannot go through Normalize, which answers "en" for anything it
+		// does not recognise, including "".
 		resolved = i18n.SystemLang()
+		if requestLang != "" {
+			if normalized := i18n.Normalize(requestLang); i18n.Supported(normalized) {
+				resolved = normalized
+			}
+		}
 	}
 	return map[string]any{
-		"mpv_cache_secs":        NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
-		"seek_backward_secs":    normalizeSeek(cfg.SeekBackwardSecs, 5),
-		"seek_forward_secs":     normalizeSeek(cfg.SeekForwardSecs, 30),
-		"language":              lang,
-		"resolved_language":     resolved,
-		"dlna_receiver_enabled": cfg.DLNAReceiverEnabled,
-		"autoplay_next_episode": cfg.AutoplayNextEpisode,
+		"mpv_cache_secs":          NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
+		"seek_backward_secs":      normalizeSeek(cfg.SeekBackwardSecs, 5),
+		"seek_forward_secs":       normalizeSeek(cfg.SeekForwardSecs, 30),
+		"language":                lang,
+		"resolved_language":       resolved,
+		"dlna_receiver_enabled":   cfg.DLNAReceiverEnabled,
+		"autoplay_next_episode":   cfg.AutoplayNextEpisode,
+		"keep_playback_speed":     cfg.KeepPlaybackSpeed,
+		"remember_title_settings": cfg.RememberTitleSettings,
 		// The source-type picker filters its file-source cards against this
 		// list, so a build that can't actually serve a given kind doesn't
 		// offer it as an option.
@@ -46,7 +72,10 @@ func ResetAll() map[string]any {
 		cfg.DLNAReceiverEnabled = true
 		cfg.DLNAReceiverID = newID()
 		cfg.LocalPlaybackHistory = nil
+		cfg.TitleSettingsHistory = nil
 		cfg.AutoplayNextEpisode = true
+		cfg.KeepPlaybackSpeed = true
+		cfg.RememberTitleSettings = false
 		cfg.UpdateSkippedVersion = ""
 		cfg.UpdateRemindVersion = ""
 		cfg.UpdateRemindAfter = ""
@@ -123,6 +152,18 @@ func SetAutoplayNextEpisode(enabled bool) map[string]any {
 	return Settings()
 }
 
+// SetKeepPlaybackSpeed persists the "keep playback speed across titles" toggle.
+func SetKeepPlaybackSpeed(enabled bool) map[string]any {
+	patch(func(cfg *Config) { cfg.KeepPlaybackSpeed = enabled })
+	return Settings()
+}
+
+// SetRememberTitleSettings persists the per-title settings memory toggle.
+func SetRememberTitleSettings(enabled bool) map[string]any {
+	patch(func(cfg *Config) { cfg.RememberTitleSettings = enabled })
+	return Settings()
+}
+
 func normalizeSeek(v, fallback int) int {
 	if v < 5 || v > 60 || v%5 != 0 {
 		return fallback
@@ -154,6 +195,70 @@ func MpvExe() string { return Load().MpvExe }
 // — see player.ValidateMPV — so that an unusable path never lands on disk.
 func SetMpvExe(path string) {
 	patch(func(cfg *Config) { cfg.MpvExe = strings.TrimSpace(path) })
+}
+
+// DefaultWebsiteCacheLimitMB caps the built-in browser's profile when the user
+// has not chosen otherwise. 1GB is picked against how the directory is actually
+// filled: video sites cache segments through Service Workers, so a browser-sized
+// default (Chromium's own HTTP cache lands near 320MB) would have the cache
+// evicting itself constantly, while a multi-gigabyte one defeats the point on
+// the small system drives this feature exists for.
+const DefaultWebsiteCacheLimitMB = 1024
+
+// WebsiteCacheLimitUnlimited is the stored value meaning "never sweep". It is
+// deliberately not 0: 0 is what an absent field unmarshals to, and defaulting a
+// missing field to "unlimited" would leave every existing install uncapped —
+// the exact problem this setting was added for.
+const WebsiteCacheLimitUnlimited = -1
+
+// WebsiteCacheLimitBytes resolves the persisted preference into a byte budget.
+// The second result is false when the user turned the cap off, which callers
+// must distinguish from a zero budget (that would mean "delete everything").
+func WebsiteCacheLimitBytes() (int64, bool) {
+	mb := Load().WebsiteCacheLimitMB
+	if mb == WebsiteCacheLimitUnlimited {
+		return 0, false
+	}
+	if mb <= 0 {
+		mb = DefaultWebsiteCacheLimitMB
+	}
+	return int64(mb) << 20, true
+}
+
+// WebsiteCacheLimitMB returns the raw persisted preference, resolving absent to
+// the default so the shell's menu can tick the matching radio item. Unlimited
+// round-trips as WebsiteCacheLimitUnlimited.
+func WebsiteCacheLimitMB() int {
+	mb := Load().WebsiteCacheLimitMB
+	if mb == WebsiteCacheLimitUnlimited {
+		return WebsiteCacheLimitUnlimited
+	}
+	if mb <= 0 {
+		return DefaultWebsiteCacheLimitMB
+	}
+	return mb
+}
+
+// SetWebsiteCacheLimitMB persists a new budget. Anything that is neither a
+// positive size nor the unlimited sentinel is stored as the default rather than
+// rejected: the only callers are fixed menu items, so a bad value means a bug
+// here, and silently capping is safer than persisting nonsense.
+func SetWebsiteCacheLimitMB(mb int) {
+	if mb != WebsiteCacheLimitUnlimited && mb <= 0 {
+		mb = DefaultWebsiteCacheLimitMB
+	}
+	patch(func(cfg *Config) { cfg.WebsiteCacheLimitMB = mb })
+}
+
+// WebsiteCacheDir returns the user's relocated browser-profile directory, or ""
+// for the default under DataDir(). Validation belongs to the caller at the
+// moment the profile is opened — a path on a drive that is currently unplugged
+// is not worth failing a config read over.
+func WebsiteCacheDir() string { return Load().WebsiteCacheDir }
+
+// SetWebsiteCacheDir persists (or, given "", clears) that relocation.
+func SetWebsiteCacheDir(dir string) {
+	patch(func(cfg *Config) { cfg.WebsiteCacheDir = strings.TrimSpace(dir) })
 }
 
 // NormalizeLanguage maps a user/config language preference onto the shared

@@ -506,8 +506,10 @@ func (c *Client) ResumePositionSeconds(id string) float64 {
 	if len(ms) == 0 {
 		return 0
 	}
+	// Same tail rule as the Emby client, including its treatment of an unknown
+	// duration as "cannot rule out the tail" rather than as "skip the check".
 	off, dur := integer(ms[0]["viewOffset"]), integer(ms[0]["duration"])
-	if off <= 0 || (dur > 0 && (off >= dur-15000 || float64(off)/float64(dur) >= .99)) {
+	if off <= 0 || dur <= 0 || off >= dur-15000 || float64(off)/float64(dur) >= .99 {
 		return 0
 	}
 	return float64(off) / 1000

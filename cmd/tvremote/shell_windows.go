@@ -78,9 +78,55 @@ func runShell(localURL string, httpSrv *http.Server) {
 		}
 		systray.AddSeparator()
 		mAdvanced := systray.AddMenuItem(i18n.System("advanced_settings"), i18n.System("advanced_settings_tip"))
-		mMPVCustom := mAdvanced.AddSubMenuItem(i18n.System("mpv_custom_menu"), i18n.System("mpv_custom_menu_tip"))
-		mMPVRestore := mAdvanced.AddSubMenuItem(i18n.System("mpv_restore_default_menu"), i18n.System("mpv_restore_default_menu_tip"))
-		mAutostart := mAdvanced.AddSubMenuItemCheckbox(i18n.System("autostart_menu"), i18n.System("autostart_menu_tip"), readAutostart())
+		mMPV := mAdvanced.AddSubMenuItem(i18n.System("mpv_menu"), i18n.System("mpv_menu_tip"))
+		mMPVCustom := mMPV.AddSubMenuItem(i18n.System("mpv_custom_path_menu"), i18n.System("mpv_custom_path_menu_tip"))
+		mMPVRestore := mMPV.AddSubMenuItem(i18n.System("mpv_use_bundled_menu"), i18n.System("mpv_use_bundled_menu_tip"))
+		mAutostartMenu := mAdvanced.AddSubMenuItem(i18n.System("autostart_menu"), i18n.System("autostart_menu_tip"))
+		autostartOn := readAutostart()
+		mAutostartOn := mAutostartMenu.AddSubMenuItemCheckbox(i18n.System("autostart_on_menu"), "", autostartOn)
+		mAutostartOff := mAutostartMenu.AddSubMenuItemCheckbox(i18n.System("autostart_off_menu"), "", !autostartOn)
+
+		// Web cache: the built-in browser's WebView2 profile is the only
+		// directory under DataDir() without a ceiling of its own.
+		mWebCache := mAdvanced.AddSubMenuItem(i18n.System("webcache_menu"), i18n.System("webcache_menu_tip"))
+		mWebCacheClear := mWebCache.AddSubMenuItem(websiteCacheClearTitle(), i18n.System("webcache_clear_tip"))
+		mWebCacheLimit := mWebCache.AddSubMenuItem(i18n.System("webcache_limit_menu"), "")
+		webCacheLimits := []struct {
+			mb    int
+			title string
+		}{
+			{512, "512 MB"},
+			{config.DefaultWebsiteCacheLimitMB, "1 GB"},
+			{2048, "2 GB"},
+			{config.WebsiteCacheLimitUnlimited, i18n.System("webcache_limit_unlimited")},
+		}
+		activeLimit := config.WebsiteCacheLimitMB()
+		webCacheLimitItems := make([]*systray.MenuItem, len(webCacheLimits))
+		for i, entry := range webCacheLimits {
+			webCacheLimitItems[i] = mWebCacheLimit.AddSubMenuItemCheckbox(entry.title, "", entry.mb == activeLimit)
+		}
+		mWebCacheLocation := mWebCache.AddSubMenuItem(i18n.System("webcache_location_menu"), "")
+
+		applyWebCacheLimitRadio := func() {
+			active := config.WebsiteCacheLimitMB()
+			for i, entry := range webCacheLimits {
+				if entry.mb == active {
+					webCacheLimitItems[i].Check()
+				} else {
+					webCacheLimitItems[i].Uncheck()
+				}
+			}
+		}
+		// systray has no "submenu opened" event, so the measured size is
+		// refreshed on a timer and immediately after a clear. Walking the
+		// profile on every tick is wasteful, hence the slow cadence: the number
+		// only has to be roughly current when someone goes looking for it.
+		refreshWebCacheTitle := func() { mWebCacheClear.SetTitle(websiteCacheClearTitle()) }
+		go func() {
+			for range time.Tick(2 * time.Minute) {
+				refreshWebCacheTitle()
+			}
+		}()
 		systray.AddSeparator()
 		mFeedback := systray.AddMenuItem(i18n.System("feedback"), i18n.System("feedback_tip"))
 		systray.AddSeparator()
@@ -95,18 +141,18 @@ func runShell(localURL string, httpSrv *http.Server) {
 			if err != nil {
 				return
 			}
-			mAdvanced.SetTooltip(mpvStatusTooltip(status))
+			mMPV.SetTooltip(mpvStatusTooltip(status))
 		}
 		go refreshMPVTooltip()
 
 		// An in-place upgrade can land TinyPlay.exe in a different directory
 		// than the one recorded when autostart was switched on. Repair the
-		// entry here rather than leaving the user with a checkbox that reads
+		// entry here rather than leaving the user with a menu that reads
 		// "on" and a startup command that points at nothing.
 		if err := autostart.Sync(); err != nil {
 			log.Printf("autostart: sync failed: %v", err)
 		}
-		applyAutostartCheckbox(mAutostart)
+		applyAutostartRadio(mAutostartOn, mAutostartOff)
 
 		applyLanguage := func(language string) {
 			config.SetLanguage(language)
@@ -115,12 +161,24 @@ func runShell(localURL string, httpSrv *http.Server) {
 			mLanguage.SetTitle(i18n.System("language"))
 			languageItems["auto"].SetTitle(i18n.System("language_auto"))
 			mAdvanced.SetTitle(i18n.System("advanced_settings"))
-			mMPVCustom.SetTitle(i18n.System("mpv_custom_menu"))
-			mMPVCustom.SetTooltip(i18n.System("mpv_custom_menu_tip"))
-			mMPVRestore.SetTitle(i18n.System("mpv_restore_default_menu"))
-			mMPVRestore.SetTooltip(i18n.System("mpv_restore_default_menu_tip"))
-			mAutostart.SetTitle(i18n.System("autostart_menu"))
-			mAutostart.SetTooltip(i18n.System("autostart_menu_tip"))
+			mMPV.SetTitle(i18n.System("mpv_menu"))
+			mMPVCustom.SetTitle(i18n.System("mpv_custom_path_menu"))
+			mMPVCustom.SetTooltip(i18n.System("mpv_custom_path_menu_tip"))
+			mMPVRestore.SetTitle(i18n.System("mpv_use_bundled_menu"))
+			mMPVRestore.SetTooltip(i18n.System("mpv_use_bundled_menu_tip"))
+			mAutostartMenu.SetTitle(i18n.System("autostart_menu"))
+			mAutostartMenu.SetTooltip(i18n.System("autostart_menu_tip"))
+			mAutostartOn.SetTitle(i18n.System("autostart_on_menu"))
+			mAutostartOff.SetTitle(i18n.System("autostart_off_menu"))
+			mWebCache.SetTitle(i18n.System("webcache_menu"))
+			mWebCache.SetTooltip(i18n.System("webcache_menu_tip"))
+			mWebCacheClear.SetTitle(websiteCacheClearTitle())
+			mWebCacheClear.SetTooltip(i18n.System("webcache_clear_tip"))
+			mWebCacheLimit.SetTitle(i18n.System("webcache_limit_menu"))
+			// Only the unlimited entry is translated; "512 MB" and friends read
+			// the same in every language this app ships.
+			webCacheLimitItems[len(webCacheLimitItems)-1].SetTitle(i18n.System("webcache_limit_unlimited"))
+			mWebCacheLocation.SetTitle(i18n.System("webcache_location_menu"))
 			refreshMPVTooltip()
 			mFeedback.SetTitle(i18n.System("feedback"))
 			mFeedback.SetTooltip(i18n.System("feedback_tip"))
@@ -136,11 +194,38 @@ func runShell(localURL string, httpSrv *http.Server) {
 			}
 		}
 
+		// One goroutine per limit item: the items live in a slice, so a single
+		// select would need reflect.Select to watch them all.
+		for i, entry := range webCacheLimits {
+			item, mb := webCacheLimitItems[i], entry.mb
+			go func() {
+				for range item.ClickedCh {
+					config.SetWebsiteCacheLimitMB(mb)
+					applyWebCacheLimitRadio()
+				}
+			}()
+		}
+
 		go func() {
 			for {
 				select {
 				case <-mOpen.ClickedCh:
 					openWindow(desktopURL())
+				case <-mWebCacheClear.ClickedCh:
+					// Deletion plus a MessageBox: off the menu-event loop, like
+					// the mpv items below.
+					go func() {
+						clearWebsiteCache()
+						refreshWebCacheTitle()
+					}()
+				case <-mWebCacheLocation.ClickedCh:
+					go func() {
+						mainWindowMu.Lock()
+						owner := mainWindowHWND
+						mainWindowMu.Unlock()
+						chooseWebsiteCacheLocation(owner)
+						refreshWebCacheTitle()
+					}()
 				case <-mMPVCustom.ClickedCh:
 					// GetOpenFileNameW blocks until the user picks a file or
 					// cancels; run it off the menu-event loop so other tray
@@ -153,10 +238,12 @@ func runShell(localURL string, httpSrv *http.Server) {
 					}()
 				case <-mMPVRestore.ClickedCh:
 					go runRestoreDefaultMPV(coreURL, func(mpvStatusResponse) { refreshMPVTooltip() })
-				case <-mAutostart.ClickedCh:
+				case <-mAutostartOn.ClickedCh:
 					// Registry write plus a MessageBox on failure: off the
 					// menu-event loop, like the mpv items above.
-					go toggleAutostart(mAutostart)
+					go setAutostart(true, mAutostartOn, mAutostartOff)
+				case <-mAutostartOff.ClickedCh:
+					go setAutostart(false, mAutostartOn, mAutostartOff)
 				case <-mFeedback.ClickedCh:
 					openFeedbackEmail()
 				case <-mQuit.ClickedCh:
@@ -184,6 +271,11 @@ func runShell(localURL string, httpSrv *http.Server) {
 			}
 		}()
 
+		// Trim the browser profile before the website shell can open a window
+		// on it — see webcache.Clear on why this must not run under a live
+		// Chromium. Synchronous for the same reason: startWebsiteShell only
+		// polls, but the window it eventually opens must not race the sweep.
+		enforceWebsiteCacheLimit()
 		// Website playback shell: dedicated singleton WebView2, separate from QR.
 		go startWebsiteShell(coreURL)
 		// "Connecting…" / next-episode-countdown indicator; see toast_windows.go.

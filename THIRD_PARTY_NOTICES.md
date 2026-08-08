@@ -13,9 +13,15 @@ Release packages may ship **mpv** and libraries it links, commonly including
 |---|---|---|
 | mpv | GPL-2.0-or-later (some builds LGPL-2.1-or-later) | https://mpv.io |
 | FFmpeg and linked codec libraries | LGPL and/or GPL, per build | https://ffmpeg.org |
+| Vulkan-Loader (`vulkan-1.dll`, Windows only) | Apache-2.0 | https://github.com/KhronosGroup/Vulkan-Loader |
 
 - **Windows:** CI currently downloads an x86_64 build from
-  [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild).
+  [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild). It also
+  bundles the Khronos Vulkan loader, because mpv.exe imports `vulkan-1.dll`
+  directly and Windows itself does not ship that file — it normally arrives with
+  a GPU driver, so a machine without one cannot start mpv at all. The loader is
+  taken from the MSYS2 `mingw-w64-x86_64-vulkan-loader` package and its license
+  is packaged next to it as `mpv/VULKAN-LOADER-LICENSE.txt`.
 - **macOS:** release packaging stages a self-contained mpv from the build host
   (for example Homebrew + dylibbundler).
 

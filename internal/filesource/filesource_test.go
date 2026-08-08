@@ -85,6 +85,77 @@ func TestLocalBrowseFiltersNonVideo(t *testing.T) {
 	}
 }
 
+func TestLocalBrowseIncludesAudio(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"track.mp3", "song.flac", "clip.m4a", "readme.txt", "cover.jpg"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := New(&config.Server{Name: "Local", Type: "local", RootPath: dir})
+	listing, err := c.ListDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Entries) != 3 {
+		t.Fatalf("want 3 audio files, got %#v", listing.Entries)
+	}
+	for _, e := range listing.Entries {
+		if e.IsDir || e.IsVideo || !e.IsAudio {
+			t.Fatalf("audio listing entry must be is_audio only: %#v", e)
+		}
+	}
+}
+
+func TestLocalBrowseMixedVideoAndAudio(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "Folder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"episode.mkv", "theme.mp3", "notes.nfo", "poster.png"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := New(&config.Server{Name: "Local", Type: "local", RootPath: dir})
+	listing, err := c.ListDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// dirs first, then files sorted by name: episode.mkv, theme.mp3
+	if len(listing.Entries) != 3 {
+		t.Fatalf("want folder + video + audio, got %#v", listing.Entries)
+	}
+	if !listing.Entries[0].IsDir || listing.Entries[0].Name != "Folder" {
+		t.Fatalf("first entry should be Folder: %#v", listing.Entries[0])
+	}
+	vid, aud := listing.Entries[1], listing.Entries[2]
+	if vid.Name != "episode.mkv" || !vid.IsVideo || vid.IsAudio {
+		t.Fatalf("video contract broken: %#v", vid)
+	}
+	if aud.Name != "theme.mp3" || !aud.IsAudio || aud.IsVideo {
+		t.Fatalf("audio contract broken: %#v", aud)
+	}
+}
+
+func TestIsAudioExtensionSet(t *testing.T) {
+	for _, name := range []string{
+		"a.mp3", "b.FLAC", "c.m4a", "d.aac", "e.ogg", "f.opus", "g.wav",
+		"h.wma", "i.alac", "j.aiff", "k.aif", "l.ape", "m.wv", "n.dsf",
+		"o.dff", "p.mka", "q.mp2", "r.ac3", "s.dts", "t.tta", "u.spx",
+		"v.oga", "w.m4b",
+	} {
+		if !IsAudio(name) {
+			t.Fatalf("expected IsAudio(%q)", name)
+		}
+	}
+	for _, name := range []string{"movie.mkv", "clip.mp4", "disc.iso", "note.txt", "track.qmc", "song.ncm"} {
+		if IsAudio(name) {
+			t.Fatalf("expected !IsAudio(%q)", name)
+		}
+	}
+}
+
 func TestLocalBrowseWithoutRootPathListsOSRoot(t *testing.T) {
 	// No RootPath configured yet (fresh "local" source, still picking a
 	// folder): browsing must list the real OS root instead of erroring or

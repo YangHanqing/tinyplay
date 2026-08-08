@@ -1,6 +1,8 @@
 package player
 
 import (
+	"io"
+	"net"
 	"testing"
 	"time"
 )
@@ -11,7 +13,15 @@ import (
 func TestStopReportKeepsResumePointWhenNoPositionObserved(t *testing.T) {
 	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
 	reports := make(chan int64, 1)
-	p := &Player{running: true}
+	// A stand-in for mpv's IPC endpoint. Play now abandons a play whose
+	// loadfile could not be delivered (rather than installing the context
+	// anyway), so "running with nothing listening" is no longer a fixture that
+	// reaches the code under test — it is the failure path.
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() { _, _ = io.Copy(io.Discard, server) }()
+	p := &Player{running: true, conn: client}
 	p.StopReporter = func(serverID, itemID, sessionID string, posTicks int64, duration float64, mediaSourceID string) {
 		if itemID == "item-a" {
 			reports <- posTicks

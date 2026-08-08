@@ -329,18 +329,44 @@ func TestLookupNextFileNFSUsesNaturalFilenameOrder(t *testing.T) {
 	}
 }
 
-func TestAutoplayPlayOptionsAlwaysStartAtZero(t *testing.T) {
+// Autoplay carries the next title's saved position through, exactly as a
+// manual play of it would. The tail rule inside the resume lookups is what
+// keeps a finished next title at 0; autoplay itself no longer second-guesses
+// the bookmark.
+func TestAutoplayPlayOptionsCarryTheSavedPosition(t *testing.T) {
+	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
+
 	media := mediaAutoplayPlayOpts(autoplayNext{
 		ServerID: "emby", ItemID: "e2", SeriesID: "series", SeasonID: "season",
 		Title: "Two",
-	}, "source")
-	if media.StartSeconds != 0 {
-		t.Fatalf("media autoplay start = %v, want 0", media.StartSeconds)
+	}, "source", 930)
+	if media.StartSeconds != 930 {
+		t.Fatalf("media autoplay start = %v, want the saved 930", media.StartSeconds)
 	}
 
+	const oneHour = 3600.0
+	config.RecordLocalPlayback("nfs", "Season/02.mkv", 930, oneHour)
 	file := fileAutoplayPlayOpts("nfs", "Season/02.mkv", "02")
-	if file.StartSeconds != 0 {
-		t.Fatalf("file autoplay start = %v, want 0", file.StartSeconds)
+	if file.StartSeconds != 930 {
+		t.Fatalf("file autoplay start = %v, want the saved 930", file.StartSeconds)
+	}
+}
+
+// A next title that was already watched to the end must still start at 0 —
+// otherwise autoplay opens it at the tail, reaches EOF immediately and chains
+// on through the folder.
+func TestAutoplayFileStartsFinishedNextTitleFromZero(t *testing.T) {
+	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
+
+	const oneHour = 3600.0
+	config.RecordLocalPlayback("nfs", "Season/02.mkv", oneHour-5, oneHour)
+	if got := fileAutoplayPlayOpts("nfs", "Season/02.mkv", "02").StartSeconds; got != 0 {
+		t.Fatalf("file autoplay start = %v, want 0 for a finished next title", got)
+	}
+
+	// And a title nobody has opened has nothing to carry.
+	if got := fileAutoplayPlayOpts("nfs", "Season/03.mkv", "03").StartSeconds; got != 0 {
+		t.Fatalf("file autoplay start = %v, want 0 for an unwatched next title", got)
 	}
 }
 
@@ -586,5 +612,102 @@ func TestCompletedContextRetainedWhileNextEpisodePending(t *testing.T) {
 	waitAutoplayStatus(t, s, autoplayStatusNextAvailable)
 	if cleared.Load() != 0 {
 		t.Fatal("completed context must survive while the countdown is pending")
+	}
+}
+
+// A track into another track skips the countdown: a five-second "up next" card
+// between every song turns an album into a slideshow. The grace protects a long
+// episode from running away with someone's evening, which a four-minute track
+// does not need.
+func TestAutoplayGraceForSkipsCountdownBetweenTracks(t *testing.T) {
+	song := player.PlayContext{AudioOnly: true}
+	film := player.PlayContext{}
+	nextTrack := &autoplayNext{IsFile: true, IsAudio: true}
+	nextFilm := &autoplayNext{IsFile: true}
+
+	if got := autoplayGraceFor(song, nextTrack); got != 0 {
+		t.Errorf("song → song grace = %v, want 0", got)
+	}
+	// Both ends must be audio. Same-kind chaining already guarantees it, but
+	// this check is the only thing standing between "no countdown" and a film
+	// starting unannounced, so it is asserted rather than assumed.
+	if got := autoplayGraceFor(song, nextFilm); got != autoplayGrace {
+		t.Errorf("song → film grace = %v, want %v", got, autoplayGrace)
+	}
+	if got := autoplayGraceFor(film, nextTrack); got != autoplayGrace {
+		t.Errorf("film → track grace = %v, want %v", got, autoplayGrace)
+	}
+	if got := autoplayGraceFor(film, nextFilm); got != autoplayGrace {
+		t.Errorf("film → film grace = %v, want %v", got, autoplayGrace)
+	}
+	if got := autoplayGraceFor(song, nil); got != autoplayGrace {
+		t.Errorf("nil next grace = %v, want %v", got, autoplayGrace)
+	}
+}
+
+// A zero-grace transition must publish no autoplay fields at all. Advertising
+// next_available for even one poll flashes the card this exists to remove, and
+// the phone draws a full five-second bar when a status arrives without a
+// remaining time — so the flash would be the longest-looking one possible.
+func TestSilentAutoplayPublishesNoCountdownFields(t *testing.T) {
+	p := player.New()
+	s := New(p)
+	s.autoplayMu.Lock()
+	s.autoplay.status = autoplayStatusNextAvailable
+	s.autoplay.next = &autoplayNext{ItemID: "02.flac", Title: "Two", IsFile: true, IsAudio: true}
+	s.autoplay.silent = true
+	s.autoplayMu.Unlock()
+
+	state := s.mergeAutoplayState(map[string]any{"item_id": "01.flac"})
+	for _, key := range []string{"autoplay_status", "autoplay_deadline_ms", "autoplay_remaining_ms", "next_episode_title"} {
+		if _, ok := state[key]; ok {
+			t.Errorf("silent transition published %q = %v", key, state[key])
+		}
+	}
+	if state["item_id"] != "01.flac" {
+		t.Fatalf("player state was disturbed: %v", state["item_id"])
+	}
+}
+
+// End to end on the file branch: finishing a track arms a zero-duration timer
+// and the next track is played, with nothing for the phone to render meanwhile.
+func TestAudioAutoplayArmsZeroGrace(t *testing.T) {
+	s, serverID := setupAutoplayTest(t)
+
+	var played atomic.Value
+	var fireFn func()
+	armed := make(chan struct{}, 1)
+	s.autoplayAfter = func(d time.Duration, fn func()) func() {
+		if d != 0 {
+			t.Errorf("grace duration = %v, want 0 for track → track", d)
+		}
+		fireFn = fn
+		armed <- struct{}{}
+		return func() { fireFn = nil }
+	}
+	s.resolveNextEpisode = func(finished player.PlayContext) (*autoplayNext, error) {
+		return &autoplayNext{
+			ServerID: finished.ServerID, ItemID: "Album/02.flac", Title: "Two",
+			IsFile: true, Path: "Album/02.flac", IsAudio: true,
+		}, nil
+	}
+	s.playAutoplayNext = func(next autoplayNext) map[string]any {
+		played.Store(next.ItemID)
+		return map[string]any{"ok": true}
+	}
+
+	s.onNaturalEOF(player.PlayContext{
+		ServerID: serverID, ItemID: "Album/01.flac", Title: "One",
+		PlaybackCompleted: true, SourceType: "local", AudioOnly: true,
+	}, 1)
+
+	waitAutoplayStatus(t, s, autoplayStatusNextAvailable)
+	waitAutoplayTimer(t, armed)
+	if got := s.mergeAutoplayState(map[string]any{})["autoplay_status"]; got != nil {
+		t.Fatalf("countdown advertised for a track transition: %v", got)
+	}
+	fireFn()
+	if got, _ := played.Load().(string); got != "Album/02.flac" {
+		t.Fatalf("played item = %q, want Album/02.flac", got)
 	}
 }

@@ -104,13 +104,47 @@ type Config struct {
 	DLNAReceiverID       string               `json:"dlna_receiver_id,omitempty"`
 	LocalPlaybackHistory []LocalPlaybackEntry `json:"local_playback_history,omitempty"`
 	AutoplayNextEpisode  bool                 `json:"autoplay_next_episode"`
-	PairedDevices        []PairedDevice       `json:"paired_devices,omitempty"`
+	// KeepPlaybackSpeed: when true (default), a new title reuses the speed the
+	// previous title was playing at within this process. The remembered speed
+	// itself is session-scoped in the player and is never written here —
+	// persisting it would mean a user who left 2x on last week silently gets
+	// 2x today, and this setting is about continuity within a viewing session.
+	KeepPlaybackSpeed bool `json:"keep_playback_speed"`
+	// RememberTitleSettings: when true, per-title subtitle/audio/delays/speed
+	// the user explicitly changed are restored the next time that same title
+	// plays. Default off so a fresh install never overrides the server's own
+	// track defaults without the user opting in.
+	RememberTitleSettings bool                 `json:"remember_title_settings"`
+	TitleSettingsHistory  []TitleSettingsEntry `json:"title_settings_history,omitempty"`
+	PairedDevices         []PairedDevice       `json:"paired_devices,omitempty"`
 	// Desktop update prompts are intentionally small, local preferences. A
 	// skipped version never suppresses a newer release, while RemindAfter keeps
 	// an app restart from immediately asking the same question again.
 	UpdateSkippedVersion string `json:"update_skipped_version,omitempty"`
 	UpdateRemindVersion  string `json:"update_remind_version,omitempty"`
 	UpdateRemindAfter    string `json:"update_remind_after,omitempty"`
+	// WebsiteCacheLimitMB bounds the built-in browser's WebView profile, the
+	// one directory under DataDir() with no size ceiling of its own (logs
+	// rotate at 20MB, artwork is capped by imagecache.MaxBytes). Like MpvExe
+	// this is a property of this installed copy, reachable only from the
+	// native shell's "高级设置" menu — never from the phone-facing settings.
+	//
+	// Zero/absent means "not chosen", which resolves to DefaultWebsiteCacheLimitMB
+	// rather than to "unlimited"; unlimited is the explicit -1. A brand-new
+	// install and an upgraded one therefore land on the same default without a
+	// migration, and a user who deliberately turned the cap off keeps it off.
+	//
+	// Both fields are Windows-only in practice. The macOS shell's browser store
+	// belongs to WKWebsiteDataStore, not to anything the core can see, so it
+	// keeps the same policy in UserDefaults (see WebCache in macos/Sources/main.swift)
+	// rather than routing a preference the core cannot act on through config.json.
+	WebsiteCacheLimitMB int `json:"website_cache_limit_mb,omitempty"`
+	// WebsiteCacheDir relocates that profile off the system drive. Empty means
+	// the default under DataDir(). A path that later becomes unwritable is not
+	// an error worth blocking on: the caller falls back to the default and says
+	// so. There is no macOS counterpart — WKWebsiteDataStore owns its own paths,
+	// and single-volume Macs make relocation a trade not worth making.
+	WebsiteCacheDir string `json:"website_cache_dir,omitempty"`
 }
 
 // WebsiteCustomSite is one shared, user-saved URL in the desktop Website
@@ -130,15 +164,133 @@ type LocalPlaybackEntry struct {
 	UpdatedAt       string  `json:"updated_at"`
 }
 
+// TrackChoice identifies a subtitle/audio track by language + title, never by
+// mpv's positional sid/aid. The same item can change track order between plays
+// (a re-negotiated media source, a file rescan, a re-encode), so a stored
+// sid=3 can restore the director's commentary instead of the intended track.
+// Disabled means the user explicitly turned the track off ("no").
+type TrackChoice struct {
+	Disabled bool   `json:"disabled,omitempty"`
+	Lang     string `json:"lang,omitempty"`
+	Title    string `json:"title,omitempty"`
+}
+
+// TitleSettingsEntry is one per-title playback preference record. Only fields
+// the user actually changed during a session are populated (dirty fields); an
+// absent field means "leave the player's/server default alone". Keyed by
+// server_id + item_key (item_id for media servers, relative path for file
+// sources). Cap and LRU match LocalPlaybackHistory.
+type TitleSettingsEntry struct {
+	ServerID   string       `json:"server_id"`
+	ItemKey    string       `json:"item_key"`
+	Subtitle   *TrackChoice `json:"subtitle,omitempty"`
+	Audio      *TrackChoice `json:"audio,omitempty"`
+	SubDelay   *float64     `json:"sub_delay,omitempty"`
+	AudioDelay *float64     `json:"audio_delay,omitempty"`
+	Speed      *float64     `json:"speed,omitempty"`
+	UpdatedAt  string       `json:"updated_at"`
+}
+
+// TitleSettingsPatch is the set of dirty fields observed during one playback.
+// Nil pointers are left unchanged in the stored record; non-nil pointers
+// overwrite. An empty patch (all nil) is a no-op so an untouched playback never
+// freezes the server's auto-selected tracks as permanent overrides.
+type TitleSettingsPatch struct {
+	Subtitle   *TrackChoice
+	Audio      *TrackChoice
+	SubDelay   *float64
+	AudioDelay *float64
+	Speed      *float64
+}
+
+// LookupTitleSettings returns the stored per-title settings for serverID+itemKey.
+func LookupTitleSettings(serverID, itemKey string) (TitleSettingsEntry, bool) {
+	if serverID == "" || itemKey == "" {
+		return TitleSettingsEntry{}, false
+	}
+	for _, e := range Load().TitleSettingsHistory {
+		if e.ServerID == serverID && e.ItemKey == itemKey {
+			return e, true
+		}
+	}
+	return TitleSettingsEntry{}, false
+}
+
+// RecordTitleSettings merges a dirty-field delta into the LRU table. Only the
+// fields present in the delta are written, so a later session that only
+// touches speed cannot erase a previously remembered subtitle track.
+func RecordTitleSettings(serverID, itemKey string, delta TitleSettingsPatch) {
+	if serverID == "" || itemKey == "" {
+		return
+	}
+	if delta.Subtitle == nil && delta.Audio == nil && delta.SubDelay == nil &&
+		delta.AudioDelay == nil && delta.Speed == nil {
+		return
+	}
+	patch(func(cfg *Config) {
+		var merged TitleSettingsEntry
+		found := false
+		for _, e := range cfg.TitleSettingsHistory {
+			if e.ServerID == serverID && e.ItemKey == itemKey {
+				merged = e
+				found = true
+				break
+			}
+		}
+		if !found {
+			merged = TitleSettingsEntry{ServerID: serverID, ItemKey: itemKey}
+		}
+		if delta.Subtitle != nil {
+			cp := *delta.Subtitle
+			merged.Subtitle = &cp
+		}
+		if delta.Audio != nil {
+			cp := *delta.Audio
+			merged.Audio = &cp
+		}
+		if delta.SubDelay != nil {
+			v := *delta.SubDelay
+			merged.SubDelay = &v
+		}
+		if delta.AudioDelay != nil {
+			v := *delta.AudioDelay
+			merged.AudioDelay = &v
+		}
+		if delta.Speed != nil {
+			v := *delta.Speed
+			merged.Speed = &v
+		}
+		merged.UpdatedAt = nowUTC()
+
+		kept := []TitleSettingsEntry{merged}
+		for _, e := range cfg.TitleSettingsHistory {
+			if e.ServerID != serverID || e.ItemKey != itemKey {
+				kept = append(kept, e)
+			}
+		}
+		if len(kept) > 1000 {
+			kept = kept[:1000]
+		}
+		cfg.TitleSettingsHistory = kept
+	})
+}
+
 func LocalPlaybackPosition(serverID, path string) float64 {
 	for _, e := range Load().LocalPlaybackHistory {
 		if e.ServerID == serverID && e.Path == path {
 			// Same tail rule as the Emby/Plex providers: only "within the last
 			// 15s" or "past 99%" counts as finished. A percentage alone is too
 			// aggressive for long files (95% of 3h leaves 9 minutes unwatched).
-			if e.PositionSeconds < 5 ||
-				(e.DurationSeconds > 0 &&
-					(e.PositionSeconds >= e.DurationSeconds-15 || e.PositionSeconds/e.DurationSeconds >= 0.99)) {
+			//
+			// An unknown duration means the tail cannot be ruled out, so it
+			// restarts rather than skipping the check. Resuming into an
+			// unverifiable tail makes a short clip reach EOF the instant it
+			// opens, which the host then reads as a completed playback and
+			// hands to autoplay; replaying a short clip from 0 is the far
+			// cheaper mistake.
+			if e.PositionSeconds < 5 || e.DurationSeconds <= 0 ||
+				e.PositionSeconds >= e.DurationSeconds-15 ||
+				e.PositionSeconds/e.DurationSeconds >= 0.99 {
 				return 0
 			}
 			return e.PositionSeconds
@@ -152,6 +304,21 @@ func RecordLocalPlayback(serverID, path string, position, duration float64) {
 		return
 	}
 	patch(func(cfg *Config) {
+		// position and duration come from different clocks: the position is the
+		// player's last observed value and survives, while the duration is read
+		// live and can be absent at exit (mpv drops it at end-of-file, and a
+		// clip short enough to finish inside one progress interval may never
+		// have published it). Writing that 0 over a duration we already knew
+		// would permanently disable the tail check above for this entry, so the
+		// old value is carried forward instead.
+		if duration <= 0 {
+			for _, e := range cfg.LocalPlaybackHistory {
+				if e.ServerID == serverID && e.Path == path {
+					duration = e.DurationSeconds
+					break
+				}
+			}
+		}
 		kept := []LocalPlaybackEntry{{ServerID: serverID, Path: path, PositionSeconds: position, DurationSeconds: duration, UpdatedAt: nowUTC()}}
 		for _, e := range cfg.LocalPlaybackHistory {
 			if e.ServerID != serverID || e.Path != path {
@@ -239,6 +406,12 @@ func loadLocked() (*Config, bool) {
 		SeekForwardSecs:     30,
 		DLNAReceiverEnabled: true,
 		AutoplayNextEpisode: true,
+		// KeepPlaybackSpeed defaults on: continuity within a session is the
+		// less-surprising default once someone has reached for the speed
+		// control. RememberTitleSettings defaults off so an untouched install
+		// never freezes auto-selected tracks as permanent overrides.
+		KeepPlaybackSpeed:     true,
+		RememberTitleSettings: false,
 	}
 	// A missing file is a fresh install, not an error: fall through with the
 	// defaults so the normalization below still runs. Skipping it here used to

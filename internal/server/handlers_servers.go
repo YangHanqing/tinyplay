@@ -43,14 +43,17 @@ func safeServer(s *config.Server) map[string]any {
 // ── App settings ────────────────────────────────────────────────────────────
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.runtimeSettings())
+	writeJSON(w, http.StatusOK, s.runtimeSettings(r))
 }
 
 // runtimeSettings appends live, non-persisted capabilities to the configured
 // settings. In particular, the DLNA toggle alone cannot promise playback if
 // its mpv runtime is unavailable.
-func (s *Server) runtimeSettings() map[string]any {
-	settings := config.Settings()
+//
+// The request is threaded in for one reason: language "auto" resolves against
+// the device asking, not against this desktop. See config.SettingsFor.
+func (s *Server) runtimeSettings(r *http.Request) map[string]any {
+	settings := config.SettingsFor(i18n.RequestLang(r))
 	settings["platform"] = runtime.GOOS
 	mpv := player.DetectMPV()
 	settings["mpv_available"] = mpv.Available
@@ -66,12 +69,14 @@ func (s *Server) runtimeSettings() map[string]any {
 
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		MpvCacheSecs        *int    `json:"mpv_cache_secs"`
-		Language            *string `json:"language"`
-		SeekBackwardSecs    *int    `json:"seek_backward_secs"`
-		SeekForwardSecs     *int    `json:"seek_forward_secs"`
-		DLNAReceiverEnabled *bool   `json:"dlna_receiver_enabled"`
-		AutoplayNextEpisode *bool   `json:"autoplay_next_episode"`
+		MpvCacheSecs          *int    `json:"mpv_cache_secs"`
+		Language              *string `json:"language"`
+		SeekBackwardSecs      *int    `json:"seek_backward_secs"`
+		SeekForwardSecs       *int    `json:"seek_forward_secs"`
+		DLNAReceiverEnabled   *bool   `json:"dlna_receiver_enabled"`
+		AutoplayNextEpisode   *bool   `json:"autoplay_next_episode"`
+		KeepPlaybackSpeed     *bool   `json:"keep_playback_speed"`
+		RememberTitleSettings *bool   `json:"remember_title_settings"`
 	}
 	if !decode(r, &body) {
 		invalidBody(w, r)
@@ -106,7 +111,13 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 			s.CancelAutoplay(true)
 		}
 	}
-	writeJSON(w, http.StatusOK, s.runtimeSettings())
+	if body.KeepPlaybackSpeed != nil {
+		config.SetKeepPlaybackSpeed(*body.KeepPlaybackSpeed)
+	}
+	if body.RememberTitleSettings != nil {
+		config.SetRememberTitleSettings(*body.RememberTitleSettings)
+	}
+	writeJSON(w, http.StatusOK, s.runtimeSettings(r))
 }
 
 // resetSettings is the settings danger-zone "reset everything" action: wipes
@@ -122,7 +133,7 @@ func (s *Server) resetSettings(w http.ResponseWriter, r *http.Request) {
 	// hardcoded true, so the two can't drift if the reset default changes.
 	enabled, _ := settings["dlna_receiver_enabled"].(bool)
 	s.refreshDLNAReceiver(enabled)
-	writeJSON(w, http.StatusOK, s.runtimeSettings())
+	writeJSON(w, http.StatusOK, s.runtimeSettings(r))
 }
 
 // ── Server management ────────────────────────────────────────────────────────

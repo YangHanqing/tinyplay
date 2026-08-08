@@ -579,10 +579,14 @@ func (c *Client) ResumePositionSeconds(itemID string) float64 {
 	}
 	// 1 second = 1e7 ticks. Treat "within the last 15s" or "past 99%" of the
 	// duration as finished, and restart from 0 instead of resuming at the tail.
-	if dur := out.RunTimeTicks; dur > 0 {
-		if pos >= dur-15*int64(1e7) || float64(pos)/float64(dur) >= 0.99 {
-			return 0
-		}
+	//
+	// A server that reports no RunTimeTicks (common for short clips and items
+	// it has not finished analysing) leaves the tail impossible to rule out, so
+	// it restarts too: resuming into an unverifiable tail reaches EOF the
+	// instant the file opens, which the host reads as a completed playback.
+	dur := out.RunTimeTicks
+	if dur <= 0 || pos >= dur-15*int64(1e7) || float64(pos)/float64(dur) >= 0.99 {
+		return 0
 	}
 	return float64(pos) / 1e7
 }
