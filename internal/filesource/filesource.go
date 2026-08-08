@@ -230,7 +230,10 @@ func (c *Client) localPath(segs []string) (string, error) {
 	if drivePicker {
 		return "", errf(400, "Choose a drive first")
 	}
-	if base == "" {
+	// A relative base cannot be related to an absolute target, so filepath.Rel
+	// below would fail and be misread as a traversal attempt. Reject it here
+	// as what it actually is: a root this source cannot browse.
+	if base == "" || !filepath.IsAbs(base) {
 		return "", errf(400, "Invalid root path")
 	}
 	// Prefer Clean over Abs when the base is already absolute. Abs walks
@@ -247,8 +250,16 @@ func (c *Client) localPath(segs []string) (string, error) {
 			return "", e
 		}
 	}
+	// Two different failures, deliberately not collapsed into one message: a
+	// Rel error means the two paths are not relatable at all (different
+	// volumes, a malformed base), while a ".." result is a genuine escape
+	// attempt. Reporting the first as traversal sends anyone debugging it
+	// looking at the requested path instead of at the root.
 	rel, e := filepath.Rel(base, full)
-	if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+	if e != nil {
+		return "", errf(400, "Path is outside this source's root")
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", errf(400, "Path traversal is not allowed")
 	}
 	return full, nil

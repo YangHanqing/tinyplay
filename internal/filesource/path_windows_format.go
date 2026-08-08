@@ -91,6 +91,23 @@ func normalizeWindowsConfiguredRoot(root string) string {
 	return cleaned
 }
 
+// windowsDriveRootBase turns the drive-picker's first path segment into the
+// absolute volume root to browse from, or "" when the segment is not a drive.
+//
+// Lives here, without a build tag, because the colon is the whole point: a
+// base of "C\" instead of "C:\" is a *relative* path, filepath.Rel then
+// refuses to relate it to anything absolute, and localPath reports that as
+// "Path traversal is not allowed" — a wrong answer for every drive click.
+// Keeping it string-only means the regression is catchable by a test that
+// runs on any host, not only on the Windows CI leg.
+func windowsDriveRootBase(seg string) string {
+	seg = strings.TrimRight(strings.ReplaceAll(strings.TrimSpace(seg), `/`, `\`), `\`)
+	if !isWindowsVolume(seg) {
+		return ""
+	}
+	return string([]byte{toUpperDrive(seg[0])}) + `:\`
+}
+
 func isWindowsVolume(s string) bool {
 	return len(s) == 2 && isDriveLetter(s[0]) && s[1] == ':'
 }

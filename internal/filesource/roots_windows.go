@@ -15,14 +15,12 @@ func osRootBase(segs []string) (base string, rest []string, drivePicker bool) {
 	if len(segs) == 0 {
 		return "", nil, true
 	}
-	drive := segs[0]
 	// Picker paths are "Z:/Media/..." → first segment "Z:". Require the
 	// drive-letter form so a coincidental folder named "Z" is not treated as
-	// a volume root.
-	if len(drive) == 2 && isDriveLetter(drive[0]) && drive[1] == ':' {
-		return string([]byte{toUpperDrive(drive[0])}) + `\`, segs[1:], false
-	}
-	return drive + `\`, segs[1:], false
+	// a volume root; anything else yields an empty base, which localPath
+	// reports as an invalid root rather than silently browsing somewhere
+	// relative to the process's working directory.
+	return windowsDriveRootBase(segs[0]), segs[1:], false
 }
 
 // osNormalizeConfiguredRoot is applied to Server.RootPath before IsAbs/Abs.
