@@ -24,8 +24,10 @@ func FallbackCoverArtURL(port int) string {
 //
 // mpv creates no window at all for an audio file that carries no embedded
 // cover art, so a cast song plays with the screen showing nothing — which
-// reads as "the cast failed" even though the music is audible. TinyPlay
-// therefore hands mpv a picture to display and forces a window.
+// reads as "the cast failed" even though the music is audible. The window
+// itself is no longer this type's problem: every process is spawned with
+// --force-window=yes so the window also survives the gap between titles (see
+// initialMPVArgs). What remains here is the picture to put in it.
 //
 // The picture is supplied as --cover-art-files, which mpv turns into a video
 // track. That has a sharp edge: an explicitly supplied cover art file
@@ -38,20 +40,12 @@ func FallbackCoverArtURL(port int) string {
 //   - Every play sets the option, including to empty. Never leave the previous
 //     item's value in place on the reused-process path.
 type audioPresentation struct {
-	// audioOnly requests a window even when the artwork fails to load, so an
-	// unreachable album art URL degrades to a black screen rather than to no
-	// screen at all.
+	// audioOnly gates the artwork. An unreachable album art URL degrades to
+	// the forced window's black screen rather than to no screen at all.
 	audioOnly bool
 	// coverArtURL is the image mpv displays in place of a video track. Empty
 	// means "clear it", which is what a video item needs.
 	coverArtURL string
-}
-
-func (a audioPresentation) forceWindowValue() string {
-	if a.audioOnly {
-		return "yes"
-	}
-	return "no"
 }
 
 // coverArtValue is the mpv cover-art-files list. It is a list rather than a
@@ -68,14 +62,10 @@ func (a audioPresentation) coverArtValue() []string {
 // contributes nothing: mpv's defaults are already what video wants, and
 // staying silent keeps the command line free of no-op flags.
 func (a audioPresentation) args() []string {
-	if !a.audioOnly {
+	if !a.audioOnly || a.coverArtURL == "" {
 		return nil
 	}
-	out := []string{"--force-window=yes"}
-	if a.coverArtURL != "" {
-		out = append(out, "--cover-art-file="+a.coverArtURL)
-	}
-	return out
+	return []string{"--cover-art-file=" + a.coverArtURL}
 }
 
 // apply configures a reused mpv process. Unlike args() this must run for every
@@ -83,5 +73,4 @@ func (a audioPresentation) args() []string {
 // item's cover art.
 func (p *Player) applyAudioPresentation(a audioPresentation) {
 	p.send([]any{"set_property", "cover-art-files", a.coverArtValue()})
-	p.send([]any{"set_property", "force-window", a.forceWindowValue()})
 }

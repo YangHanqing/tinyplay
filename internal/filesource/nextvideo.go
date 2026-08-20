@@ -29,11 +29,26 @@ const isoAutoplayExclude = ".iso"
 // album must not jump into a stray video file, and a TV episode must not
 // jump into an mp3 sitting in the same folder.
 func NextVideo(entries []Entry, currentPath string) (Entry, bool) {
+	next, ok, _ := nextVideo(entries, currentPath, false)
+	return next, ok
+}
+
+// NextVideoWrapping is NextVideo plus list rollover for the loop setting: the
+// last candidate is followed by the first one, so a folder repeats forever. A
+// folder holding a single video answers that same video, which is what makes
+// "repeat this one file" fall out of the same rule. The middle result reports
+// whether the answer came from wrapping, so the phone can say the list started
+// over instead of silently looking stuck.
+func NextVideoWrapping(entries []Entry, currentPath string) (Entry, bool, bool) {
+	return nextVideo(entries, currentPath, true)
+}
+
+func nextVideo(entries []Entry, currentPath string, wrap bool) (Entry, bool, bool) {
 	if len(entries) == 0 || strings.TrimSpace(currentPath) == "" {
-		return Entry{}, false
+		return Entry{}, false, false
 	}
 	if len(entries) > MaxAutoplayDirEntries {
-		return Entry{}, false
+		return Entry{}, false, false
 	}
 	currentPath = normalizeAutoplayPath(currentPath)
 
@@ -52,13 +67,13 @@ func NextVideo(entries []Entry, currentPath string) (Entry, bool) {
 		}
 	}
 	if !foundCurrent {
-		return Entry{}, false
+		return Entry{}, false, false
 	}
 	// Current may itself be filtered out (iso/extra/neither kind); then there
 	// is no chain. Kind is taken from the finished item so a mixed folder
 	// never crosses audio↔video.
 	if !isAutoplayCandidate(current) {
-		return Entry{}, false
+		return Entry{}, false, false
 	}
 	wantAudio := current.IsAudio
 
@@ -79,7 +94,7 @@ func NextVideo(entries []Entry, currentPath string) (Entry, bool) {
 		candidates = append(candidates, cp)
 	}
 	if len(candidates) == 0 {
-		return Entry{}, false
+		return Entry{}, false, false
 	}
 
 	sortAutoplayCandidates(candidates)
@@ -91,10 +106,16 @@ func NextVideo(entries []Entry, currentPath string) (Entry, bool) {
 			break
 		}
 	}
-	if idx < 0 || idx+1 >= len(candidates) {
-		return Entry{}, false
+	if idx < 0 {
+		return Entry{}, false, false
 	}
-	return candidates[idx+1], true
+	if idx+1 >= len(candidates) {
+		if !wrap {
+			return Entry{}, false, false
+		}
+		return candidates[0], true, true
+	}
+	return candidates[idx+1], true, false
 }
 
 // isAutoplayCandidate keeps only playable media of one kind: never

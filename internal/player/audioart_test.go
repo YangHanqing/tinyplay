@@ -32,34 +32,23 @@ func TestSwitchingFromAudioToVideoClearsCoverArt(t *testing.T) {
 	if got := film.coverArtValue(); !reflect.DeepEqual(got, []string{}) {
 		t.Fatalf("coverArtValue = %#v, want an empty list that overwrites the song's artwork", got)
 	}
-	if got := film.forceWindowValue(); got != "no" {
-		t.Fatalf("forceWindowValue = %q, want %q", got, "no")
-	}
 }
 
-func TestAudioItemForcesAWindowAndShowsArtwork(t *testing.T) {
+func TestAudioItemShowsArtwork(t *testing.T) {
 	a := audioPresentation{audioOnly: true, coverArtURL: "http://127.0.0.1:1980/art.png"}
 	args := strings.Join(a.args(), " ")
-	if !strings.Contains(args, "--force-window=yes") {
-		t.Fatalf("args = %q, want --force-window=yes so the song is visibly playing", args)
-	}
 	if !strings.Contains(args, "--cover-art-file=http://127.0.0.1:1980/art.png") {
 		t.Fatalf("args = %q, want the artwork passed to mpv", args)
-	}
-	if got := a.forceWindowValue(); got != "yes" {
-		t.Fatalf("forceWindowValue = %q, want %q", got, "yes")
 	}
 }
 
 // Artwork can be missing (a sender that sent no album art, and a fallback URL
-// that could not be built). The window must still be forced, or the failure
-// mode is "nothing on screen" — exactly what this feature exists to remove.
-func TestAudioWithoutArtworkStillForcesAWindow(t *testing.T) {
+// that could not be built). The window itself is guaranteed by the spawn flags
+// (see TestSpawnArgsForceAWindowSoAudioAndTransitionsAreVisible), so the
+// failure mode here is a black screen rather than "nothing on screen".
+func TestAudioWithoutArtworkAddsNoFlags(t *testing.T) {
 	a := audioPresentation{audioOnly: true}
 	args := strings.Join(a.args(), " ")
-	if !strings.Contains(args, "--force-window=yes") {
-		t.Fatalf("args = %q, want --force-window=yes", args)
-	}
 	if strings.Contains(args, "--cover-art-file") {
 		t.Fatalf("args = %q, want no cover art flag when there is no artwork", args)
 	}

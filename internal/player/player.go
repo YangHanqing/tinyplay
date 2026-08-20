@@ -117,11 +117,27 @@ type PlayOptions struct {
 	// HTTPHeaders is populated only from the IPTV parser's allow-list. It is
 	// never returned through the LAN API or diagnostic report.
 	HTTPHeaders map[string]string
+	// LoopFile repeats this one file inside mpv instead of letting it reach a
+	// natural EOF. It is how list-loop covers the cases that have no next item
+	// to move to — a movie, a folder holding a single video — without the
+	// exit-and-relaunch gap a host-driven transition would leave. Because mpv
+	// never reports EOF while it is set, the autoplay chain is deliberately
+	// bypassed for these titles.
+	LoopFile bool
 }
 
 // Player owns the mpv process and its IPC connection.
 type Player struct {
 	socket string
+
+	// claimMu serializes "who owns the mpv process" against "close the mpv
+	// process". Since --idle=yes, a teardown and the next Play share one
+	// process, so the two transactions must not interleave: Play holds it from
+	// the moment it decides whether to reuse mpv until its context and
+	// revision are installed, and quitProcessIfUnclaimed holds it while it
+	// re-checks that the playback asking to close mpv still owns it. Always
+	// taken *before* mu, never while holding it.
+	claimMu sync.Mutex
 
 	mu      sync.Mutex
 	proc    *exec.Cmd
@@ -136,6 +152,15 @@ type Player struct {
 	// initializes it; WaitPlaybackRevision also initializes it lazily for tests
 	// that construct Player values directly.
 	playbackRevWait chan struct{}
+	// resumeRefreshGeneration advances only after every queued stop report has
+	// returned and no playback session remains. The phone uses this edge rather
+	// than process exit to reload the media server's Continue Watching shelf.
+	// A report can complete while a natural-EOF/autoplay context is still
+	// visible, or while the next item is already playing, so completion merely
+	// owes the refresh; flushResumeRefreshLocked publishes it at true idle.
+	resumeRefreshGeneration uint64
+	stopReportsInFlight     uint64
+	resumeRefreshOwed       bool
 
 	// starting is true from the moment Play() commits to a new title until mpv
 	// confirms real playback (the "playback-restart" IPC event) or the attempt
@@ -147,6 +172,23 @@ type Player struct {
 	// clearing a *later* Play() attempt's starting=true after it fires.
 	startingEpoch uint64
 	startingTimer *time.Timer
+
+	// idleHolding is true while mpv is deliberately being kept alive after a
+	// natural EOF, parked on its idle screen, so a chained next title can be
+	// loaded into the same window. Every path that concludes nothing will
+	// chain closes the process instead (see ClearCompletedPlayback).
+	idleHolding bool
+	// idleHoldEpoch scopes idleHoldTimer to one hold, the same way
+	// startingEpoch scopes startingTimer: a stale timeout must never quit a
+	// process that has already moved on to a new title.
+	idleHoldEpoch uint64
+	idleHoldTimer *time.Timer
+	// eofHandled records that handleNaturalEOF already ran the end-of-playback
+	// bookkeeping for the playback whose process is exiting, so the process
+	// waiter does not repeat the stop report and context clear. Reset by Play,
+	// which is safe because an EOF that arrives after Play has committed is
+	// rejected by the starting guard in handleNaturalEOF.
+	eofHandled bool
 
 	propsMu   sync.Mutex
 	liveProps map[string]any
@@ -194,6 +236,25 @@ type Player struct {
 	// decoupled from Emby. It should return backdrop bytes for the requested
 	// image index, or nil when no backdrop is available.
 	ScreensaverImageProvider func(serverID, itemID, posterItemID string, index int) []byte
+
+	// MonitorHint optionally overrides monitorHintArg below with a live query,
+	// used on Windows where the desktop shell window and mpv share this
+	// process, so a fresh MonitorFromWindow lookup is cheap and always
+	// current. It returns a ready-to-use mpv CLI argument (e.g.
+	// "--geometry=+100+0") rather than raw coordinates, because the two
+	// platforms locate a display in incompatible ways: Windows gives pixel
+	// coordinates in a top-left-origin space mpv's Windows backend shares
+	// directly, while macOS identifies a display by its NSScreen.screens
+	// index, which the desktop shell (a separate process there) pushes as
+	// "--fs-screen=<index>" via SetMonitorHint instead — a raw pixel geometry
+	// would risk mismatching Cocoa's bottom-left-origin coordinate space.
+	// Only consulted when spawning a fresh mpv process — a reused/already
+	// running mpv keeps whatever display it already occupies.
+	MonitorHint func() (arg string, ok bool)
+
+	monitorHintMu  sync.Mutex
+	monitorHintArg string
+	monitorHintOK  bool
 
 	screensaverMu sync.Mutex
 	screensaver   screensaverState
@@ -723,10 +784,29 @@ func (p *Player) handleEvent(line []byte) {
 			p.clearStarting()
 			p.fireLifecycle(LifecyclePlaying, "", p.durationSeconds())
 		case "end-file":
-			reason, _ := fields["reason"].(string)
-			if reason == "error" {
-				p.reportLiveInterruption(reason)
-				p.fireLifecycle(LifecycleError, reason, p.durationSeconds())
+			// mpv no longer exits when a file ends (--idle=yes), so this event
+			// — not the process waiter — is where playback terminates.
+			switch reason, _ := fields["reason"].(string); reason {
+			case "eof":
+				// Includes a seek past the end; mpv reports both the same way.
+				p.handleNaturalEOF()
+			case "stop", "redirect", "quit":
+				// "stop" is what loadfile ... replace does to the outgoing
+				// title, "quit" is our own Stop(). Neither ends the session.
+			default:
+				p.mu.Lock()
+				revision, proc := p.playbackRevision, p.proc
+				p.mu.Unlock()
+				if reason == "error" {
+					p.reportLiveInterruption(reason)
+					p.fireLifecycle(LifecycleError, reason, p.durationSeconds())
+				}
+				// mpv used to exit by itself here. Keep that: an idle window
+				// left over from a failed load is a black screen nobody asked
+				// for, and the exit path still owns the error bookkeeping.
+				// Guarded because the reporting above can block long enough for
+				// the user to start something else in this same process.
+				p.quitProcessIfUnclaimed(revision, proc)
 			}
 		}
 		return
@@ -862,8 +942,13 @@ func (p *Player) progressRun() {
 		reporter := p.ProgressReporter
 		p.mu.Lock()
 		itemID := p.ctx.ItemID
+		// mpv now stays running while the host lines up the next episode, so
+		// "running" no longer implies a file is playing. The finished title's
+		// context is still installed during that window; reporting its tail
+		// position again would resurrect a bookmark the stop report just closed.
+		completed := p.ctx.PlaybackCompleted
 		p.mu.Unlock()
-		if reporter == nil || itemID == "" || !p.isRunning() {
+		if reporter == nil || itemID == "" || completed || !p.isRunning() {
 			continue
 		}
 		p.mu.Lock()
@@ -890,21 +975,57 @@ func (p *Player) progressRun() {
 }
 
 func (p *Player) fireStopReport() {
-	reporter := p.StopReporter
 	p.mu.Lock()
+	reporter := p.StopReporter
 	itemID := p.ctx.ItemID
 	serverID := p.ctx.ServerID
 	sourceType := p.ctx.SourceType
 	sessionID := p.playSessionID
 	mediaSourceID := p.mediaSourceID
-	p.mu.Unlock()
 	if reporter == nil || itemID == "" || sourceType == "dlna" {
+		p.mu.Unlock()
 		return
 	}
+	// Count before releasing the snapshot. A fast reporter is then unable to
+	// finish between deciding to report and making that report visible to the
+	// idle-flush gate.
+	p.stopReportsInFlight++
+	// The next Play() resets lastPosTicks immediately. Snapshot it while this
+	// title's context is still locked in, so the outgoing report cannot pick up
+	// the incoming title's resume position.
+	posTicks := atomic.LoadInt64(&p.lastPosTicks)
+	p.mu.Unlock()
 	p.propsMu.Lock()
 	duration := numeric(p.liveProps["duration"])
 	p.propsMu.Unlock()
-	go reporter(serverID, itemID, sessionID, atomic.LoadInt64(&p.lastPosTicks), duration, mediaSourceID)
+	go func() {
+		reporter(serverID, itemID, sessionID, posTicks, duration, mediaSourceID)
+		p.mu.Lock()
+		p.stopReportsInFlight--
+		p.resumeRefreshOwed = true
+		p.flushResumeRefreshLocked()
+		p.mu.Unlock()
+	}()
+}
+
+// flushResumeRefreshLocked publishes a completed stop-report batch once its
+// session is genuinely idle. Caller must hold p.mu.
+//
+// ctx must be empty rather than merely !running: a natural EOF can leave a
+// completed context around while the server decides whether to autoplay, and a
+// switch can leave an old report returning after a new title has claimed ctx.
+// Waiting for all reports also prevents an old title's fast report from
+// refreshing the shelf before the final title's stop write lands.
+func (p *Player) flushResumeRefreshLocked() {
+	if !p.resumeRefreshOwed || p.stopReportsInFlight != 0 || p.running || p.ctx.ItemID != "" {
+		return
+	}
+	p.resumeRefreshOwed = false
+	p.resumeRefreshGeneration++
+	// The state endpoint's long-poll is keyed to playbackRevision. A completed
+	// report is a meaningful state edge even though the title itself did not
+	// change, so wake those callers rather than waiting for their next poll.
+	p.bumpPlaybackRevisionLocked()
 }
 
 func numeric(v any) float64 {
@@ -938,28 +1059,30 @@ func (p *Player) State() map[string]any {
 	running := p.running
 	starting := p.starting
 	revision := p.playbackRevision
+	resumeRefreshGeneration := p.resumeRefreshGeneration
 	p.mu.Unlock()
 	diagnosticAvailable, diagnosticScope := p.DiagnosticStatus()
 	return map[string]any{
-		"running":                running,
-		"player_starting":        starting,
-		"playback_revision":      revision,
-		"server_id":              ctx.ServerID,
-		"item_id":                ctx.ItemID,
-		"series_id":              ctx.SeriesID,
-		"season_id":              ctx.SeasonID,
-		"title":                  ctx.Title,
-		"series_title":           ctx.SeriesTitle,
-		"episode_label":          ctx.EpisodeLabel,
-		"poster_item_id":         ctx.PosterItemID,
-		"is_live":                ctx.IsLive,
-		"channel_id":             ctx.ChannelID,
-		"variant_index":          ctx.VariantIndex,
-		"source_type":            ctx.SourceType,
-		"audio_only":             ctx.AudioOnly,
-		"playback_completed":     ctx.PlaybackCompleted,
-		"debug_report_available": diagnosticAvailable,
-		"debug_report_scope":     diagnosticScope,
+		"running":                   running,
+		"player_starting":           starting,
+		"playback_revision":         revision,
+		"resume_refresh_generation": resumeRefreshGeneration,
+		"server_id":                 ctx.ServerID,
+		"item_id":                   ctx.ItemID,
+		"series_id":                 ctx.SeriesID,
+		"season_id":                 ctx.SeasonID,
+		"title":                     ctx.Title,
+		"series_title":              ctx.SeriesTitle,
+		"episode_label":             ctx.EpisodeLabel,
+		"poster_item_id":            ctx.PosterItemID,
+		"is_live":                   ctx.IsLive,
+		"channel_id":                ctx.ChannelID,
+		"variant_index":             ctx.VariantIndex,
+		"source_type":               ctx.SourceType,
+		"audio_only":                ctx.AudioOnly,
+		"playback_completed":        ctx.PlaybackCompleted,
+		"debug_report_available":    diagnosticAvailable,
+		"debug_report_scope":        diagnosticScope,
 	}
 }
 
@@ -1078,6 +1201,29 @@ func (p *Player) PlaySessionID() string {
 	return p.playSessionID
 }
 
+// SetMonitorHint records the mpv CLI argument that targets the display
+// currently hosting the desktop shell's own window (e.g.
+// "--fs-screen=1"), so the next fresh mpv spawn opens there. Called from the
+// macOS shell's window-move handler over the loopback HTTP API; Windows uses
+// MonitorHint instead since it can query live in-process.
+func (p *Player) SetMonitorHint(arg string) {
+	p.monitorHintMu.Lock()
+	p.monitorHintArg, p.monitorHintOK = arg, arg != ""
+	p.monitorHintMu.Unlock()
+}
+
+// resolveMonitorHint returns the mpv CLI argument a fresh mpv spawn should
+// add to open on the desktop shell's display, preferring a live MonitorHint
+// query when one is wired.
+func (p *Player) resolveMonitorHint() (arg string, ok bool) {
+	if p.MonitorHint != nil {
+		return p.MonitorHint()
+	}
+	p.monitorHintMu.Lock()
+	defer p.monitorHintMu.Unlock()
+	return p.monitorHintArg, p.monitorHintOK
+}
+
 func initialMPVArgs(url, socket string) []string {
 	return []string{
 		url,
@@ -1092,10 +1238,50 @@ func initialMPVArgs(url, socket string) []string {
 		"--hwdec=auto-safe",
 		// The phone slider drives OS volume, so mpv stays at unity gain.
 		"--volume=100",
-		// Override keep-open=yes from a user's mpv.conf. Host autoplay needs a
-		// real process exit after the single-item playlist reaches natural EOF.
+		// Override keep-open=yes from a user's mpv.conf: the file must actually
+		// end so the EOF hand-off can run, rather than parking on the last frame.
 		"--keep-open=no",
+		// ...but the *process* must survive that EOF. Host autoplay then chains
+		// the next episode with a loadfile into the window already on screen;
+		// without --idle mpv exits at EOF and every transition costs a window
+		// teardown plus a cold start, which the viewer sees as the player
+		// closing and reopening even with a zero-second countdown.
+		"--idle=yes",
+		// --idle alone is not enough: mpv destroys the video window when it
+		// goes idle unless a window is forced. This is what keeps the screen
+		// from flashing through to the desktop between titles. It also covers
+		// what audio-only playback used to request on its own (a song with no
+		// embedded cover art otherwise opens no window at all) — see audioart.go.
+		"--force-window=yes",
 	}
+}
+
+// loopFileValue maps the option to mpv's loop-file property values.
+func loopFileValue(loop bool) string {
+	if loop {
+		return "inf"
+	}
+	return "no"
+}
+
+// SetLoopFile changes the repeat state of the title already on screen. Used
+// when the user turns list-loop off while a looping movie is playing; a no-op
+// when mpv is not running.
+func (p *Player) SetLoopFile(loop bool) {
+	if !p.isRunning() {
+		return
+	}
+	p.send([]any{"set_property", "loop-file", loopFileValue(loop)})
+}
+
+// SetForceFullscreen applies the config.ForceFullscreenPlayback preference to
+// mpv immediately, so flipping the setting mid-playback doesn't wait for the
+// next title change to take effect. A no-op when mpv is not running.
+func (p *Player) SetForceFullscreen(forced bool) {
+	if !p.isRunning() {
+		return
+	}
+	p.send([]any{"set_property", "fullscreen", forced})
 }
 
 // mpvCommandOK reads the {ok, error} shape send() returns. A nil result (the
@@ -1144,6 +1330,9 @@ func (p *Player) loadInReusedProcess(url string, opt PlayOptions, startValue str
 	// Force completion even when the user's mpv.conf sets keep-open=yes;
 	// otherwise natural EOF never exits and host autoplay cannot run.
 	p.send([]any{"set_property", "keep-open", "no"})
+	// Always explicit: a title that must chain has to clear the loop a
+	// previous looping movie left behind, or it would repeat forever.
+	p.send([]any{"set_property", "loop-file", loopFileValue(opt.LoopFile)})
 	// Before loadfile: mpv reads cover-art-files while opening the file, so
 	// setting it afterwards would apply to the item after this one. Sent
 	// unconditionally because this is also what clears a previous song's
@@ -1163,7 +1352,14 @@ func (p *Player) loadInReusedProcess(url string, opt PlayOptions, startValue str
 	if opt.Title != "" {
 		p.send([]any{"set_property", "title", opt.Title})
 	}
-	p.send([]any{"set_property", "fullscreen", true})
+	if config.Load().ForceFullscreenPlayback {
+		// Default posture: TinyPlay is a phone remote controlling a TV, so every
+		// title change is re-forced fullscreen even if a video-embedded UI or a
+		// stray click un-fullscreened the previous one. When the user opts into
+		// windowed mode (config.ForceFullscreenPlayback=false), a window they
+		// manually resized/moved is left alone across title changes instead.
+		p.send([]any{"set_property", "fullscreen", true})
+	}
 	p.send([]any{"set_property", "hwdec", "auto-safe"})
 	// The remote's volume slider controls the OS output level (see
 	// internal/sysvolume), so mpv itself is pinned at unity gain —
@@ -1189,8 +1385,14 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	// and stop-report the old one before the context is overwritten.
 	p.mu.Lock()
 	prev := p.ctx.ItemID
+	// A completed context is a title that already reached its own end and was
+	// already snapshot and stop-reported there — an autoplay chain hands one to
+	// every Play after the first. Reporting it again would send a second stop
+	// for the same session, at the same position, after the first already wrote
+	// the resume point.
+	prevCompleted := p.ctx.PlaybackCompleted
 	p.mu.Unlock()
-	if prev != "" && prev != opt.ItemID {
+	if prev != "" && prev != opt.ItemID && !prevCompleted {
 		p.snapshotTitleSettings()
 		p.fireStopReport()
 	}
@@ -1218,6 +1420,13 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	if opt.StartSeconds > 0 {
 		startValue = formatFloat(opt.StartSeconds)
 	}
+
+	// Everything from here to the context install is one transaction: deciding
+	// to reuse mpv, loading into it (or spawning one) and publishing the new
+	// revision. A post-EOF teardown running in the middle would quit the very
+	// process this play just claimed — see quitProcessIfUnclaimed.
+	p.claimMu.Lock()
+	defer p.claimMu.Unlock()
 
 	var result map[string]any
 	reused := false
@@ -1252,6 +1461,12 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		playerLog, mpvLog := openPlayerLog()
 		exe := p.mpvExe()
 		args := initialMPVArgs(url, p.socket)
+		if hint, ok := p.resolveMonitorHint(); ok {
+			// Appended after --fs-screen=current above: mpv takes the last
+			// value for a repeated option, so this overrides it when a hint
+			// is available and leaves the "current" default otherwise.
+			args = append(args, hint)
+		}
 		switch playbackCacheModeFor(opt.SourceType) {
 		case cacheOnDemand:
 			args = append(args, cacheArgs()...)
@@ -1277,6 +1492,9 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		}
 		if opt.Title != "" {
 			args = append(args, "--title="+opt.Title)
+		}
+		if opt.LoopFile {
+			args = append(args, "--loop-file=inf")
 		}
 		cmd := exec.Command(exe, args...)
 		// Also capture anything mpv writes to stderr/stdout (panics, loader
@@ -1333,10 +1551,15 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 			// the reuse fallback above deliberately starts a fresh process the
 			// moment this goroutine clears `running`.
 			exitRevision := p.playbackRevision
+			eofHandled := p.eofHandled
 			if isCurrent {
 				p.running = false
 				p.proc = nil
 				p.clearStartingLocked()
+				// Stop() clears ctx before the process has actually quit. If its
+				// report already returned, this is the transition that makes the
+				// session genuinely idle.
+				p.flushResumeRefreshLocked()
 			}
 			p.mu.Unlock()
 			if isCurrent {
@@ -1353,6 +1576,15 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 				}
 				p.diagMu.Unlock()
 				p.appendDiagnosticEvent("mpv_process_exited", map[string]any{"result": exit})
+				if eofHandled {
+					// handleNaturalEOF already reported the stop, fired the
+					// lifecycle event and settled the context at the moment
+					// mpv said the file ended; this process is only exiting
+					// now because nothing chained off it. Repeating any of it
+					// would double-report the finished title — and would wipe
+					// a completed context the host is still reading.
+					return
+				}
 				p.diagMu.Lock()
 				naturalEOF := p.currentDiagnostic != nil && p.currentDiagnostic.MPVEndReason == "eof"
 				p.diagMu.Unlock()
@@ -1394,6 +1626,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 						p.ctx = PlayContext{}
 					}
 					p.bumpPlaybackRevisionLocked()
+					p.flushResumeRefreshLocked()
 				}
 				completedRevision := p.playbackRevision
 				reporter := p.NaturalEOFReporter
@@ -1415,6 +1648,10 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 	p.liveRecoveryNotified = false
 	p.lastPause = nil
 	p.durationNotified = false
+	p.eofHandled = false
+	// Reached only once the item is actually loading, so a failed transition
+	// leaves the hold armed and its timeout still owns closing the window.
+	p.releaseIdleHoldLocked()
 	p.ctx = PlayContext{
 		ServerID:     opt.ServerID,
 		ItemID:       opt.ItemID,
@@ -1463,6 +1700,180 @@ func completedAutoplayContext(finished PlayContext, naturalEOF bool, progressed 
 	}
 	finished.PlaybackCompleted = true
 	return finished, true
+}
+
+// idleHoldTimeout bounds how long mpv is kept alive on its idle screen after a
+// natural EOF while the host decides whether a next title follows. It only has
+// to cover the longest countdown the user can pick (10s) plus one episode /
+// directory lookup; past that something upstream failed, and a black fullscreen
+// window must not be left on the TV indefinitely.
+const idleHoldTimeout = 30 * time.Second
+
+// handleNaturalEOF runs the end-of-playback bookkeeping when mpv reports the
+// file ended, rather than when the process dies — because with --idle=yes the
+// process no longer dies. Everything here used to live in the process waiter.
+//
+// When a transition is possible the process is held open (idle, window still
+// on screen) so the next title is a loadfile away. When it is not, the window
+// has no purpose and is closed immediately, which is what the viewer saw
+// before mpv was kept alive across EOF.
+func (p *Player) handleNaturalEOF() {
+	p.mu.Lock()
+	if p.eofHandled {
+		p.mu.Unlock()
+		return
+	}
+	// An EOF belonging to the *previous* file can still be sitting in the IPC
+	// buffer when a new Play loadfiles into the same process — the event reader
+	// is a single goroutine and the stop report above can block it for as long
+	// as a network round-trip. Applying it to the incoming title would stop-
+	// report it at its resume seed and close its window. `starting` is exactly
+	// the marker that separates the two: it is set the moment Play commits and
+	// cleared only when mpv confirms the new file is playing ("playback-restart"
+	// / core-idle=false), and a genuine EOF can never arrive before that
+	// confirmation, because a file has to play before it can end.
+	if p.starting {
+		p.mu.Unlock()
+		p.appendDiagnosticEvent("mpv_eof_ignored_for_incoming_title", nil)
+		return
+	}
+	p.eofHandled = true
+	eofRevision := p.playbackRevision
+	p.mu.Unlock()
+
+	p.snapshotTitleSettings()
+	p.fireStopReport()
+	// Same report a process exit on EOF produced: finalizeDiagnostic maps an
+	// eof end-file onto exactly this reason/stage pair.
+	p.finalizeDiagnostic("completed", "")
+	p.fireLifecycle(LifecycleEOF, "eof", p.durationSeconds())
+
+	p.mu.Lock()
+	// A manual play issued in the gap above owns the player now; clearing the
+	// context or chaining off it would fight the title already loading. Same
+	// guard the process waiter uses, for the same reason.
+	if p.playbackRevision != eofRevision {
+		p.mu.Unlock()
+		return
+	}
+	finished := p.ctx
+	progressed := time.Duration(atomic.LoadInt64(&p.lastPosTicks)-atomic.LoadInt64(&p.startPosTicks)) * 100
+	completed, autoplayEOF := completedAutoplayContext(finished, true, progressed)
+	reporter := p.NaturalEOFReporter
+	hold := autoplayEOF && reporter != nil
+	if autoplayEOF {
+		p.ctx = completed
+	} else {
+		p.ctx = PlayContext{}
+	}
+	p.bumpPlaybackRevisionLocked()
+	p.flushResumeRefreshLocked()
+	revision := p.playbackRevision
+	proc := p.proc
+	if hold {
+		p.holdIdleLocked()
+	}
+	p.mu.Unlock()
+
+	p.propsMu.Lock()
+	p.liveProps = map[string]any{}
+	p.propsMu.Unlock()
+
+	if !hold {
+		// Guarded, not a bare quit: mpv outlives the finished file now, so a
+		// play issued in this gap has a live process to load into.
+		p.quitProcessIfUnclaimed(revision, proc)
+		return
+	}
+	reporter(completed, revision)
+}
+
+// holdIdleLocked keeps the finished mpv process alive and starts the timeout
+// that closes it if no next title ever arrives. Caller must hold p.mu.
+func (p *Player) holdIdleLocked() {
+	p.idleHolding = true
+	p.idleHoldEpoch++
+	epoch := p.idleHoldEpoch
+	if p.idleHoldTimer != nil {
+		p.idleHoldTimer.Stop()
+	}
+	p.idleHoldTimer = time.AfterFunc(idleHoldTimeout, func() { p.expireIdleHold(epoch) })
+}
+
+// releaseIdleHoldLocked ends the hold without closing mpv: a new title has
+// claimed the process. Caller must hold p.mu.
+func (p *Player) releaseIdleHoldLocked() {
+	p.idleHolding = false
+	p.idleHoldEpoch++
+	if p.idleHoldTimer != nil {
+		p.idleHoldTimer.Stop()
+		p.idleHoldTimer = nil
+	}
+}
+
+// expireIdleHold is the timeout callback: the host never came back with a next
+// title (a lookup that failed after the resolver had already committed, say),
+// so drop the finished context and close the window.
+func (p *Player) expireIdleHold(epoch uint64) {
+	p.mu.Lock()
+	if !p.idleHolding || p.idleHoldEpoch != epoch {
+		p.mu.Unlock()
+		return
+	}
+	p.releaseIdleHoldLocked()
+	if p.ctx.PlaybackCompleted {
+		p.ctx = PlayContext{}
+		p.bumpPlaybackRevisionLocked()
+	}
+	revision := p.playbackRevision
+	proc := p.proc
+	p.mu.Unlock()
+	log.Printf("mpv stayed idle for %v after playback ended with no next title; closing it", idleHoldTimeout)
+	p.quitProcessIfUnclaimed(revision, proc)
+}
+
+// quitProcessIfUnclaimed closes mpv only if the playback that decided to close
+// it still owns the process. Since mpv is held open across a natural EOF, every
+// teardown path runs against a process a concurrent Play may already have
+// loadfile'd into — quitting it then kills a title that is on screen, and the
+// process waiter stop-reports the new item at its resume seed. A changed
+// revision (Play installs one, under claimMu) or a different proc means the
+// process has moved on and closing it is no longer this playback's call.
+//
+// Only the post-EOF paths use this. Stop() is the user asking for mpv to go
+// away and quits unconditionally.
+func (p *Player) quitProcessIfUnclaimed(revision uint64, proc *exec.Cmd) {
+	p.claimMu.Lock()
+	defer p.claimMu.Unlock()
+	p.mu.Lock()
+	claimed := p.playbackRevision != revision || p.proc != proc
+	p.mu.Unlock()
+	if claimed {
+		p.appendDiagnosticEvent("mpv_quit_skipped_process_reused", nil)
+		return
+	}
+	p.quitProcess()
+}
+
+// quitProcess asks mpv to exit and kills it if it will not. Shared by Stop and
+// by every path that closes a process being held open past its file's end.
+func (p *Player) quitProcess() map[string]any {
+	p.mu.Lock()
+	proc := p.proc
+	p.mu.Unlock()
+	result := p.send([]any{"quit"})
+	if proc != nil && proc.Process != nil {
+		go func(target *exec.Cmd) {
+			time.Sleep(2 * time.Second)
+			p.mu.Lock()
+			stillRunning := p.running && p.proc == target
+			p.mu.Unlock()
+			if stillRunning {
+				_ = target.Process.Kill()
+			}
+		}(proc)
+	}
+	return result
 }
 
 // startingSafetyTimeout bounds how long the desktop "connecting/buffering"
@@ -1530,26 +1941,16 @@ func (p *Player) Stop() map[string]any {
 	p.fireStopReport()
 	p.clearStarting()
 	p.mu.Lock()
-	proc := p.proc
+	p.releaseIdleHoldLocked()
 	p.mu.Unlock()
-	result := p.send([]any{"quit"})
-	if proc != nil && proc.Process != nil {
-		go func(target *exec.Cmd) {
-			time.Sleep(2 * time.Second)
-			p.mu.Lock()
-			stillRunning := p.running && p.proc == target
-			p.mu.Unlock()
-			if stillRunning {
-				_ = target.Process.Kill()
-			}
-		}(proc)
-	}
+	result := p.quitProcess()
 	p.mu.Lock()
 	p.liveRecoveryNotified = false
 	p.lastPause = nil
 	p.durationNotified = false
 	p.ctx = PlayContext{}
 	p.bumpPlaybackRevisionLocked()
+	p.flushResumeRefreshLocked()
 	p.mu.Unlock()
 	p.propsMu.Lock()
 	p.liveProps = map[string]any{}
@@ -1559,12 +1960,26 @@ func (p *Player) Stop() map[string]any {
 
 // ClearCompletedPlayback drops a post-EOF autoplay context (used when the host
 // cancels pending autoplay without starting a new title).
+//
+// It is also the door out of the post-EOF idle hold: mpv is only kept alive
+// past a finished file so a next title can be loaded into its window, and this
+// is the host saying there is none. Leaving the process up would park a black
+// fullscreen window on the TV for good.
 func (p *Player) ClearCompletedPlayback() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if !p.ctx.PlaybackCompleted {
+		p.mu.Unlock()
 		return
 	}
 	p.ctx = PlayContext{}
 	p.bumpPlaybackRevisionLocked()
+	p.flushResumeRefreshLocked()
+	holding := p.idleHolding
+	p.releaseIdleHoldLocked()
+	revision := p.playbackRevision
+	proc := p.proc
+	p.mu.Unlock()
+	if holding {
+		p.quitProcessIfUnclaimed(revision, proc)
+	}
 }

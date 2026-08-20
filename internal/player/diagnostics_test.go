@@ -33,15 +33,23 @@ func TestDiagnosticsFreezeLatestAttempt(t *testing.T) {
 // wire-format regression. mpv puts end-file's fields on the event object itself
 // ({"event":"end-file","reason":"eof"}), so decode the same bytes mpv sends.
 func TestHandleEventExtractsEndFileFieldsFromMPVWireFormat(t *testing.T) {
-	p := &Player{liveProps: map[string]any{}}
+	p := New()
 	p.beginDiagnostic("https://media.example.test/stream", PlayOptions{SourceType: "emby"})
 	p.handleEvent([]byte(`{"event":"end-file","reason":"eof","playlist_entry_id":1}` + "\n"))
 
-	p.diagMu.Lock()
-	reason := p.currentDiagnostic.MPVEndReason
-	p.diagMu.Unlock()
-	if reason != "eof" {
-		t.Fatalf("MPVEndReason = %q, want eof (natural EOF drives autoplay)", reason)
+	// The eof branch runs the end-of-playback hand-off, which freezes the
+	// attempt, so read the reason off the frozen report rather than the live one.
+	report, ok := p.Diagnostics()
+	if !ok {
+		t.Fatal("a natural EOF should have finalized the attempt")
+	}
+	engine := report["engine"].(map[string]any)
+	if got := engine["end_file_reason"]; got != "eof" {
+		t.Fatalf("end_file_reason = %v, want eof (natural EOF drives autoplay)", got)
+	}
+	attempt := report["playback_attempt"].(map[string]any)
+	if got := attempt["termination_reason"]; got != "completed" {
+		t.Fatalf("termination_reason = %v, want completed", got)
 	}
 }
 

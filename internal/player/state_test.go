@@ -3,7 +3,7 @@ package player
 import "testing"
 
 func TestStateIncludesPlaybackIdentity(t *testing.T) {
-	p := &Player{ctx: PlayContext{ServerID: "source-a", ItemID: "movie-a", ChannelID: "channel-a", VariantIndex: 2}, playbackRevision: 7}
+	p := &Player{ctx: PlayContext{ServerID: "source-a", ItemID: "movie-a", ChannelID: "channel-a", VariantIndex: 2}, playbackRevision: 7, resumeRefreshGeneration: 3}
 	state := p.State()
 	if got := state["server_id"]; got != "source-a" {
 		t.Fatalf("server_id = %#v, want source-a", got)
@@ -13,6 +13,9 @@ func TestStateIncludesPlaybackIdentity(t *testing.T) {
 	}
 	if got := state["playback_revision"]; got != uint64(7) {
 		t.Fatalf("playback_revision = %#v, want 7", got)
+	}
+	if got := state["resume_refresh_generation"]; got != uint64(3) {
+		t.Fatalf("resume_refresh_generation = %#v, want 3", got)
 	}
 }
 
@@ -26,5 +29,20 @@ func TestStateReportsAudioOnly(t *testing.T) {
 	}
 	if got := (&Player{ctx: PlayContext{ItemID: "Show/S01E01.mkv"}}).State()["audio_only"]; got != false {
 		t.Fatalf("audio_only = %#v, want false", got)
+	}
+}
+
+func TestResumeRefreshFlushBumpsPlaybackRevision(t *testing.T) {
+	p := &Player{resumeRefreshOwed: true}
+	p.mu.Lock()
+	p.flushResumeRefreshLocked()
+	p.mu.Unlock()
+
+	state := p.State()
+	if got := state["resume_refresh_generation"]; got != uint64(1) {
+		t.Fatalf("resume_refresh_generation = %#v, want 1", got)
+	}
+	if got := state["playback_revision"]; got != uint64(1) {
+		t.Fatalf("playback_revision = %#v, want 1", got)
 	}
 }

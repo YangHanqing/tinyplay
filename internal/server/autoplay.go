@@ -16,7 +16,42 @@ import (
 // and issue play-now / cancel, but must never own the timer or next selection:
 // a backgrounded or closed browser must still advance playback.
 
+// autoplayGrace is the default countdown; the user can pick 0/5/10s
+// (config.AutoplayCountdownPresetSecs) and autoplayCountdown reads that choice.
 const autoplayGrace = 5 * time.Second
+
+// loopRunawayShortPlay / loopRunawayLimit stop a loop that has degenerated
+// into a relaunch storm: a folder of unplayable files would otherwise restart
+// mpv forever, because looping removes the natural "end of list" stop. Five
+// consecutive autoplay-started plays that each ended within a few seconds is
+// not viewing, it is a fault.
+const (
+	loopRunawayShortPlay = 10 * time.Second
+	loopRunawayLimit     = 5
+)
+
+// maxAutoplayEpisodes bounds one whole-series episode fetch. List-loop spans
+// the entire show, not one season, so the old 200 would silently truncate long
+// runs (One Piece is ~1100) and lose the current episode from the page.
+const maxAutoplayEpisodes = 2000
+
+func autoplayCountdown() time.Duration {
+	cfg := config.Load()
+	return time.Duration(config.NormalizeAutoplayCountdownSecs(cfg.AutoplayCountdownSecs)) * time.Second
+}
+
+// autoplayLoopEnabled reports whether the chain wraps instead of stopping.
+// Loop is a sub-option of autoplay: with autoplay off nothing chains at all.
+func autoplayLoopEnabled() bool {
+	cfg := config.Load()
+	return cfg.AutoplayNextEpisode && cfg.AutoplayLoopList
+}
+
+// loopSingleTitle reports whether a media-server item that has no list to
+// chain through (a movie: no series id) should repeat inside mpv instead.
+func loopSingleTitle(seriesID string) bool {
+	return seriesID == "" && autoplayLoopEnabled()
+}
 
 // autoplay status values exposed on GET /api/player/state. There is no
 // "finished" status: when no transition will run, the completed context is
@@ -44,6 +79,10 @@ type autoplayNext struct {
 	// IsAudio marks the next item as a track rather than a video, which is
 	// what lets an album chain without a countdown. See autoplayGraceFor.
 	IsAudio bool
+	// Restarted marks a transition that wrapped from the end of the list back
+	// to its start. Only the phone's wording depends on it; the transition
+	// itself is an ordinary one.
+	Restarted bool
 }
 
 type autoplayState struct {
@@ -132,10 +171,43 @@ func (s *Server) CancelAutoplay(clearCompleted bool) {
 		s.autoplayCancelledThrough = blocked
 	}
 	s.cancelAutoplayLocked()
+	// An explicit stop/cancel/manual play ends the automatic chain, so the
+	// runaway counter starts clean for whatever the user does next.
+	s.autoplayTransitionAt = time.Time{}
+	s.autoplayShortRuns = 0
 	s.autoplayMu.Unlock()
 	if clearCompleted {
 		s.player.ClearCompletedPlayback()
 	}
+}
+
+// noteAutoplayTransition timestamps an automatic transition so the next
+// natural EOF can tell viewing from a relaunch storm.
+func (s *Server) noteAutoplayTransition() {
+	s.autoplayMu.Lock()
+	s.autoplayTransitionAt = s.now()
+	s.autoplayMu.Unlock()
+}
+
+// loopRunawayTripped counts consecutive autoplay-started plays that ended
+// almost immediately, and reports when the chain has to be abandoned. Only a
+// wrapping list can spin forever — a linear one runs out — so only loop mode
+// trips, but the counter itself runs either way and a single normal-length
+// play clears it.
+func (s *Server) loopRunawayTripped() bool {
+	s.autoplayMu.Lock()
+	defer s.autoplayMu.Unlock()
+	started := s.autoplayTransitionAt
+	if started.IsZero() || s.now().Sub(started) >= loopRunawayShortPlay {
+		s.autoplayShortRuns = 0
+		return false
+	}
+	s.autoplayShortRuns++
+	if !autoplayLoopEnabled() || s.autoplayShortRuns < loopRunawayLimit {
+		return false
+	}
+	s.autoplayShortRuns = 0
+	return true
 }
 
 // clearCompletedContext forgets the player's post-EOF completed context. The
@@ -154,6 +226,12 @@ func (s *Server) clearCompletedContext() {
 func (s *Server) onNaturalEOF(ctx player.PlayContext, revision uint64) {
 	if !autoplayEligible(ctx) {
 		s.clearCompletedContext()
+		return
+	}
+	if s.loopRunawayTripped() {
+		log.Printf("autoplay: %d consecutive automatic plays ended within %v; stopping the loop",
+			loopRunawayLimit, loopRunawayShortPlay)
+		s.CancelAutoplay(true)
 		return
 	}
 
@@ -228,7 +306,7 @@ func (s *Server) resolveAndArmAutoplay(gen uint64, finished player.PlayContext) 
 		s.clearCompletedContext()
 		return
 	}
-	grace := autoplayGraceFor(finished, next)
+	grace := autoplayGraceFor(finished, next, autoplayCountdown())
 	s.autoplay.next = next
 	s.autoplay.status = autoplayStatusNextAvailable
 	s.autoplay.silent = grace <= 0
@@ -256,11 +334,14 @@ func (s *Server) resolveAndArmAutoplay(gen uint64, finished player.PlayContext) 
 // rather than inferred: this is the only thing standing between "no countdown"
 // and a film starting unannounced, and a future resolver that stops chaining
 // same-kind would otherwise silently take the countdown with it.
-func autoplayGraceFor(finished player.PlayContext, next *autoplayNext) time.Duration {
+func autoplayGraceFor(finished player.PlayContext, next *autoplayNext, configured time.Duration) time.Duration {
+	// Audio → audio stays exempt whatever the user picked: a countdown card
+	// between every track of an album is noise, and this is the one chain that
+	// is expected to run unattended for a whole record.
 	if next != nil && finished.AudioOnly && next.IsAudio {
 		return 0
 	}
-	return autoplayGrace
+	return configured
 }
 
 func (s *Server) lookupNextEpisode(finished player.PlayContext) (*autoplayNext, error) {
@@ -278,11 +359,15 @@ func (s *Server) lookupNextEpisode(finished player.PlayContext) (*autoplayNext, 
 	if err != nil {
 		return nil, err
 	}
-	raw, err := client.Episodes(finished.SeriesID, finished.SeasonID, 0, 200, "asc")
+	// Empty season id = the whole series, ordered season-then-episode by the
+	// provider clients. The chain therefore rolls over into the next season
+	// instead of stopping at a season boundary, and list-loop wraps around the
+	// entire show rather than replaying one season.
+	raw, err := client.Episodes(finished.SeriesID, "", 0, maxAutoplayEpisodes, "asc")
 	if err != nil {
 		return nil, err
 	}
-	return parseNextEpisode(raw, finished.ItemID, finished.SeriesID, finished.SeasonID, finished.SeriesTitle, finished.ServerID)
+	return parseNextEpisode(raw, finished.ItemID, finished.SeriesID, finished.SeasonID, finished.SeriesTitle, finished.ServerID, autoplayLoopEnabled())
 }
 
 // lookupNextFile resolves the next video in the finished file's parent
@@ -304,8 +389,9 @@ func (s *Server) lookupNextFile(finished player.PlayContext) (*autoplayNext, err
 			len(listing.Entries), filesource.MaxAutoplayDirEntries)
 		return nil, nil
 	}
-	next, ok := filesource.NextVideo(listing.Entries, currentPath)
-	if !ok {
+	loop := autoplayLoopEnabled()
+	next, ok, wrapped := filesource.NextVideoWrapping(listing.Entries, currentPath)
+	if !ok || (wrapped && !loop) {
 		return nil, nil
 	}
 	// Prefer the finished title (filename) for gap logging; fall back to path.
@@ -319,18 +405,20 @@ func (s *Server) lookupNextFile(finished player.PlayContext) (*autoplayNext, err
 	}
 	title := filesource.TitleWithoutExtension(next.Name)
 	return &autoplayNext{
-		ServerID: finished.ServerID,
-		ItemID:   next.Path,
-		Title:    title,
-		IsFile:   true,
-		Path:     next.Path,
-		IsAudio:  next.IsAudio,
+		ServerID:  finished.ServerID,
+		ItemID:    next.Path,
+		Title:     title,
+		IsFile:    true,
+		Path:      next.Path,
+		IsAudio:   next.IsAudio,
+		Restarted: wrapped,
 	}, nil
 }
 
-// parseNextEpisode finds the episode after currentItemID within the same
-// season payload. Season rollover is intentionally not performed.
-func parseNextEpisode(raw []byte, currentItemID, seriesID, seasonID, seriesTitle, serverID string) (*autoplayNext, error) {
+// parseNextEpisode finds the episode after currentItemID in a whole-series
+// payload (so season rollover happens naturally). With loop set, the end of
+// the series wraps back to its first episode.
+func parseNextEpisode(raw []byte, currentItemID, seriesID, seasonID, seriesTitle, serverID string, loop bool) (*autoplayNext, error) {
 	var payload struct {
 		Items []struct {
 			ID                string `json:"Id"`
@@ -353,10 +441,21 @@ func parseNextEpisode(raw []byte, currentItemID, seriesID, seasonID, seriesTitle
 			break
 		}
 	}
-	if idx < 0 || idx+1 >= len(payload.Items) {
+	if idx < 0 {
 		return nil, nil
 	}
-	next := payload.Items[idx+1]
+	restarted := false
+	nextIdx := idx + 1
+	if nextIdx >= len(payload.Items) {
+		if !loop {
+			return nil, nil
+		}
+		// Wrapping to itself is the single-episode series case, and is the
+		// same "repeat this one title" the movie path gets from mpv.
+		nextIdx = 0
+		restarted = true
+	}
+	next := payload.Items[nextIdx]
 	nextSeriesID := next.SeriesID
 	if nextSeriesID == "" {
 		nextSeriesID = seriesID
@@ -386,6 +485,7 @@ func parseNextEpisode(raw []byte, currentItemID, seriesID, seasonID, seriesTitle
 		SeriesTitle:  seriesName,
 		EpisodeLabel: label,
 		PosterItemID: poster,
+		Restarted:    restarted,
 	}, nil
 }
 
@@ -406,6 +506,7 @@ func (s *Server) fireAutoplay(gen uint64) {
 	s.autoplay.finished = player.PlayContext{}
 	s.autoplayMu.Unlock()
 
+	s.noteAutoplayTransition()
 	s.startAutoplayNext(next)
 }
 
@@ -549,6 +650,11 @@ func (s *Server) mergeAutoplayState(state map[string]any) map[string]any {
 		state["next_episode_title"] = title
 		state["next_episode_label"] = next.EpisodeLabel
 		state["next_episode_id"] = next.ItemID
+		if next.Restarted {
+			// The list wrapped; the phone says "starting over" instead of
+			// "up next", which is the only difference this makes.
+			state["autoplay_restarted"] = true
+		}
 	}
 	return state
 }

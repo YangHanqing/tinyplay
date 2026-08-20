@@ -69,6 +69,7 @@ func didlIsAudio(meta string) bool {
 	if strings.HasPrefix(class, "object.item.videoitem") {
 		return false
 	}
+	hasAudioResource := false
 	for _, m := range didlResRe.FindAllStringSubmatch(meta, -1) {
 		if len(m) != 2 {
 			continue
@@ -83,10 +84,10 @@ func didlIsAudio(meta string) bool {
 			return false
 		}
 		if strings.HasPrefix(mime, "audio/") {
-			return true
+			hasAudioResource = true
 		}
 	}
-	return false
+	return hasAudioResource
 }
 
 // didlAlbumArtURL returns the sender's cover art, or "" when it supplied none

@@ -41,15 +41,18 @@ func SettingsFor(requestLang string) map[string]any {
 		}
 	}
 	return map[string]any{
-		"mpv_cache_secs":          NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
-		"seek_backward_secs":      normalizeSeek(cfg.SeekBackwardSecs, 5),
-		"seek_forward_secs":       normalizeSeek(cfg.SeekForwardSecs, 30),
-		"language":                lang,
-		"resolved_language":       resolved,
-		"dlna_receiver_enabled":   cfg.DLNAReceiverEnabled,
-		"autoplay_next_episode":   cfg.AutoplayNextEpisode,
-		"keep_playback_speed":     cfg.KeepPlaybackSpeed,
-		"remember_title_settings": cfg.RememberTitleSettings,
+		"mpv_cache_secs":            NormalizeMpvCacheSecs(cfg.MpvCacheSecs),
+		"seek_backward_secs":        normalizeSeek(cfg.SeekBackwardSecs, 5),
+		"seek_forward_secs":         normalizeSeek(cfg.SeekForwardSecs, 30),
+		"language":                  lang,
+		"resolved_language":         resolved,
+		"dlna_receiver_enabled":     cfg.DLNAReceiverEnabled,
+		"autoplay_next_episode":     cfg.AutoplayNextEpisode,
+		"autoplay_countdown_secs":   NormalizeAutoplayCountdownSecs(cfg.AutoplayCountdownSecs),
+		"autoplay_loop_list":        cfg.AutoplayLoopList,
+		"keep_playback_speed":       cfg.KeepPlaybackSpeed,
+		"remember_title_settings":   cfg.RememberTitleSettings,
+		"force_fullscreen_playback": cfg.ForceFullscreenPlayback,
 		// The source-type picker filters its file-source cards against this
 		// list, so a build that can't actually serve a given kind doesn't
 		// offer it as an option.
@@ -74,8 +77,11 @@ func ResetAll() map[string]any {
 		cfg.LocalPlaybackHistory = nil
 		cfg.TitleSettingsHistory = nil
 		cfg.AutoplayNextEpisode = true
+		cfg.AutoplayCountdownSecs = DefaultAutoplayCountdownSecs
+		cfg.AutoplayLoopList = false
 		cfg.KeepPlaybackSpeed = true
 		cfg.RememberTitleSettings = false
+		cfg.ForceFullscreenPlayback = true
 		cfg.UpdateSkippedVersion = ""
 		cfg.UpdateRemindVersion = ""
 		cfg.UpdateRemindAfter = ""
@@ -152,6 +158,18 @@ func SetAutoplayNextEpisode(enabled bool) map[string]any {
 	return Settings()
 }
 
+// SetAutoplayCountdownSecs persists the countdown length (0/5/10).
+func SetAutoplayCountdownSecs(secs int) map[string]any {
+	patch(func(cfg *Config) { cfg.AutoplayCountdownSecs = NormalizeAutoplayCountdownSecs(secs) })
+	return Settings()
+}
+
+// SetAutoplayLoopList persists the "wrap back to the first item" toggle.
+func SetAutoplayLoopList(enabled bool) map[string]any {
+	patch(func(cfg *Config) { cfg.AutoplayLoopList = enabled })
+	return Settings()
+}
+
 // SetKeepPlaybackSpeed persists the "keep playback speed across titles" toggle.
 func SetKeepPlaybackSpeed(enabled bool) map[string]any {
 	patch(func(cfg *Config) { cfg.KeepPlaybackSpeed = enabled })
@@ -161,6 +179,15 @@ func SetKeepPlaybackSpeed(enabled bool) map[string]any {
 // SetRememberTitleSettings persists the per-title settings memory toggle.
 func SetRememberTitleSettings(enabled bool) map[string]any {
 	patch(func(cfg *Config) { cfg.RememberTitleSettings = enabled })
+	return Settings()
+}
+
+// SetForceFullscreenPlayback persists the "always force the desktop player
+// fullscreen" toggle. When turned off, the player package stops re-forcing
+// fullscreen on every title change, letting a manually windowed/resized mpv
+// window stay put for the rest of the running process.
+func SetForceFullscreenPlayback(enabled bool) map[string]any {
+	patch(func(cfg *Config) { cfg.ForceFullscreenPlayback = enabled })
 	return Settings()
 }
 

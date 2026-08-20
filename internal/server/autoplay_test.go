@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -25,12 +28,12 @@ func setupAutoplayTest(t *testing.T) (*Server, string) {
 	return s, srv.ID
 }
 
-func TestParseNextEpisodeSameSeasonOnly(t *testing.T) {
+func TestParseNextEpisodeStopsAtTheEndOfTheList(t *testing.T) {
 	raw := []byte(`{"Items":[
 		{"Id":"e1","Name":"One","SeriesId":"s","SeasonId":"sea","SeriesName":"Show","ParentIndexNumber":1,"IndexNumber":1},
 		{"Id":"e2","Name":"Two","SeriesId":"s","SeasonId":"sea","SeriesName":"Show","ParentIndexNumber":1,"IndexNumber":2}
 	]}`)
-	next, err := parseNextEpisode(raw, "e1", "s", "sea", "Show", "srv")
+	next, err := parseNextEpisode(raw, "e1", "s", "sea", "Show", "srv", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +41,7 @@ func TestParseNextEpisodeSameSeasonOnly(t *testing.T) {
 		t.Fatalf("unexpected next: %+v", next)
 	}
 
-	last, err := parseNextEpisode(raw, "e2", "s", "sea", "Show", "srv")
+	last, err := parseNextEpisode(raw, "e2", "s", "sea", "Show", "srv", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +49,7 @@ func TestParseNextEpisodeSameSeasonOnly(t *testing.T) {
 		t.Fatalf("expected no next after last episode, got %+v", last)
 	}
 
-	missing, err := parseNextEpisode(raw, "missing", "s", "sea", "Show", "srv")
+	missing, err := parseNextEpisode(raw, "missing", "s", "sea", "Show", "srv", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +60,7 @@ func TestParseNextEpisodeSameSeasonOnly(t *testing.T) {
 
 func TestParseNextEpisodeWithoutSeasonContext(t *testing.T) {
 	raw := []byte(`{"Items":[{"Id":"e1","SeriesId":"s"},{"Id":"e2","Name":"Two","SeriesId":"s","SeasonId":"sea"}]}`)
-	next, err := parseNextEpisode(raw, "e1", "s", "", "Show", "srv")
+	next, err := parseNextEpisode(raw, "e1", "s", "", "Show", "srv", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,22 +628,22 @@ func TestAutoplayGraceForSkipsCountdownBetweenTracks(t *testing.T) {
 	nextTrack := &autoplayNext{IsFile: true, IsAudio: true}
 	nextFilm := &autoplayNext{IsFile: true}
 
-	if got := autoplayGraceFor(song, nextTrack); got != 0 {
+	if got := autoplayGraceFor(song, nextTrack, autoplayGrace); got != 0 {
 		t.Errorf("song → song grace = %v, want 0", got)
 	}
 	// Both ends must be audio. Same-kind chaining already guarantees it, but
 	// this check is the only thing standing between "no countdown" and a film
 	// starting unannounced, so it is asserted rather than assumed.
-	if got := autoplayGraceFor(song, nextFilm); got != autoplayGrace {
+	if got := autoplayGraceFor(song, nextFilm, autoplayGrace); got != autoplayGrace {
 		t.Errorf("song → film grace = %v, want %v", got, autoplayGrace)
 	}
-	if got := autoplayGraceFor(film, nextTrack); got != autoplayGrace {
+	if got := autoplayGraceFor(film, nextTrack, autoplayGrace); got != autoplayGrace {
 		t.Errorf("film → track grace = %v, want %v", got, autoplayGrace)
 	}
-	if got := autoplayGraceFor(film, nextFilm); got != autoplayGrace {
+	if got := autoplayGraceFor(film, nextFilm, autoplayGrace); got != autoplayGrace {
 		t.Errorf("film → film grace = %v, want %v", got, autoplayGrace)
 	}
-	if got := autoplayGraceFor(song, nil); got != autoplayGrace {
+	if got := autoplayGraceFor(song, nil, autoplayGrace); got != autoplayGrace {
 		t.Errorf("nil next grace = %v, want %v", got, autoplayGrace)
 	}
 }
@@ -709,5 +712,184 @@ func TestAudioAutoplayArmsZeroGrace(t *testing.T) {
 	fireFn()
 	if got, _ := played.Load().(string); got != "Album/02.flac" {
 		t.Fatalf("played item = %q, want Album/02.flac", got)
+	}
+}
+
+// List-loop wraps the whole show, not one season: the payload is fetched with
+// an empty season id, so the last episode of the last season is followed by
+// the first episode of the first one.
+func TestParseNextEpisodeWrapsTheWholeSeries(t *testing.T) {
+	raw := []byte(`{"Items":[
+		{"Id":"e1","Name":"One","SeriesId":"s","SeasonId":"sea1","SeriesName":"Show","ParentIndexNumber":1,"IndexNumber":1},
+		{"Id":"e2","Name":"Two","SeriesId":"s","SeasonId":"sea1","SeriesName":"Show","ParentIndexNumber":1,"IndexNumber":2},
+		{"Id":"e3","Name":"Three","SeriesId":"s","SeasonId":"sea2","SeriesName":"Show","ParentIndexNumber":2,"IndexNumber":1}
+	]}`)
+
+	// Season rollover happens with or without loop: the list is the series.
+	rollover, err := parseNextEpisode(raw, "e2", "s", "sea1", "Show", "srv", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollover == nil || rollover.ItemID != "e3" || rollover.SeasonID != "sea2" || rollover.Restarted {
+		t.Fatalf("season rollover = %+v, want e3 in sea2 without a restart flag", rollover)
+	}
+
+	if last, err := parseNextEpisode(raw, "e3", "s", "sea2", "Show", "srv", false); err != nil || last != nil {
+		t.Fatalf("end of series without loop = %+v (err %v), want nil", last, err)
+	}
+
+	wrapped, err := parseNextEpisode(raw, "e3", "s", "sea2", "Show", "srv", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrapped == nil || wrapped.ItemID != "e1" || !wrapped.Restarted {
+		t.Fatalf("end of series with loop = %+v, want e1 flagged as restarted", wrapped)
+	}
+}
+
+// A one-episode series is the same "repeat this title" case a lone file gets.
+func TestParseNextEpisodeLoopRepeatsALoneEpisode(t *testing.T) {
+	raw := []byte(`{"Items":[{"Id":"e1","Name":"Only","SeriesId":"s","SeasonId":"sea"}]}`)
+	next, err := parseNextEpisode(raw, "e1", "s", "sea", "Show", "srv", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == nil || next.ItemID != "e1" || !next.Restarted {
+		t.Fatalf("lone episode with loop = %+v, want itself flagged as restarted", next)
+	}
+}
+
+// The countdown length is the user's, but audio→audio stays exempt at every
+// setting: a card between every track is what that exemption exists to avoid.
+func TestAutoplayGraceForHonoursTheConfiguredCountdown(t *testing.T) {
+	song := player.PlayContext{AudioOnly: true}
+	film := player.PlayContext{}
+	nextTrack := &autoplayNext{IsFile: true, IsAudio: true}
+	nextFilm := &autoplayNext{IsFile: true}
+
+	for _, configured := range []time.Duration{0, 5 * time.Second, 10 * time.Second} {
+		if got := autoplayGraceFor(film, nextFilm, configured); got != configured {
+			t.Errorf("film grace at %v = %v, want %v", configured, got, configured)
+		}
+		if got := autoplayGraceFor(song, nextTrack, configured); got != 0 {
+			t.Errorf("track grace at %v = %v, want 0", configured, got)
+		}
+	}
+}
+
+// A loop cannot run out of list, so a folder whose files all die on open would
+// relaunch mpv forever. Enough consecutive instant endings abandon the chain.
+func TestLoopRunawayGuardStopsARelaunchStorm(t *testing.T) {
+	s, _ := setupAutoplayTest(t)
+	config.SetAutoplayLoopList(true)
+
+	now := time.Now()
+	s.autoplayNow = func() time.Time { return now }
+
+	for i := 1; i <= loopRunawayLimit; i++ {
+		s.noteAutoplayTransition()
+		now = now.Add(time.Second) // the "play" lasted a second
+		tripped := s.loopRunawayTripped()
+		if i < loopRunawayLimit && tripped {
+			t.Fatalf("tripped after %d short plays, want %d", i, loopRunawayLimit)
+		}
+		if i == loopRunawayLimit && !tripped {
+			t.Fatalf("did not trip after %d short plays", loopRunawayLimit)
+		}
+	}
+
+	// One ordinary-length play is someone actually watching: the count clears.
+	s.noteAutoplayTransition()
+	now = now.Add(2 * loopRunawayShortPlay)
+	if s.loopRunawayTripped() {
+		t.Fatal("a full-length play must not trip the guard")
+	}
+	for i := 0; i < loopRunawayLimit-1; i++ {
+		s.noteAutoplayTransition()
+		now = now.Add(time.Second)
+		if s.loopRunawayTripped() {
+			t.Fatal("the counter did not reset after a full-length play")
+		}
+	}
+}
+
+// With loop off the guard never fires: a linear chain ends by itself, and
+// stopping a folder of short clips early would be a regression.
+func TestLoopRunawayGuardIgnoresLinearChains(t *testing.T) {
+	s, _ := setupAutoplayTest(t)
+	config.SetAutoplayLoopList(false)
+
+	now := time.Now()
+	s.autoplayNow = func() time.Time { return now }
+	for i := 0; i < loopRunawayLimit*2; i++ {
+		s.noteAutoplayTransition()
+		now = now.Add(time.Second)
+		if s.loopRunawayTripped() {
+			t.Fatal("linear autoplay must never trip the loop guard")
+		}
+	}
+}
+
+// The phone can only offer 0/5/10, but the API is on the LAN and must not
+// take an arbitrary number on trust. 0 is a real choice and has to survive.
+func TestSettingsAcceptAutoplayCountdownAndLoop(t *testing.T) {
+	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
+	h := testHandler(New(player.New()))
+
+	put := func(body string) map[string]any {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, jsonReq(http.MethodPut, "/api/settings", body))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT settings %d: %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	out := put(`{"autoplay_countdown_secs":0,"autoplay_loop_list":true}`)
+	if out["autoplay_countdown_secs"] != float64(0) {
+		t.Fatalf("countdown = %v, want 0", out["autoplay_countdown_secs"])
+	}
+	if out["autoplay_loop_list"] != true {
+		t.Fatalf("loop = %v, want true", out["autoplay_loop_list"])
+	}
+
+	out = put(`{"autoplay_countdown_secs":7}`)
+	if out["autoplay_countdown_secs"] != float64(config.DefaultAutoplayCountdownSecs) {
+		t.Fatalf("out-of-range countdown = %v, want the default", out["autoplay_countdown_secs"])
+	}
+	if out["autoplay_loop_list"] != true {
+		t.Fatal("an unrelated settings write must not clear the loop toggle")
+	}
+}
+
+// Loop for a movie is mpv's own repeat, not a host transition: there is no
+// list to advance through, and a relaunch would blank the screen every pass.
+func TestLoopSingleTitleOnlyCoversItemsWithNoList(t *testing.T) {
+	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
+
+	config.SetAutoplayNextEpisode(true)
+	config.SetAutoplayLoopList(true)
+	if !loopSingleTitle("") {
+		t.Fatal("a movie must repeat in mpv when list-loop is on")
+	}
+	if loopSingleTitle("series-1") {
+		t.Fatal("an episode must chain through its series, not repeat itself")
+	}
+
+	config.SetAutoplayLoopList(false)
+	if loopSingleTitle("") {
+		t.Fatal("no loop setting, no repeat")
+	}
+
+	// Loop is a sub-option: with autoplay off nothing repeats either.
+	config.SetAutoplayLoopList(true)
+	config.SetAutoplayNextEpisode(false)
+	if loopSingleTitle("") {
+		t.Fatal("autoplay off must disable the loop entirely")
 	}
 }

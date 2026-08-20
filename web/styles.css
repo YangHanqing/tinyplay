@@ -1146,6 +1146,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .settings-card-head { margin-bottom: 14px; }
 .settings-card-head h2 { font-size: 16px; font-weight: 800; color: rgba(255,255,255,.92); margin-bottom: 5px; }
 .settings-card-head p { font-size: 12px; line-height: 1.5; color: rgba(255,255,255,.46); }
+/* A sub-setting of the card above it: same controls, indented by a divider so
+   it reads as "and, within that…" rather than as a separate preference. */
+.settings-sub-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.08); }
+.settings-sub-label { font-size: 13px; font-weight: 600; color: rgba(255,255,255,.78); margin-bottom: 5px; }
+.settings-sub-hint { font-size: 12px; line-height: 1.5; color: rgba(255,255,255,.46); margin-bottom: 10px; }
 .desktop-input-entry { padding: 0; overflow: hidden; }
 .desktop-input-entry-btn { display:flex; align-items:center; gap:13px; width:100%; min-height:72px; padding:14px 16px; border:0; color:inherit; text-align:left; background:transparent; font-family:inherit; cursor:pointer; }
 .desktop-input-entry-btn:active { background:rgba(255,255,255,.06); }

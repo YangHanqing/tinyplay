@@ -78,13 +78,16 @@ let _moreSheetOpen = false;
 let _aspectSheetOpen = false;
 let _currentAspect = 'fit';
 let _loopFile = false;
-let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true, mpv_available: true, language: 'auto', autoplay_next_episode: true, keep_playback_speed: true, remember_title_settings: false };
+let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true, mpv_available: true, language: 'auto', autoplay_next_episode: true, autoplay_countdown_secs: 5, autoplay_loop_list: false, keep_playback_speed: true, remember_title_settings: false, force_fullscreen_playback: true };
 // Display-only countdown: the Go host owns the 5s timer and next-episode
 // transition. These locals only mirror autoplay_remaining_ms from player state.
 let _autoplayCountdownTimer = null;
 let _autoplayCountdownDeadline = 0;
 let _autoplayShowing = false;
 let _autoplayDismissed = false;
+// True while the pending transition is a wrap from the end of the list back to
+// its start, which is the only thing that changes the countdown's wording.
+let _autoplayRestarted = false;
 // null = unknown/unrestricted (Python branch never sends this field, and it
 // implements every protocol); an array restricts the file-source dropdown to
 // what this backend can actually browse (see desktop-go's config.Settings()).
@@ -108,6 +111,11 @@ let _activeSourceType = 'emby';
 let _activeServerId = '';
 let _playbackServerId = '';
 let _lastPlaybackRevision = -1;
+// The backend advances this only after a stop report has returned and the
+// player is genuinely idle. It is deliberately distinct from the playback
+// revision: a cleared title means mpv exited, not that the media server has
+// accepted its final resume position.
+let _lastResumeRefreshGeneration = null;
 let _knownServers = [];
 // localStorage is scoped by origin, so this is per phone/browser rather than
 // the desktop process's legacy active_server_id.
@@ -1374,6 +1382,7 @@ async function restorePlayerContext(state = null) {
     state = state || await api('GET', '/api/player/state');
     _lastPlaybackRevision = Number(state.playback_revision ?? _lastPlaybackRevision);
     updateLastPlaybackDebugEntry(state);
+    observeResumeRefreshGeneration(state);
     if (state.playback_completed && !state.running && !_autoplayCoordinating(state)) {
       // A finished episode with no host transition pending is history, not a
       // startup: repainting it would pin a poster card in the "starting" state
@@ -1438,6 +1447,28 @@ function updateLastPlaybackDebugEntry(state = {}) {
   if (button) {
     button.textContent = tr('lastPlaybackReport');
     button.classList.toggle('hidden', !_lastPlaybackDebugAvailable);
+  }
+}
+
+// Refresh Continue Watching only on the backend's acknowledged-stop signal.
+// process exit / an empty context races the report write, and a report from an
+// outgoing title may finish while a replacement title is already playing.
+// The idle check is an invariant supplied by the backend, retained here as a
+// guard for an older or otherwise inconsistent server response.
+function observeResumeRefreshGeneration(state = {}) {
+  if (!Object.prototype.hasOwnProperty.call(state, 'resume_refresh_generation')) return;
+  const generation = Number(state.resume_refresh_generation);
+  if (!Number.isSafeInteger(generation) || generation < 0) return;
+  if (_lastResumeRefreshGeneration === null || generation < _lastResumeRefreshGeneration) {
+    // A core restart resets its in-memory counter. Take the new baseline; the
+    // normal library boot/recovery load owns the first shelf paint.
+    _lastResumeRefreshGeneration = generation;
+    return;
+  }
+  if (generation === _lastResumeRefreshGeneration) return;
+  _lastResumeRefreshGeneration = generation;
+  if (!state.running && !state.item_id && !state.player_starting) {
+    loadResume().catch(() => {});
   }
 }
 
@@ -1721,7 +1752,10 @@ async function stopPlayer() {
   document.getElementById('player-info-placeholder')?.classList.add('hidden');
   try {
     await api('POST', '/api/player/stop');
-    api('GET', '/api/player/state').then(updateLastPlaybackDebugEntry).catch(() => {});
+    api('GET', '/api/player/state').then(state => {
+      updateLastPlaybackDebugEntry(state);
+      observeResumeRefreshGeneration(state);
+    }).catch(() => {});
     setNowPlaying('');
     currentItemId = '';
     currentEpisodeLabel = '';
@@ -1732,7 +1766,6 @@ async function stopPlayer() {
     _loopFile = false;
     _currentAspect = 'fit';
     resetPosterColor();
-    loadResume().catch(() => {});
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1956,16 +1989,16 @@ async function _handlePlaybackEnded() {
   const finishedState = await api('GET', '/api/player/state').catch(() => null);
   if (finishedState) {
     _applyAutoplayStatus(finishedState);
+    observeResumeRefreshGeneration(finishedState);
     if (_autoplayCoordinating(finishedState)) {
       // Host is coordinating the next episode; its play (or clear) repaints.
       return;
     }
   }
-  // The process has already exited and the Go player has completed terminal
-  // cleanup. Never POST stop here: the backend timer may have started the next
-  // episode between the props and state requests, and a client-side stop would
-  // kill that legitimate host-owned transition.
-  loadResume().catch(() => {});
+  // Never POST stop here: the backend timer may have started the next episode
+  // between the props and state requests, and a client-side stop would kill
+  // that legitimate host-owned transition. Resume is refreshed separately by
+  // observeResumeRefreshGeneration once the stop report has returned.
 }
 
 // Mirror the host autoplay countdown. Display timers are cosmetic only — the
@@ -1979,7 +2012,12 @@ async function _handlePlaybackEnded() {
 function _autoplayLocalDeadline(state) {
   const remainingMs = Number(state.autoplay_remaining_ms);
   if (Number.isFinite(remainingMs) && remainingMs >= 0) return Date.now() + remainingMs;
-  return Date.now() + 5000;
+  // No remaining time in this poll: fall back to the countdown the user chose,
+  // not a hardcoded 5s that would draw a bar twice as long as a 10s setting is
+  // short. A configured 0 never reaches here (it publishes nothing at all), so
+  // the floor only guards against a bar that vanishes the moment it appears.
+  const configuredSecs = Number(_settings.autoplay_countdown_secs);
+  return Date.now() + Math.max(1, Number.isFinite(configuredSecs) ? configuredSecs : 5) * 1000;
 }
 
 function _applyAutoplayStatus(state) {
@@ -1991,6 +2029,7 @@ function _applyAutoplayStatus(state) {
   }
   if (_autoplayDismissed) return;
   const title = state.next_episode_title || '';
+  _autoplayRestarted = state.autoplay_restarted === true;
   if (_autoplayShowing) {
     _autoplayCountdownDeadline = _autoplayLocalDeadline(state);
     return;
@@ -2002,7 +2041,7 @@ function _showAutoplayCountdown(title, localDeadlineMs) {
   _autoplayShowing = true;
   const overlay = document.getElementById('autoplay-countdown-overlay');
   if (!overlay) return;
-  _setText('autoplay-countdown-title', tr('autoplayCountdownTitle'));
+  _setText('autoplay-countdown-title', tr(_autoplayRestarted ? 'autoplayRestartTitle' : 'autoplayCountdownTitle'));
   _setText('autoplay-countdown-episode', title || '');
   const cancelBtn = document.querySelector('#autoplay-countdown-overlay .confirm-cancel-btn');
   if (cancelBtn) cancelBtn.textContent = tr('autoplayCancel');
@@ -2042,7 +2081,6 @@ function cancelAutoplayNext() {
   _autoplayDismissed = true;
   _hideAutoplayCountdown();
   api('POST', '/api/player/next/cancel').catch(() => {});
-  loadResume().catch(() => {});
 }
 
 async function _confirmAutoplayNext() {
@@ -2255,6 +2293,7 @@ function _schedulePropPoll() {
       const state = await api('GET', '/api/player/state').catch(() => null);
       if (state && seq === _playRequestSeq) {
         updateLastPlaybackDebugEntry(state);
+        observeResumeRefreshGeneration(state);
         _applyAutoplayStatus(state);
         if (Number(state.playback_revision) !== _lastPlaybackRevision) {
           await restorePlayerContext(state);
@@ -4810,8 +4849,14 @@ async function loadSettings() {
       mpv_available: settings.mpv_available !== false,
       language: settings.language || 'auto',
       autoplay_next_episode: settings.autoplay_next_episode !== false,
+      // 0 is a real choice ("no countdown"), so this cannot use `|| 5`.
+      autoplay_countdown_secs: Number.isFinite(Number(settings.autoplay_countdown_secs))
+        ? Number(settings.autoplay_countdown_secs)
+        : 5,
+      autoplay_loop_list: settings.autoplay_loop_list === true,
       keep_playback_speed: settings.keep_playback_speed !== false,
       remember_title_settings: settings.remember_title_settings === true,
+      force_fullscreen_playback: settings.force_fullscreen_playback !== false,
     };
     _supportedFileProtocols = Array.isArray(settings.supported_file_protocols)
       ? settings.supported_file_protocols
@@ -4866,6 +4911,26 @@ function renderSettingsUi() {
   document.getElementById('autoplay-next-episode-on-btn')?.classList.toggle('active', autoplayEnabled);
   document.getElementById('autoplay-next-episode-off-btn')?.classList.toggle('active', !autoplayEnabled);
 
+  // Countdown length and list loop only mean anything while autoplay is on,
+  // so they live inside its card and disappear with it.
+  document.getElementById('autoplay-countdown-row')?.classList.toggle('hidden', !autoplayEnabled);
+  document.getElementById('autoplay-loop-row')?.classList.toggle('hidden', !autoplayEnabled);
+  _setText('autoplay-countdown-label', tr('autoplayCountdownLabel'));
+  const countdownSecs = Number(_settings.autoplay_countdown_secs);
+  for (const secs of [0, 5, 10]) {
+    const btn = document.getElementById(`autoplay-countdown-${secs}-btn`);
+    if (!btn) continue;
+    btn.textContent = secs === 0 ? tr('autoplayCountdownNone') : tr('autoplayCountdownSeconds', { seconds: secs });
+    btn.classList.toggle('active', countdownSecs === secs);
+  }
+  _setText('autoplay-loop-label', tr('autoplayLoopLabel'));
+  _setText('autoplay-loop-hint', tr('autoplayLoopHint'));
+  const loopEnabled = _settings.autoplay_loop_list === true;
+  _setText('autoplay-loop-on-btn', tr('autoplayNextEpisodeOn'));
+  _setText('autoplay-loop-off-btn', tr('autoplayNextEpisodeOff'));
+  document.getElementById('autoplay-loop-on-btn')?.classList.toggle('active', loopEnabled);
+  document.getElementById('autoplay-loop-off-btn')?.classList.toggle('active', !loopEnabled);
+
   _setText('keep-playback-speed-title', tr('keepPlaybackSpeedTitle'));
   _setText('keep-playback-speed-hint', tr('keepPlaybackSpeedHint'));
   const keepSpeedEnabled = _settings.keep_playback_speed !== false;
@@ -4881,6 +4946,14 @@ function renderSettingsUi() {
   _setText('remember-title-settings-off-btn', tr('rememberTitleSettingsOff'));
   document.getElementById('remember-title-settings-on-btn')?.classList.toggle('active', rememberTitleEnabled);
   document.getElementById('remember-title-settings-off-btn')?.classList.toggle('active', !rememberTitleEnabled);
+
+  _setText('force-fullscreen-title', tr('forceFullscreenTitle'));
+  _setText('force-fullscreen-hint', tr('forceFullscreenHint'));
+  const forceFullscreenEnabled = _settings.force_fullscreen_playback !== false;
+  _setText('force-fullscreen-on-btn', tr('forceFullscreenOn'));
+  _setText('force-fullscreen-off-btn', tr('forceFullscreenOff'));
+  document.getElementById('force-fullscreen-on-btn')?.classList.toggle('active', forceFullscreenEnabled);
+  document.getElementById('force-fullscreen-off-btn')?.classList.toggle('active', !forceFullscreenEnabled);
 
   // Seek settings
   _renderSeekSelect('seek-backward-select', _settings.seek_backward_secs || 5);
@@ -4916,6 +4989,29 @@ async function setAutoplayNextEpisode(enabled) {
   renderSettingsUi();
 }
 
+async function setAutoplayCountdown(secs) {
+  try {
+    const saved = await api('PUT', '/api/settings', { autoplay_countdown_secs: secs });
+    const savedSecs = Number(saved.autoplay_countdown_secs);
+    _settings.autoplay_countdown_secs = Number.isFinite(savedSecs) ? savedSecs : 5;
+    toast(tr('autoplayCountdownSaved'), 'success');
+  } catch (e) {
+    toast(tr('settingsSaveFailed'), 'error');
+  }
+  renderSettingsUi();
+}
+
+async function setAutoplayLoopList(enabled) {
+  try {
+    const saved = await api('PUT', '/api/settings', { autoplay_loop_list: enabled });
+    _settings.autoplay_loop_list = saved.autoplay_loop_list === true;
+    toast(tr(enabled ? 'autoplayLoopEnabled' : 'autoplayLoopDisabled'), 'success');
+  } catch (e) {
+    toast(tr('settingsSaveFailed'), 'error');
+  }
+  renderSettingsUi();
+}
+
 async function setKeepPlaybackSpeed(enabled) {
   try {
     const saved = await api('PUT', '/api/settings', { keep_playback_speed: enabled });
@@ -4932,6 +5028,17 @@ async function setRememberTitleSettings(enabled) {
     const saved = await api('PUT', '/api/settings', { remember_title_settings: enabled });
     _settings.remember_title_settings = saved.remember_title_settings === true;
     toast(tr(enabled ? 'rememberTitleSettingsEnabled' : 'rememberTitleSettingsDisabled'), 'success');
+  } catch (e) {
+    toast(tr('settingsSaveFailed'), 'error');
+  }
+  renderSettingsUi();
+}
+
+async function setForceFullscreenPlayback(enabled) {
+  try {
+    const saved = await api('PUT', '/api/settings', { force_fullscreen_playback: enabled });
+    _settings.force_fullscreen_playback = saved.force_fullscreen_playback !== false;
+    toast(tr(enabled ? 'forceFullscreenEnabled' : 'forceFullscreenDisabled'), 'success');
   } catch (e) {
     toast(tr('settingsSaveFailed'), 'error');
   }

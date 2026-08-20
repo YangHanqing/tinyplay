@@ -104,6 +104,16 @@ type Config struct {
 	DLNAReceiverID       string               `json:"dlna_receiver_id,omitempty"`
 	LocalPlaybackHistory []LocalPlaybackEntry `json:"local_playback_history,omitempty"`
 	AutoplayNextEpisode  bool                 `json:"autoplay_next_episode"`
+	// AutoplayCountdownSecs is how long the next-episode countdown runs before
+	// the transition fires. 0 is a legitimate value ("no countdown"), so this
+	// field must not use omitempty and must not be normalized through a
+	// zero-means-unset rule: loadLocked seeds the default before unmarshal, so
+	// an absent key keeps 5 while an explicit 0 survives a round trip.
+	AutoplayCountdownSecs int `json:"autoplay_countdown_secs"`
+	// AutoplayLoopList makes the chain wrap instead of stopping: the last item
+	// of a series/folder is followed by the first one, forever. It is a
+	// sub-option of AutoplayNextEpisode and does nothing while that is off.
+	AutoplayLoopList bool `json:"autoplay_loop_list"`
 	// KeepPlaybackSpeed: when true (default), a new title reuses the speed the
 	// previous title was playing at within this process. The remembered speed
 	// itself is session-scoped in the player and is never written here —
@@ -114,9 +124,19 @@ type Config struct {
 	// the user explicitly changed are restored the next time that same title
 	// plays. Default off so a fresh install never overrides the server's own
 	// track defaults without the user opting in.
-	RememberTitleSettings bool                 `json:"remember_title_settings"`
-	TitleSettingsHistory  []TitleSettingsEntry `json:"title_settings_history,omitempty"`
-	PairedDevices         []PairedDevice       `json:"paired_devices,omitempty"`
+	RememberTitleSettings bool `json:"remember_title_settings"`
+	// ForceFullscreenPlayback: when true (default), the desktop player is
+	// pinned fullscreen and re-forced back to fullscreen on every title change
+	// — TinyPlay's usual "phone remote controls a TV" posture. When false, a
+	// window the user manually resized/un-fullscreened is left alone across
+	// title changes for the rest of the running mpv process; it still opens
+	// fullscreen on a fresh mpv spawn (no OS-level API to read back the exact
+	// pixel geometry the user last dragged it to, so nothing is persisted to
+	// disk — this is a session-scoped preference, not a remembered window
+	// rect).
+	ForceFullscreenPlayback bool                 `json:"force_fullscreen_playback"`
+	TitleSettingsHistory    []TitleSettingsEntry `json:"title_settings_history,omitempty"`
+	PairedDevices           []PairedDevice       `json:"paired_devices,omitempty"`
 	// Desktop update prompts are intentionally small, local preferences. A
 	// skipped version never suppresses a newer release, while RemindAfter keeps
 	// an app restart from immediately asking the same question again.
@@ -334,7 +354,26 @@ func RecordLocalPlayback(serverID, path string, position, duration float64) {
 
 const (
 	DefaultMpvCacheSecs = 300
+	// DefaultAutoplayCountdownSecs keeps the countdown users already know.
+	DefaultAutoplayCountdownSecs = 5
 )
+
+// AutoplayCountdownPresetSecs are the only accepted countdown lengths. 0 means
+// "no countdown at all" — the transition fires as soon as the next item is
+// resolved, and the phone renders nothing (see autoplayState.silent).
+var AutoplayCountdownPresetSecs = []int{0, 5, 10}
+
+// NormalizeAutoplayCountdownSecs keeps 0 as a real choice. Anything outside
+// the preset list falls back to the default rather than to the nearest value:
+// these are three discrete options in a segmented control, not a slider.
+func NormalizeAutoplayCountdownSecs(secs int) int {
+	for _, preset := range AutoplayCountdownPresetSecs {
+		if secs == preset {
+			return secs
+		}
+	}
+	return DefaultAutoplayCountdownSecs
+}
 
 // MpvCachePresetSecs is deliberately small: buffering duration is only a
 // target (actual duration depends on bitrate), so arbitrary minute values add
@@ -406,12 +445,18 @@ func loadLocked() (*Config, bool) {
 		SeekForwardSecs:     30,
 		DLNAReceiverEnabled: true,
 		AutoplayNextEpisode: true,
+		// Seeded before json.Unmarshal so an absent key means "default" while
+		// an explicit 0 means "no countdown" — see the field comment.
+		AutoplayCountdownSecs: DefaultAutoplayCountdownSecs,
 		// KeepPlaybackSpeed defaults on: continuity within a session is the
 		// less-surprising default once someone has reached for the speed
 		// control. RememberTitleSettings defaults off so an untouched install
 		// never freezes auto-selected tracks as permanent overrides.
 		KeepPlaybackSpeed:     true,
 		RememberTitleSettings: false,
+		// ForceFullscreenPlayback defaults on: matches the behavior every
+		// existing install already has, so this ships with zero migration.
+		ForceFullscreenPlayback: true,
 	}
 	// A missing file is a fresh install, not an error: fall through with the
 	// defaults so the normalization below still runs. Skipping it here used to

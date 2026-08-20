@@ -427,3 +427,54 @@ func TestNextVideoAudioInSubdirPath(t *testing.T) {
 		t.Fatalf("got %+v ok=%v", next, ok)
 	}
 }
+
+// List-loop: the last video is followed by the first one, and the wrap is
+// reported so the phone can say the folder started over. Without the flag the
+// caller cannot tell "next episode" from "back to episode 1".
+func TestNextVideoWrappingRollsOverToTheFirst(t *testing.T) {
+	entries := []Entry{
+		{Name: "Show.S01E01.mkv", Path: "Show.S01E01.mkv", IsVideo: true},
+		{Name: "Show.S01E02.mkv", Path: "Show.S01E02.mkv", IsVideo: true},
+	}
+
+	next, ok, wrapped := NextVideoWrapping(entries, "Show.S01E01.mkv")
+	if !ok || wrapped || next.Path != "Show.S01E02.mkv" {
+		t.Fatalf("mid-list = %+v ok=%v wrapped=%v, want E02 without a wrap", next, ok, wrapped)
+	}
+
+	next, ok, wrapped = NextVideoWrapping(entries, "Show.S01E02.mkv")
+	if !ok || !wrapped || next.Path != "Show.S01E01.mkv" {
+		t.Fatalf("end of list = %+v ok=%v wrapped=%v, want E01 with a wrap", next, ok, wrapped)
+	}
+
+	// NextVideo is the non-looping caller and must be unaffected.
+	if _, ok := NextVideo(entries, "Show.S01E02.mkv"); ok {
+		t.Fatal("NextVideo must still stop at the end of the list")
+	}
+}
+
+// A folder holding one video is the "repeat this file" case: wrapping answers
+// the same item rather than giving up, which is what the loop setting promises
+// for a single-item list.
+func TestNextVideoWrappingRepeatsALoneFile(t *testing.T) {
+	entries := []Entry{{Name: "Movie.mkv", Path: "Movie.mkv", IsVideo: true}}
+	next, ok, wrapped := NextVideoWrapping(entries, "Movie.mkv")
+	if !ok || !wrapped || next.Path != "Movie.mkv" {
+		t.Fatalf("lone file = %+v ok=%v wrapped=%v, want itself with a wrap", next, ok, wrapped)
+	}
+}
+
+// Wrapping must not reach across kinds or pick up excluded files: the rollover
+// target comes from the same filtered candidate list as an ordinary next.
+func TestNextVideoWrappingKeepsTheCandidateFilter(t *testing.T) {
+	entries := []Entry{
+		{Name: "Show.S01E01.mkv", Path: "Show.S01E01.mkv", IsVideo: true},
+		{Name: "Show.S01E02.mkv", Path: "Show.S01E02.mkv", IsVideo: true},
+		{Name: "Theme.mp3", Path: "Theme.mp3", IsAudio: true},
+		{Name: "Show.sample.mkv", Path: "Show.sample.mkv", IsVideo: true},
+	}
+	next, ok, wrapped := NextVideoWrapping(entries, "Show.S01E02.mkv")
+	if !ok || !wrapped || next.Path != "Show.S01E01.mkv" {
+		t.Fatalf("wrap = %+v ok=%v wrapped=%v, want E01", next, ok, wrapped)
+	}
+}

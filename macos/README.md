@@ -34,9 +34,15 @@ bundle, and applies an ad-hoc signature so the app can run locally.
 `ARCH` (`arm64`, the default, or `x86_64`) selects the target architecture; it
 is forwarded from `make build-app-mac` to both `build-core-mac` (Go core) and
 `build-app.sh` (Swift shell), which cross-compiles via `swiftc -target
-$ARCH-apple-macosx13.0`. Both architectures share the same `LSMinimumSystemVersion`
-(13.0), since that floor comes from a Swift API used by the shell, not from the
+$ARCH-apple-macosx12.0`. Both architectures share the same `LSMinimumSystemVersion`
+(12.0), since the floor comes from Swift APIs used by the shell, not from the
 architecture.
+
+Start-at-login uses `SMAppService`, which is macOS 13+ only. Below that, the
+"高级设置 → 开机启动" submenu is simply left out of the tray menu (see the
+`#available(macOS 13.0, *)` guard around it in `main.swift`) rather than
+falling back to the deprecated pre-13 login-item API — every other feature
+(playback, web view, tray, mpv) works down to 12.0.
 
 If `MPV_DIR` is not set, the app falls back to `mpv` on `PATH`. Release builds
 normally set `MPV_DIR` to a self-contained mpv directory so the app can bundle

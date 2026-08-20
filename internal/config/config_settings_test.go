@@ -131,3 +131,52 @@ func TestSettingsForResolvesAutoAgainstTheRequester(t *testing.T) {
 }
 
 func i18nSystemLangForTest() string { return i18n.SystemLang() }
+
+// 0 is a real choice ("no countdown"), not "unset". The zero-means-default
+// rule the other numeric settings use would silently turn it back into 5, so
+// this pins both the normalizer and the round trip through the config file.
+func TestAutoplayCountdownKeepsAnExplicitZero(t *testing.T) {
+	useTempData(t)
+
+	if got := NormalizeAutoplayCountdownSecs(0); got != 0 {
+		t.Fatalf("normalize(0) = %d, want 0", got)
+	}
+	for _, secs := range []int{-5, 3, 7, 60} {
+		if got := NormalizeAutoplayCountdownSecs(secs); got != DefaultAutoplayCountdownSecs {
+			t.Errorf("normalize(%d) = %d, want the default %d", secs, got, DefaultAutoplayCountdownSecs)
+		}
+	}
+
+	if got := Settings()["autoplay_countdown_secs"]; got != DefaultAutoplayCountdownSecs {
+		t.Fatalf("fresh install countdown = %v, want %d", got, DefaultAutoplayCountdownSecs)
+	}
+
+	SetAutoplayCountdownSecs(0)
+	if got := Settings()["autoplay_countdown_secs"]; got != 0 {
+		t.Fatalf("countdown after reload = %v, want 0", got)
+	}
+
+	SetAutoplayCountdownSecs(10)
+	if got := Settings()["autoplay_countdown_secs"]; got != 10 {
+		t.Fatalf("countdown = %v, want 10", got)
+	}
+	if got := ResetAll()["autoplay_countdown_secs"]; got != DefaultAutoplayCountdownSecs {
+		t.Fatalf("countdown after reset = %v, want %d", got, DefaultAutoplayCountdownSecs)
+	}
+}
+
+// Loop defaults off and is remembered; reset turns it back off.
+func TestAutoplayLoopListRoundTrip(t *testing.T) {
+	useTempData(t)
+
+	if got := Settings()["autoplay_loop_list"]; got != false {
+		t.Fatalf("fresh install loop = %v, want false", got)
+	}
+	SetAutoplayLoopList(true)
+	if got := Settings()["autoplay_loop_list"]; got != true {
+		t.Fatalf("loop after reload = %v, want true", got)
+	}
+	if got := ResetAll()["autoplay_loop_list"]; got != false {
+		t.Fatalf("loop after reset = %v, want false", got)
+	}
+}

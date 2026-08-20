@@ -51,6 +51,7 @@ func main() {
 	log.Printf("TinyPlay starting; log directory: %s", filepath.Dir(logPath))
 	p := player.New()
 	wireReporters(p)
+	wireMonitorHint(p)
 
 	// Bind before doing anything else so we know the real port: if the
 	// configured one is taken (e.g. the user already runs another build on

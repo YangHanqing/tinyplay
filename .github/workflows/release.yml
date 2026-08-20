@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: |
           go install github.com/akavel/rsrc@latest
-          "$(go env GOPATH)/bin/rsrc" -ico assets/icon.ico -o cmd/tvremote/rsrc_windows.syso
+          "$(go env GOPATH)/bin/rsrc" -ico assets/icon.ico -manifest cmd/tvremote/app.manifest -o cmd/tvremote/rsrc_windows.syso
 
       - name: Build exe
         shell: bash

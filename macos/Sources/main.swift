@@ -51,7 +51,7 @@ private enum DockVisibility {
 // Keep zh-CN + English here (menu preference "auto" follows the system locale).
 private func L(_ key: String) -> String {
 	let preference = UserDefaults.standard.string(forKey: "TinyPlayLanguage") ?? "auto"
-	let zh = preference == "zh-CN" || (preference == "auto" && Locale.current.language.languageCode?.identifier.lowercased().hasPrefix("zh") == true)
+	let zh = preference == "zh-CN" || (preference == "auto" && Locale.current.languageCode?.lowercased().hasPrefix("zh") == true)
 	let table: [String: (String, String)] = [
         "open_main": ("\u{6253}\u{5F00}\u{4E3B}\u{754C}\u{9762}", "Open Main Interface"),
         "open_logs": ("\u{6253}\u{5F00}\u{65E5}\u{5FD7}\u{76EE}\u{5F55}", "Open Logs"),
@@ -821,20 +821,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		mpv.submenu = mpvMenu
 		advancedMenu.addItem(mpv)
 		mpvAdvancedMenuItem = mpv
-		let autostart = NSMenuItem(title: L("autostart_menu"), action: nil, keyEquivalent: "")
-		autostart.toolTip = L("autostart_menu_tip")
-		let autostartMenu = NSMenu()
-		let autostartOn = NSMenuItem(title: L("autostart_on_menu"), action: #selector(setAutostart(_:)), keyEquivalent: "")
-		autostartOn.representedObject = true
-		let autostartOff = NSMenuItem(title: L("autostart_off_menu"), action: #selector(setAutostart(_:)), keyEquivalent: "")
-		autostartOff.representedObject = false
-		autostartMenu.addItem(autostartOn)
-		autostartMenu.addItem(autostartOff)
-		autostartOnMenuItem = autostartOn
-		autostartOffMenuItem = autostartOff
-		autostart.submenu = autostartMenu
-		refreshAutostartCheckbox()
-		advancedMenu.addItem(autostart)
+		// SMAppService (the only login-item API this shell knows how to drive)
+		// is macOS 13+ only, so the whole submenu is left out below that rather
+		// than shown non-functional or backed by the deprecated pre-13 API.
+		if #available(macOS 13.0, *) {
+			let autostart = NSMenuItem(title: L("autostart_menu"), action: nil, keyEquivalent: "")
+			autostart.toolTip = L("autostart_menu_tip")
+			let autostartMenu = NSMenu()
+			let autostartOn = NSMenuItem(title: L("autostart_on_menu"), action: #selector(setAutostart(_:)), keyEquivalent: "")
+			autostartOn.representedObject = true
+			let autostartOff = NSMenuItem(title: L("autostart_off_menu"), action: #selector(setAutostart(_:)), keyEquivalent: "")
+			autostartOff.representedObject = false
+			autostartMenu.addItem(autostartOn)
+			autostartMenu.addItem(autostartOff)
+			autostartOnMenuItem = autostartOn
+			autostartOffMenuItem = autostartOff
+			autostart.submenu = autostartMenu
+			refreshAutostartCheckbox()
+			advancedMenu.addItem(autostart)
+		}
 
 		// Web cache. The built-in browser is the one part of TinyPlay whose
 		// on-disk footprint has no ceiling of its own.
@@ -943,7 +948,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	/// System Settings, and showing that as a checked box would promise
 	/// something that will not happen.
 	private var autostartEnabled: Bool {
-		SMAppService.mainApp.status == .enabled
+		guard #available(macOS 13.0, *) else { return false }
+		return SMAppService.mainApp.status == .enabled
 	}
 
 	private func refreshAutostartCheckbox() {
@@ -957,6 +963,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 	/// Each leaf ("开启"/"关闭") sets an explicit target via representedObject,
 	/// unlike a single checkbox's implicit flip — mirroring the Windows tray's
 	/// two-leaf submenu.
+	@available(macOS 13.0, *)
 	@objc private func setAutostart(_ sender: NSMenuItem) {
 		guard let target = sender.representedObject as? Bool else { return }
 		let service = SMAppService.mainApp
@@ -981,6 +988,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 		refreshAutostartCheckbox()
 	}
 
+	@available(macOS 13.0, *)
 	private func showAutostartApprovalAlert() {
 		let alert = NSAlert()
 		alert.messageText = L("autostart_approval_title")
@@ -1397,6 +1405,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         DockVisibility.windowOpened(w)
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        pushMonitorHint()
+	}
+
+	/// Pushes the NSScreen index the TinyPlay window currently sits on, so the
+	/// next fresh mpv spawn opens on the same display (see
+	/// player.Player.SetMonitorHint / handlers_desktopdisplay.go). Best-effort:
+	/// mpv falls back to its own default placement if this never lands or the
+	/// window has not been shown yet.
+	private func pushMonitorHint() {
+		guard let screen = window?.screen,
+			let index = NSScreen.screens.firstIndex(of: screen),
+			let url = URL(string: coreURL + "/desktop/display/monitor-hint") else { return }
+		var request = URLRequest(url: url)
+		request.httpMethod = "POST"
+		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+		request.httpBody = try? JSONSerialization.data(withJSONObject: ["screen": index])
+		URLSession.shared.dataTask(with: request).resume()
 	}
 
 	private func desktopURL() -> URL {
@@ -1528,6 +1553,17 @@ extension AppDelegate: NSWindowDelegate {
 		fullscreenTransitionRequested = false
 		window?.setContentSize(compactContentSize)
 		notifyPageFullscreen(false)
+	}
+
+	// Dragging the window to another display should not require the user to
+	// also reopen it before that choice sticks — keep the pushed hint current
+	// for the whole time the window is up, not just at open.
+	func windowDidMove(_ notification: Notification) {
+		pushMonitorHint()
+	}
+
+	func windowDidChangeScreen(_ notification: Notification) {
+		pushMonitorHint()
 	}
 }
 

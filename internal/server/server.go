@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tvremote/internal/config"
+	"tvremote/internal/discovery"
 	"tvremote/internal/dlna"
 	"tvremote/internal/iptv"
 	"tvremote/internal/player"
@@ -28,6 +29,7 @@ type Server struct {
 	playMu         sync.Mutex
 	playGeneration uint64
 	dlna           *dlna.Receiver
+	discovery      *discovery.Advertiser
 	iptvRecoveryMu sync.Mutex
 	iptvRecoveries map[string]*iptvRecovery
 
@@ -39,11 +41,15 @@ type Server struct {
 	// Reject a natural-EOF callback that was already in flight when an
 	// explicit play/stop/cancel invalidated its playback revision.
 	autoplayCancelledThrough uint64
-	autoplayNow              func() time.Time
-	autoplayAfter            func(d time.Duration, fn func()) (cancel func())
-	resolveNextEpisode       func(finished player.PlayContext) (*autoplayNext, error)
-	playAutoplayNext         func(next autoplayNext) map[string]any
-	clearCompleted           func()
+	// Runaway-loop guard: when the chain wraps forever, a folder of files that
+	// each die on open would relaunch mpv without end. See loopRunawayLimit.
+	autoplayTransitionAt time.Time
+	autoplayShortRuns    int
+	autoplayNow          func() time.Time
+	autoplayAfter        func(d time.Duration, fn func()) (cancel func())
+	resolveNextEpisode   func(finished player.PlayContext) (*autoplayNext, error)
+	playAutoplayNext     func(next autoplayNext) map[string]any
+	clearCompleted       func()
 }
 
 type iptvRecovery struct {
@@ -84,6 +90,7 @@ func (s *Server) invalidatePlay() {
 func New(p *player.Player) *Server {
 	s := &Server{player: p, webFS: web.FS(), version: "dev", latestSwitch: map[string]int{}, iptvRecoveries: map[string]*iptvRecovery{}}
 	s.dlna = dlna.New(p, func() int { return s.port })
+	s.discovery = discovery.New()
 	p.PlaybackStartedReporter = s.recordIPTVPlaybackStarted
 	p.LiveInterruptionReporter = s.recoverIPTV
 	// Website window and mpv are mutually exclusive.
@@ -256,6 +263,13 @@ func (s *Server) SetPort(port int) {
 	if config.Load().DLNAReceiverEnabled {
 		s.dlna.Start()
 	}
+	// Advertise only once the real port is known: the QR code and the phone's
+	// rediscovery must agree, and we may have fallen back off a busy port.
+	// Unlike the DLNA receiver this carries no user-facing switch — it publishes
+	// a name, an installation id and a port that the QR code already hands to
+	// anyone who can see the screen, and it is what lets an already-paired phone
+	// survive a DHCP lease change.
+	s.discovery.Start(port, config.InstallationID(), desktopDeviceName())
 }
 
 func (s *Server) refreshDLNAReceiver(enabled bool) {
@@ -402,6 +416,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /desktop/website/controller.js", s.websiteControllerJS)
 	mux.HandleFunc("GET /desktop/input/poll", s.desktopInputPoll)
 	mux.HandleFunc("POST /desktop/input/report", s.desktopInputReport)
+	mux.HandleFunc("POST /desktop/display/monitor-hint", s.desktopMonitorHintReport)
 
 	// ── Frontend (embedded) ──
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.webFS))))

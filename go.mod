@@ -16,6 +16,7 @@ require (
 )
 
 require (
+	github.com/grandcat/zeroconf v1.0.0
 	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/itchyny/volume-go v0.2.2
 	golang.org/x/net v0.17.0
@@ -23,10 +24,12 @@ require (
 )
 
 require (
+	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/geoffgarside/ber v1.1.0 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
+	github.com/miekg/dns v1.1.27 // indirect
 	github.com/moutend/go-wca v0.2.0 // indirect
 	golang.org/x/crypto v0.14.0 // indirect
 )

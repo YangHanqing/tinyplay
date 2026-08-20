@@ -361,9 +361,9 @@ func openWindow(url string) {
 			Height: 576,
 			Center: true,
 			// Resource ID of the icon embedded by rsrc (see
-			// .github/workflows/*.yml: `rsrc -ico assets/icon.ico`, no
-			// -manifest, so the icon group is always the first and only
-			// resource, ID 1). Left at the zero value, go-webview2 tries to
+			// .github/workflows/*.yml: `rsrc -ico assets/icon.ico -manifest
+			// cmd/tvremote/app.manifest`; the icon group is still the first
+			// and only icon resource, ID 1). Left at the zero value, go-webview2 tries to
 			// load OEM resource 32512 from our own module instead of a system
 			// module, which doesn't exist here — the window silently falls
 			// back to the generic Windows icon instead of the TinyPlay logo.
@@ -705,6 +705,16 @@ func messageBoxYesNo(title, text string) bool {
 }
 
 func checkForTinyPlayUpdates(manual bool) {
+	// Both callers (the 8s-after-launch background goroutine and the
+	// tinyplayCheckForUpdates Bind handler) funnel through here into native
+	// Win32 calls (showUpdateDialog's TaskDialogIndirect). A panic from a
+	// LazyProc that can't resolve must not take the whole tray app down for
+	// every user who hasn't updated yet — recover and log instead.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Update check panicked, recovered: %v", r)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
 	defer cancel()
 	release, err := findTinyPlayUpdate(ctx, version)
@@ -745,6 +755,20 @@ func showInformation(text string) {
 }
 
 func showUpdateDialog(latestVersion string) int {
+	// TaskDialogIndirect only exists in the side-by-side Common Controls v6
+	// comctl32.dll, activated via app.manifest. If a build ever ships without
+	// that manifest wired in (or on some stripped-down Windows install where
+	// the v6 DLL can't be resolved), LazyProc.Call would panic and take the
+	// whole tray app down the moment a real update is found — i.e. exactly
+	// for users who haven't updated yet. Fail soft into a plain MessageBoxW
+	// instead of crashing.
+	if err := procTaskDialogIndirect.Find(); err != nil {
+		log.Printf("TaskDialogIndirect unavailable, falling back to MessageBoxW: %v", err)
+		if messageBoxYesNo("TinyPlay", i18n.System("update_available_body", latestVersion, version)) {
+			return updateDownloadButton
+		}
+		return updateRemindButton
+	}
 	buttons := []taskDialogButton{
 		{nButtonID: updateDownloadButton, pszButtonText: syscall.StringToUTF16Ptr(i18n.System("update_download"))},
 		{nButtonID: updateRemindButton, pszButtonText: syscall.StringToUTF16Ptr(i18n.System("update_remind"))},

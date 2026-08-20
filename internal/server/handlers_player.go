@@ -229,6 +229,9 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 	opts := playOpts(playbackServer.ID, req.ItemID, req.SeriesID, req.SeasonID,
 		req.Title, req.SeriesTitle, req.EpisodeLabel, req.PosterItemID, startSeconds, mediaSourceID)
 	opts.SourceType = config.NormalizeServerType(playbackServer.Type)
+	// A movie has no series to chain through, so list-loop can only mean
+	// "repeat this film". mpv does that itself — see PlayOptions.LoopFile.
+	opts.LoopFile = loopSingleTitle(req.SeriesID)
 	if !s.isCurrentPlay(generation) {
 		supersededPlay(w)
 		return

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+TinyPlay's Windows manifest. Its one job today: declare the Common Controls
+v6 side-by-side dependency so TaskDialogIndirect (used by the update-nag
+dialog in shell_windows.go) actually resolves against comctl32.dll v6 instead
+of the ancient v5.82 system stub that doesn't export it at all. Without this,
+TaskDialogIndirect's LazyProc.Call panics the moment a real update is found,
+crashing the whole tray app for every user still on an older build.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*" />
+    </dependentAssembly>
+  </dependency>
+</assembly>

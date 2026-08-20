@@ -612,6 +612,22 @@
             <button class="segment-btn" onclick="setAutoplayNextEpisode(true)" id="autoplay-next-episode-on-btn"></button>
             <button class="segment-btn" onclick="setAutoplayNextEpisode(false)" id="autoplay-next-episode-off-btn"></button>
           </div>
+          <div class="settings-sub-row hidden" id="autoplay-countdown-row">
+            <p class="settings-sub-label" id="autoplay-countdown-label"></p>
+            <div class="segmented-control segmented-control-3" id="autoplay-countdown-segments">
+              <button class="segment-btn" onclick="setAutoplayCountdown(0)" id="autoplay-countdown-0-btn"></button>
+              <button class="segment-btn" onclick="setAutoplayCountdown(5)" id="autoplay-countdown-5-btn"></button>
+              <button class="segment-btn" onclick="setAutoplayCountdown(10)" id="autoplay-countdown-10-btn"></button>
+            </div>
+          </div>
+          <div class="settings-sub-row hidden" id="autoplay-loop-row">
+            <p class="settings-sub-label" id="autoplay-loop-label"></p>
+            <p class="settings-sub-hint" id="autoplay-loop-hint"></p>
+            <div class="segmented-control" id="autoplay-loop-segments">
+              <button class="segment-btn" onclick="setAutoplayLoopList(true)" id="autoplay-loop-on-btn"></button>
+              <button class="segment-btn" onclick="setAutoplayLoopList(false)" id="autoplay-loop-off-btn"></button>
+            </div>
+          </div>
         </section>
 
         <section class="settings-card">
@@ -633,6 +649,17 @@
           <div class="segmented-control" id="remember-title-settings-segments">
             <button class="segment-btn" onclick="setRememberTitleSettings(true)" id="remember-title-settings-on-btn"></button>
             <button class="segment-btn" onclick="setRememberTitleSettings(false)" id="remember-title-settings-off-btn"></button>
+          </div>
+        </section>
+
+        <section class="settings-card">
+          <div class="settings-card-head">
+            <h2 id="force-fullscreen-title"></h2>
+            <p id="force-fullscreen-hint"></p>
+          </div>
+          <div class="segmented-control" id="force-fullscreen-segments">
+            <button class="segment-btn" onclick="setForceFullscreenPlayback(true)" id="force-fullscreen-on-btn"></button>
+            <button class="segment-btn" onclick="setForceFullscreenPlayback(false)" id="force-fullscreen-off-btn"></button>
           </div>
         </section>
 

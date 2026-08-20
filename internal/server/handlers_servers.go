@@ -69,14 +69,17 @@ func (s *Server) runtimeSettings(r *http.Request) map[string]any {
 
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		MpvCacheSecs          *int    `json:"mpv_cache_secs"`
-		Language              *string `json:"language"`
-		SeekBackwardSecs      *int    `json:"seek_backward_secs"`
-		SeekForwardSecs       *int    `json:"seek_forward_secs"`
-		DLNAReceiverEnabled   *bool   `json:"dlna_receiver_enabled"`
-		AutoplayNextEpisode   *bool   `json:"autoplay_next_episode"`
-		KeepPlaybackSpeed     *bool   `json:"keep_playback_speed"`
-		RememberTitleSettings *bool   `json:"remember_title_settings"`
+		MpvCacheSecs            *int    `json:"mpv_cache_secs"`
+		Language                *string `json:"language"`
+		SeekBackwardSecs        *int    `json:"seek_backward_secs"`
+		SeekForwardSecs         *int    `json:"seek_forward_secs"`
+		DLNAReceiverEnabled     *bool   `json:"dlna_receiver_enabled"`
+		AutoplayNextEpisode     *bool   `json:"autoplay_next_episode"`
+		AutoplayCountdownSecs   *int    `json:"autoplay_countdown_secs"`
+		AutoplayLoopList        *bool   `json:"autoplay_loop_list"`
+		KeepPlaybackSpeed       *bool   `json:"keep_playback_speed"`
+		RememberTitleSettings   *bool   `json:"remember_title_settings"`
+		ForceFullscreenPlayback *bool   `json:"force_fullscreen_playback"`
 	}
 	if !decode(r, &body) {
 		invalidBody(w, r)
@@ -111,11 +114,30 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 			s.CancelAutoplay(true)
 		}
 	}
+	if body.AutoplayCountdownSecs != nil {
+		config.SetAutoplayCountdownSecs(*body.AutoplayCountdownSecs)
+	}
+	if body.AutoplayLoopList != nil {
+		config.SetAutoplayLoopList(*body.AutoplayLoopList)
+		if !*body.AutoplayLoopList {
+			// A title already looping in mpv (a movie, a one-item folder) must
+			// stop looping now rather than at the next play — the user just
+			// asked for it to end.
+			s.player.SetLoopFile(false)
+		}
+	}
 	if body.KeepPlaybackSpeed != nil {
 		config.SetKeepPlaybackSpeed(*body.KeepPlaybackSpeed)
 	}
 	if body.RememberTitleSettings != nil {
 		config.SetRememberTitleSettings(*body.RememberTitleSettings)
+	}
+	if body.ForceFullscreenPlayback != nil {
+		config.SetForceFullscreenPlayback(*body.ForceFullscreenPlayback)
+		// Apply immediately rather than waiting for the next title change —
+		// same "don't make the user re-trigger it" reasoning as AutoplayLoopList
+		// above.
+		s.player.SetForceFullscreen(*body.ForceFullscreenPlayback)
 	}
 	writeJSON(w, http.StatusOK, s.runtimeSettings(r))
 }

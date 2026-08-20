@@ -27,6 +27,15 @@ func TestDIDLAudioClassification(t *testing.T) {
 		{"video class", `<upnp:class>object.item.videoItem.movie</upnp:class>`, false},
 		{"audio mime only", `<res protocolInfo="http-get:*:audio/flac:*">http://n/a.flac</res>`, true},
 		{"video mime only", `<res protocolInfo="http-get:*:video/mp4:*">http://n/a.mp4</res>`, false},
+		// With no class, inspect every resource: a video MIME is definitive no
+		// matter where it appears, while one or more audio MIME values are
+		// positive evidence only when no video MIME is present.
+		{"audio then video mime", `<res protocolInfo="http-get:*:audio/flac:*">http://n/a.flac</res>` +
+			`<res protocolInfo="http-get:*:video/mp4:*">http://n/a.mp4</res>`, false},
+		{"video then audio mime", `<res protocolInfo="http-get:*:video/mp4:*">http://n/a.mp4</res>` +
+			`<res protocolInfo="http-get:*:audio/flac:*">http://n/a.flac</res>`, false},
+		{"multiple audio mime", `<res protocolInfo="http-get:*:audio/flac:*">http://n/a.flac</res>` +
+			`<res protocolInfo="http-get:*:audio/mpeg:*">http://n/a.mp3</res>`, true},
 		{"class and matching mime", `<upnp:class>object.item.audioItem.musicTrack</upnp:class>` +
 			`<res protocolInfo="http-get:*:audio/mpeg:DLNA.ORG_PN=MP3">http://n/a.mp3</res>`, true},
 		// A video item whose DIDL also lists a separate audio resource must stay
