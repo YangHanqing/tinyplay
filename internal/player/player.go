@@ -303,9 +303,12 @@ func New() *Player {
 		sessionSpeed:    1.0,
 	}
 	info := DetectMPV()
-	if info.Available {
-		log.Printf("mpv detected: source=%s path=%s", info.Source, info.Path)
-	} else {
+	switch {
+	case info.Available:
+		log.Printf("mpv detected: source=%s path=%s bundled_unusable=%v", info.Source, info.Path, info.BundledUnusable)
+	case info.BundledUnusable:
+		log.Printf("the bundled mpv cannot run on this system and no other mpv was found; playback will be unavailable until an mpv is installed")
+	default:
 		log.Printf("mpv not found; playback will be unavailable until the bundled runtime is restored or mpv is installed in PATH")
 	}
 	go p.propReaderRun()
@@ -336,6 +339,15 @@ type MPVInfo struct {
 	// falling back to bundled" rather than silently showing "bundled".
 	CustomConfigured bool
 	CustomInvalid    bool
+	// BundledUnusable is true when a shipped runtime (the bundled mpv, or the
+	// TVREMOTE_MPV_EXE path the macOS shell points at it) exists on disk but
+	// cannot actually run here, so detection fell through to a system mpv or
+	// to "missing". The one case in the wild is a macOS older than the mpv
+	// build's deployment target: dyld refuses to load the binary, the file is
+	// present and executable, and every stat-based check says it is fine. The
+	// UI needs this to explain why an app that "has mpv built in" is asking
+	// the user to install one.
+	BundledUnusable bool
 }
 
 // DetectMPV selects the first usable runtime, in priority order:
@@ -352,6 +364,15 @@ type MPVInfo struct {
 // Invalid candidates at any step deliberately fall through rather than
 // reporting "missing", so a stale developer env var or a moved/deleted
 // custom executable can never disable a working bundled build.
+//
+// Steps 2, 3 and 4 are probed with runnableMPV, because "the file is there" is
+// not the same as "it runs here": an mpv whose deployment target is newer than
+// this macOS is present, executable and completely dead. Step 4 matters as
+// much as the shipped runtimes, because it is a *list* — an abandoned
+// /opt/homebrew/bin/mpv that is itself too new would otherwise shadow the
+// mpv.app the README tells macOS 12/13 users to install, and the UI would
+// cheerfully report that their own mpv is in use right up until playback dies.
+// Only step 1 is unprobed: a custom path is validated when it is chosen.
 func DetectMPV() MPVInfo {
 	custom := customMPVPath()
 	if custom != "" {
@@ -359,16 +380,23 @@ func DetectMPV() MPVInfo {
 			return MPVInfo{Path: exe, Source: "custom", Available: true, CustomConfigured: true}
 		}
 	}
+	shippedUnusable := false
 	if exe := resolveMPV(os.Getenv("TVREMOTE_MPV_EXE")); exe != "" {
-		return MPVInfo{Path: exe, Source: "env", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != ""}
+		if runnableMPV(exe) {
+			return MPVInfo{Path: exe, Source: "env", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != ""}
+		}
+		shippedUnusable = true
 	}
 	if exe := bundledMPV(); exe != "" {
-		return MPVInfo{Path: exe, Source: "bundled", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != ""}
+		if runnableMPV(exe) {
+			return MPVInfo{Path: exe, Source: "bundled", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != ""}
+		}
+		shippedUnusable = true
 	}
 	if exe := systemMPV(); exe != "" {
-		return MPVInfo{Path: exe, Source: "system", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != ""}
+		return MPVInfo{Path: exe, Source: "system", Available: true, CustomConfigured: custom != "", CustomInvalid: custom != "", BundledUnusable: shippedUnusable}
 	}
-	return MPVInfo{Source: "missing", CustomConfigured: custom != "", CustomInvalid: custom != ""}
+	return MPVInfo{Source: "missing", CustomConfigured: custom != "", CustomInvalid: custom != "", BundledUnusable: shippedUnusable}
 }
 
 // customMPVPath returns the user's persisted custom mpv path, or "" when none
@@ -386,23 +414,94 @@ func customMPVPath() string {
 	return custom
 }
 
-// systemMPV finds an mpv supplied by the operating system. Finder-launched
-// macOS apps do not inherit a shell's Homebrew PATH, so check the two standard
-// Homebrew locations after PATH. This remains a development fallback only:
-// released TinyPlay apps are required to carry their own bundled runtime.
+// systemMPV finds an mpv supplied by the user. Finder-launched macOS apps do
+// not inherit a shell's Homebrew PATH, so check the standard install locations
+// after PATH.
+//
+// mpv.app is in that list because of the macOS 12/13 story: those systems are
+// older than the bundled runtime's deployment target, Homebrew no longer
+// bottles for them, and mpv.org's own macOS download is an mpv.app people drag
+// into /Applications. Finding the executable inside that bundle is what makes
+// "download mpv, open TinyPlay" work with no further configuration — otherwise
+// the user has to know to dig into the .app from the advanced settings picker.
 func systemMPV() string {
-	if exe, err := exec.LookPath("mpv"); err == nil {
+	if exe, err := exec.LookPath("mpv"); err == nil && runnableMPV(exe) {
 		return exe
 	}
 	if runtime.GOOS == "darwin" {
-		for _, candidate := range []string{"/opt/homebrew/bin/mpv", "/usr/local/bin/mpv"} {
-			if exe := resolveMPV(candidate); exe != "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = ""
+		}
+		for _, candidate := range darwinMPVCandidates(home) {
+			if exe := resolveMPV(candidate); exe != "" && runnableMPV(exe) {
 				return exe
 			}
 		}
 	}
 	return ""
 }
+
+// darwinMPVCandidates lists the fixed locations a user-installed mpv lands in,
+// most package-manager-like first. A Homebrew install is the one a developer
+// or a comfortable user chooses deliberately, so it keeps precedence over an
+// mpv.app that may just be sitting in /Applications from an old download.
+func darwinMPVCandidates(home string) []string {
+	candidates := []string{
+		"/opt/homebrew/bin/mpv",
+		"/usr/local/bin/mpv",
+		"/Applications/mpv.app/Contents/MacOS/mpv",
+	}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, "Applications", "mpv.app", "Contents", "MacOS", "mpv"))
+	}
+	return candidates
+}
+
+// runnableMPV answers whether a shipped mpv can actually start on this
+// machine, cached per (path, size, mtime) for the life of the process.
+//
+// DetectMPV runs on every playback command and on every settings read, so the
+// probe must not fork a process each time; it must also not go stale across a
+// reinstall that swaps the binary underneath us, hence the stat identity in
+// the cache key rather than the path alone.
+func runnableMPV(path string) bool {
+	st, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	key := mpvProbeKey{path: path, size: st.Size(), mod: st.ModTime()}
+	mpvProbeMu.Lock()
+	ok, cached := mpvProbeCache[key]
+	mpvProbeMu.Unlock()
+	if cached {
+		return ok
+	}
+	err = ValidateMPV(path)
+	ok = err == nil
+	if !ok {
+		// Worth a log line the first time each candidate is observed: this is
+		// the only place that distinguishes "no mpv" from "an mpv that is
+		// there and cannot run".
+		log.Printf("mpv at %s cannot run here (%v); looking for another one", path, err)
+	}
+	mpvProbeMu.Lock()
+	mpvProbeCache[key] = ok
+	mpvProbeMu.Unlock()
+	return ok
+}
+
+type mpvProbeKey struct {
+	path string
+	size int64
+	mod  time.Time
+}
+
+var (
+	mpvProbeMu    sync.Mutex
+	mpvProbeCache = map[mpvProbeKey]bool{}
+)
 
 func resolveMPV(candidate string) string {
 	if candidate == "" {
@@ -453,7 +552,9 @@ func ValidateMPV(path string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), validateMPVTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
+	cmd := exec.CommandContext(ctx, path, "--version")
+	hideConsole(cmd)
+	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("%s did not respond within %s", path, validateMPVTimeout)
 	}

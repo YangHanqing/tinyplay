@@ -117,7 +117,32 @@ jobs:
           go-version: "1.22"
 
       - name: Build Go core (${{ matrix.goarch }})
-        run: GOOS=darwin GOARCH=${{ matrix.goarch }} go build -o build/tvremote-core-darwin-${{ matrix.goarch }} ./cmd/tvremote
+        # Pin the deployment target, do not turn cgo off. On the native arm64
+        # leg cgo is on, the external linker runs, and it stamps
+        # LC_BUILD_VERSION minos with the runner's SDK (14.0 on macos-14) -
+        # dyld then refuses to start the core on macOS 12/13, which is
+        # invisible here and fatal there. Pinning gives minos 12.0 against the
+        # newer SDK and changes nothing else; CGO_ENABLED=0 would also fix the
+        # floor but would silently swap darwin's cgo DNS resolver for the pure
+        # Go one on every Apple Silicon install, which is a behaviour change
+        # for users who are not affected by the bug. The x86_64 leg
+        # cross-compiles with cgo off already, where these vars are inert.
+        run: MACOSX_DEPLOYMENT_TARGET=12.0 CGO_CFLAGS=-mmacosx-version-min=12.0 CGO_LDFLAGS=-mmacosx-version-min=12.0 GOOS=darwin GOARCH=${{ matrix.goarch }} go build -o build/tvremote-core-darwin-${{ matrix.goarch }} ./cmd/tvremote
+
+      - name: Verify the core's deployment target
+        # The bug this pin fixes shipped because nothing checked: v1.0.5
+        # advertised macOS 12 in LSMinimumSystemVersion and shipped a core
+        # stamped minos 14.0. LSMinimumSystemVersion is a claim; LC_BUILD_VERSION
+        # is the fact dyld enforces. Fail the build rather than ship that again.
+        run: |
+          set -euo pipefail
+          bin="build/tvremote-core-darwin-${{ matrix.goarch }}"
+          minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
+          echo "core minos: ${minos:-<none>}"
+          case "$minos" in
+            10.*|11.*|12.0) ;;
+            *) echo "core requires macOS $minos but TinyPlay advertises 12.0" >&2; exit 1 ;;
+          esac
 
       - name: Install packaging tools (dylibbundler, create-dmg)
         run: brew install dylibbundler create-dmg

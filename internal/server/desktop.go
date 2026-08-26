@@ -1328,15 +1328,28 @@ func (s *Server) desktopStandbyDLNA(lang string) string {
 // mpv path (advanced settings) also gets its own, lower-severity notice: the
 // app is not broken (it silently fell back to the bundled runtime), but a
 // user who set that path on purpose should know it stopped being used.
+//
+// A bundled runtime that cannot run on this macOS outranks both: it is the
+// only failure whose fix is "go install mpv yourself", so it must not be
+// reported as the generic "mpv was not found, reinstall TinyPlay" - that
+// advice would send the person round the same loop forever. It has two
+// severities: an error when nothing else was found, and a warning when a
+// system mpv is already carrying playback.
 func desktopNotices(lang string, denied bool, mpv player.MPVInfo) string {
 	notices := ""
 	if denied {
 		notices += fmt.Sprintf(`<section class="notice error" role="alert"><strong>%s</strong><span>%s</span></section>`,
 			i18n.T(lang, "desktop_network_denied_title"), i18n.T(lang, "desktop_network_denied_body"))
 	}
-	if !mpv.Available {
+	if !mpv.Available && mpv.BundledUnusable {
+		notices += fmt.Sprintf(`<section class="notice error" role="alert"><strong>%s</strong><span>%s</span></section>`,
+			i18n.T(lang, "desktop_mpv_too_new_title"), i18n.T(lang, "desktop_mpv_too_new_body"))
+	} else if !mpv.Available {
 		notices += fmt.Sprintf(`<section class="notice error" role="alert"><strong>%s</strong><span>%s</span></section>`,
 			i18n.T(lang, "desktop_mpv_missing_title"), i18n.T(lang, "desktop_mpv_missing_body"))
+	} else if mpv.BundledUnusable {
+		notices += fmt.Sprintf(`<section class="notice warning" role="status"><strong>%s</strong><span>%s</span></section>`,
+			i18n.T(lang, "desktop_mpv_too_new_title"), i18n.T(lang, "desktop_mpv_too_new_fallback"))
 	} else if mpv.CustomInvalid {
 		notices += fmt.Sprintf(`<section class="notice warning" role="status"><strong>%s</strong><span>%s</span></section>`,
 			i18n.T(lang, "desktop_mpv_custom_invalid_title"), i18n.T(lang, "desktop_mpv_custom_invalid_body"))

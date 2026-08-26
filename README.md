@@ -53,6 +53,27 @@ Download the latest build from [GitHub Releases](../../releases/latest).
 
 The phone and the computer running TinyPlay must be on the same local network.
 
+### System requirements
+
+| System | Status |
+| --- | --- |
+| Windows 10 (1607) or later, 64-bit | Ready to play out of the box |
+| macOS 14 or later (Apple Silicon or Intel) | Ready to play out of the box |
+| macOS 12 - 13 | Works, but you need to install mpv yourself (see below) |
+
+**macOS 12 and 13.** TinyPlay itself runs, but the mpv player bundled in the
+DMG is built for macOS 14 and newer, so those systems refuse to start it.
+Install mpv yourself and TinyPlay will use it automatically:
+
+1. Download mpv for macOS from [mpv.io](https://mpv.io/installation/) (the
+   macOS download is an `mpv.app`; on Apple Silicon that build runs through
+   Rosetta).
+2. Drag `mpv.app` into your **Applications** folder.
+3. Restart TinyPlay. It looks for mpv in `/Applications`, in your personal
+   `~/Applications`, and in the usual Homebrew locations - no configuration
+   needed. If you keep mpv somewhere else, point at it from the menu-bar
+   **Advanced Settings -> Custom MPV Player**.
+
 ## Getting Started
 
 For screenshots, feature walkthroughs, and the living-room player buying guide,

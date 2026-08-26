@@ -63,6 +63,10 @@ func (s *Server) runtimeSettings(r *http.Request) map[string]any {
 	// went stale" — see internal/player.MPVInfo.
 	settings["mpv_custom_configured"] = mpv.CustomConfigured
 	settings["mpv_custom_invalid"] = mpv.CustomInvalid
+	// bundled_unusable is the macOS 12/13 case: a bundled mpv is present but
+	// too new for this system to load, so playback depends on a user-supplied
+	// mpv. See internal/player.MPVInfo.
+	settings["mpv_bundled_unusable"] = mpv.BundledUnusable
 	settings["dlna_receiver_status"] = s.dlnaReceiverStatus()
 	return settings
 }

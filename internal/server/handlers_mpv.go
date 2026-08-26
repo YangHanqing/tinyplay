@@ -30,6 +30,9 @@ func (s *Server) mpvStatus(w http.ResponseWriter, r *http.Request) {
 		"available":         info.Available,
 		"custom_configured": info.CustomConfigured,
 		"custom_valid":      info.CustomConfigured && !info.CustomInvalid,
+		// bundled_unusable lets both shells' tray tooltip stop claiming "using
+		// the bundled mpv player" on a system that cannot run it.
+		"bundled_unusable": info.BundledUnusable,
 	})
 }
 
@@ -71,5 +74,8 @@ func (s *Server) mpvSetCustom(w http.ResponseWriter, r *http.Request) {
 		"available":         info.Available,
 		"custom_configured": info.CustomConfigured,
 		"custom_valid":      info.CustomConfigured && !info.CustomInvalid,
+		// bundled_unusable lets both shells' tray tooltip stop claiming "using
+		// the bundled mpv player" on a system that cannot run it.
+		"bundled_unusable": info.BundledUnusable,
 	})
 }

@@ -28,7 +28,8 @@ run:
 ## build-core-mac: the macOS core binary for ARCH (arm64 or x86_64; the native
 ## shell app bundles this)
 build-core-mac:
-	GOOS=darwin GOARCH=$(GOARCH_MAC) go build -ldflags "-X main.version=$(VERSION)" -o build/tvremote-core-darwin-$(GOARCH_MAC) ./cmd/tvremote
+	MACOSX_DEPLOYMENT_TARGET=12.0 CGO_CFLAGS=-mmacosx-version-min=12.0 CGO_LDFLAGS=-mmacosx-version-min=12.0 \
+		GOOS=darwin GOARCH=$(GOARCH_MAC) go build -ldflags "-X main.version=$(VERSION)" -o build/tvremote-core-darwin-$(GOARCH_MAC) ./cmd/tvremote
 
 ## build-core-win: the Windows exe (tray + WebView2 shell, no console window)
 build-core-win:

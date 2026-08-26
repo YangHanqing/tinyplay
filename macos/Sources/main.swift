@@ -73,6 +73,8 @@ private func L(_ key: String) -> String {
 		"mpv_custom_active_tip": ("当前使用自定义 mpv：%@", "Using custom mpv: %@"),
 		"mpv_default_tip": ("当前使用内嵌 mpv 播放器", "Using the bundled mpv player"),
 		"mpv_custom_stale_tip": ("自定义路径已失效，正在使用内嵌 mpv", "Custom path is no longer valid; using the bundled mpv"),
+		"mpv_too_new_tip": ("内置 mpv 无法在此系统运行，当前使用：%@", "The bundled mpv cannot run on this system; using: %@"),
+		"mpv_too_new_missing_tip": ("内置 mpv 无法在此系统运行，请从 mpv.io 安装 mpv", "The bundled mpv cannot run on this system. Install mpv from mpv.io."),
 		"webcache_menu": ("网页缓存", "Web Cache"),
 		"webcache_menu_tip": ("内置浏览器的缓存占用与上限", "Built-in browser cache usage and limit"),
 		"webcache_clear": ("清除缓存", "Clear Cache"),
@@ -1308,8 +1310,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 			let path = status["path"] as? String ?? ""
 			let customConfigured = status["custom_configured"] as? Bool ?? false
 			let customValid = status["custom_valid"] as? Bool ?? false
+			// A bundled runtime this macOS cannot start (older than the mpv
+			// build's deployment target) must not be reported as "using the
+			// bundled mpv player" - that is the one reading that stops the
+			// user from installing the mpv they actually need.
+			let bundledUnusable = status["bundled_unusable"] as? Bool ?? false
+			let available = status["available"] as? Bool ?? false
 			let tooltip: String
-			if customConfigured && !customValid {
+			// Order matches desktopNotices: a shipped runtime that cannot
+			// start outranks a stale custom path, because with both true the
+			// stale-path wording would claim the bundled mpv is in use.
+			if bundledUnusable && available {
+				tooltip = String(format: L("mpv_too_new_tip"), path)
+			} else if bundledUnusable {
+				tooltip = L("mpv_too_new_missing_tip")
+			} else if customConfigured && !customValid {
 				tooltip = L("mpv_custom_stale_tip")
 			} else if source == "custom" {
 				tooltip = String(format: L("mpv_custom_active_tip"), path)

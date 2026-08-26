@@ -40,6 +40,7 @@ type mpvStatusResponse struct {
 	Available        bool   `json:"available"`
 	CustomConfigured bool   `json:"custom_configured"`
 	CustomValid      bool   `json:"custom_valid"`
+	BundledUnusable  bool   `json:"bundled_unusable"`
 }
 
 func fetchMPVStatus(coreURL string) (mpvStatusResponse, error) {
@@ -99,10 +100,17 @@ func setCustomMPV(coreURL, path string) (mpvStatusResponse, error) {
 }
 
 // mpvStatusTooltip renders the tray tooltip line for the current mpv state,
-// mirroring the wording desktop.go's warning notice uses for the "custom path
-// went stale" case so the two surfaces agree.
+// mirroring the wording desktop.go's notices use so the two surfaces agree --
+// including their order. A shipped runtime that cannot start outranks a stale
+// custom path: with both true (a leftover custom path on a system too old for
+// the bundled mpv) the stale-path wording would say the bundled player is in
+// use, which is the exact false statement this state exists to prevent.
 func mpvStatusTooltip(status mpvStatusResponse) string {
 	switch {
+	case status.BundledUnusable && status.Available:
+		return fmt.Sprintf(i18n.System("mpv_too_new_tip"), status.Path)
+	case status.BundledUnusable:
+		return i18n.System("mpv_too_new_missing_tip")
 	case status.CustomConfigured && !status.CustomValid:
 		return i18n.System("mpv_custom_stale_tip")
 	case status.Source == "custom":

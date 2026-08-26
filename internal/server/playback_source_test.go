@@ -23,7 +23,17 @@ func TestActivatingAnotherLibraryDoesNotStopPlayback(t *testing.T) {
 	if err := os.WriteFile(script, []byte("sleep 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TVREMOTE_MPV_EXE", "/bin/sh")
+	// The stub has to answer `--version` like mpv: DetectMPV probes the
+	// runtime it is about to select (see player.runnableMPV), so a bare
+	// /bin/sh here would be rejected and detection would silently fall
+	// through to whatever real mpv the machine running the tests happens to
+	// have - which passes on a developer Mac and fails on a clean runner,
+	// while spawning a real player window in between.
+	fakeMPV := filepath.Join(data, "fake-mpv.sh")
+	if err := os.WriteFile(fakeMPV, []byte("#!/bin/sh\ncase \"$1\" in --version) echo 'mpv 0.0.0-test'; exit 0;; esac\nsleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TVREMOTE_MPV_EXE", fakeMPV)
 
 	a := config.AddServer(config.Server{Name: "A", Type: "emby", Hosts: []string{"a-primary", "a-backup"}})
 	b := config.AddServer(config.Server{Name: "B", Type: "emby", Hosts: []string{"b-primary", "b-backup"}})

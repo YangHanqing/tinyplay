@@ -29,6 +29,16 @@ SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\TinyPlay.exe
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
+; Windows 10 1607 is the real floor, and without this directive Inno's default
+; (6.1sp1) lets Windows 7/8.1 install happily and then fail silently: the Go
+; runtime needs ProcessPrng from bcryptprimitives.dll (Windows 10), and the
+; bundled mpv.exe statically imports AdjustWindowRectExForDpi /
+; GetSystemMetricsForDpi (Windows 10 1607) plus the UCRT api-ms-win-crt-*
+; set. TinyPlay.exe is built with -H windowsgui, so on those systems there is
+; no console and no window - the user double-clicks a freshly installed app
+; and nothing whatsoever happens. Failing at install time with a readable
+; message is the only honest outcome.
+MinVersion=10.0.14393
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 CloseApplications=yes

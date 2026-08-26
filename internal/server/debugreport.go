@@ -39,6 +39,9 @@ func (s *Server) playerDebugReport(w http.ResponseWriter, r *http.Request) {
 			"available":         mpvInfo.Available,
 			"custom_configured": mpvInfo.CustomConfigured,
 			"custom_invalid":    mpvInfo.CustomInvalid,
+			// Without this a macOS 12/13 report reads as a plain
+			// source=system (or missing) and hides the actual cause.
+			"bundled_unusable": mpvInfo.BundledUnusable,
 		},
 		"session":          s.player.State(),
 		"source":           activeSourceSummary(),

@@ -286,6 +286,33 @@ func TestDesktopNoticesIncludeMissingMPV(t *testing.T) {
 	}
 }
 
+// TestDesktopNoticesExplainAnUnusableBundledMPV separates the two failures a
+// user cannot tell apart from the symptom. "mpv was not found" tells people to
+// reinstall TinyPlay; on macOS 12/13 that is the one thing that cannot help,
+// because the shipped player is present and simply too new for the system. The
+// fix there is to install mpv yourself, so that case gets its own message --
+// as an error when nothing is playing, and as a warning once a user-installed
+// mpv has taken over.
+func TestDesktopNoticesExplainAnUnusableBundledMPV(t *testing.T) {
+	const lang = "zh-CN"
+
+	dead := desktopNotices(lang, false, player.MPVInfo{Available: false, BundledUnusable: true})
+	if !strings.Contains(dead, i18n.T(lang, "desktop_mpv_too_new_title")) {
+		t.Fatalf("an unusable bundled mpv needs its own notice: %s", dead)
+	}
+	if strings.Contains(dead, i18n.T(lang, "desktop_mpv_missing_title")) {
+		t.Fatalf("must not also advise reinstalling TinyPlay: %s", dead)
+	}
+
+	fellBack := desktopNotices(lang, false, player.MPVInfo{Available: true, BundledUnusable: true})
+	if !strings.Contains(fellBack, i18n.T(lang, "desktop_mpv_too_new_title")) {
+		t.Fatalf("falling back to a system mpv should still be explained: %s", fellBack)
+	}
+	if !strings.Contains(fellBack, "notice warning") {
+		t.Fatalf("working playback must not be reported as an error: %s", fellBack)
+	}
+}
+
 func TestDesktopDLNAStatusReflectsLiveReceiverState(t *testing.T) {
 	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
 	s := &Server{}

@@ -42,6 +42,24 @@ TinyPlay 的思路是：**让硬件负责播放，让手机负责交互。**
 
 手机与运行 TinyPlay 的电脑需要连接到同一个局域网。
 
+### 系统要求
+
+| 系统 | 状态 |
+| --- | --- |
+| Windows 10（1607）及以上，64 位 | 开箱即用 |
+| macOS 14 及以上（Apple Silicon 或 Intel） | 开箱即用 |
+| macOS 12 - 13 | 可用，但需自行安装 mpv（见下） |
+
+**macOS 12 与 13。** TinyPlay 本身可以运行，但 DMG 内置的 mpv 播放器是针对 macOS 14
+及以上构建的，这些系统会拒绝启动它。自行安装 mpv 后，TinyPlay 会自动使用它：
+
+1. 从 [mpv.io](https://mpv.io/installation/) 下载 macOS 版 mpv（下载得到的是
+   `mpv.app`；在 Apple Silicon 上该构建通过 Rosetta 运行）。
+2. 将 `mpv.app` 拖入**“应用程序”**文件夹。
+3. 重新启动 TinyPlay。它会在 `/Applications`、你的个人 `~/Applications` 以及常见的
+   Homebrew 位置查找 mpv，无需任何配置。如果你把 mpv 放在别处，可在菜单栏
+   **“高级设置 → 自定义 MPV 播放器”** 中指定。
+
 ## 使用指南
 
 产品截图、功能说明、使用流程和完整的客厅播放器选购指南，请查看：

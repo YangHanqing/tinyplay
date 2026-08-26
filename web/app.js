@@ -78,7 +78,7 @@ let _moreSheetOpen = false;
 let _aspectSheetOpen = false;
 let _currentAspect = 'fit';
 let _loopFile = false;
-let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true, mpv_available: true, language: 'auto', autoplay_next_episode: true, autoplay_countdown_secs: 5, autoplay_loop_list: false, keep_playback_speed: true, remember_title_settings: false, force_fullscreen_playback: true };
+let _settings = { mpv_cache_secs: 300, seek_backward_secs: 5, seek_forward_secs: 30, dlna_receiver_enabled: true, mpv_available: true, mpv_bundled_unusable: false, language: 'auto', autoplay_next_episode: true, autoplay_countdown_secs: 5, autoplay_loop_list: false, keep_playback_speed: true, remember_title_settings: false, force_fullscreen_playback: true };
 // Display-only countdown: the Go host owns the 5s timer and next-episode
 // transition. These locals only mirror autoplay_remaining_ms from player state.
 let _autoplayCountdownTimer = null;
@@ -4847,6 +4847,10 @@ async function loadSettings() {
       seek_forward_secs: Number(settings.seek_forward_secs) || 30,
       dlna_receiver_enabled: settings.dlna_receiver_enabled !== false,
       mpv_available: settings.mpv_available !== false,
+      // The bundled player being too new for this system is a different
+      // problem from "no player": reinstalling TinyPlay is the one thing that
+      // cannot fix it. See internal/player.MPVInfo.BundledUnusable.
+      mpv_bundled_unusable: settings.mpv_bundled_unusable === true,
       language: settings.language || 'auto',
       autoplay_next_episode: settings.autoplay_next_episode !== false,
       // 0 is a real choice ("no countdown"), so this cannot use `|| 5`.
@@ -4899,7 +4903,8 @@ function renderSettingsUi() {
   const dlnaStatus = document.getElementById('dlna-receiver-status');
   const dlnaCannotPlay = dlnaEnabled && _settings.mpv_available === false;
   if (dlnaStatus) {
-    dlnaStatus.textContent = dlnaCannotPlay ? tr('dlnaReceiverMpvMissing') : '';
+    const dlnaMpvKey = _settings.mpv_bundled_unusable ? 'dlnaReceiverMpvTooNew' : 'dlnaReceiverMpvMissing';
+    dlnaStatus.textContent = dlnaCannotPlay ? tr(dlnaMpvKey) : '';
     dlnaStatus.classList.toggle('hidden', !dlnaCannotPlay);
   }
 
