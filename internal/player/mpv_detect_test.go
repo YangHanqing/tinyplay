@@ -224,7 +224,12 @@ func TestDarwinMPVCandidatesIncludeDraggedInMPVApp(t *testing.T) {
 }
 
 // A machine with no home directory must not produce a bogus relative path.
+// darwin-only: these are POSIX paths, and filepath.IsAbs on Windows rejects
+// them for a reason that says nothing about the code under test.
 func TestDarwinMPVCandidatesSkipUserApplicationsWithoutHome(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only candidate list")
+	}
 	for _, c := range darwinMPVCandidates("") {
 		if !filepath.IsAbs(c) {
 			t.Fatalf("candidate %q is not absolute", c)
