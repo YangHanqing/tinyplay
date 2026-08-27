@@ -10,6 +10,18 @@ import (
 	"tvremote/internal/config"
 )
 
+// requireProbedOS skips a test that depends on runnableMPV actually running
+// the candidate. The probe is macOS-only by design (see runnableMPV): the
+// deployment-target failure it exists for cannot happen anywhere else, and a
+// probe that can veto the shipped player is too dangerous to keep running on
+// systems where it buys nothing.
+func requireProbedOS(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		t.Skip("the shipped-runtime probe only runs on macOS")
+	}
+}
+
 // writeFailingScript drops an executable that starts and then fails, standing
 // in for a bundled mpv the operating system refuses to load (dyld rejecting a
 // binary whose deployment target is newer than this macOS). Skips on Windows
@@ -124,6 +136,7 @@ func TestValidateMPVRejectsRelativePath(t *testing.T) {
 // dies with no explanation. Detection must probe it, fall through to a user
 // -installed mpv, and say why.
 func TestDetectMPVFallsThroughWhenShippedRuntimeCannotRun(t *testing.T) {
+	requireProbedOS(t)
 	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
 	dir := t.TempDir()
 	broken := writeFailingScript(t, dir, "env-mpv")
@@ -148,6 +161,7 @@ func TestDetectMPVFallsThroughWhenShippedRuntimeCannotRun(t *testing.T) {
 // "TinyPlay shipped no player" apart from "TinyPlay's player cannot run
 // here", because only the second one is fixed by installing mpv yourself.
 func TestDetectMPVReportsUnusableShippedRuntimeWithNoAlternative(t *testing.T) {
+	requireProbedOS(t)
 	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
 	dir := t.TempDir()
 	t.Setenv("TVREMOTE_MPV_EXE", writeFailingScript(t, dir, "env-mpv"))
@@ -170,6 +184,7 @@ func TestDetectMPVReportsUnusableShippedRuntimeWithNoAlternative(t *testing.T) {
 // DetectMPV runs on every playback command and every settings read; forking
 // mpv --version each time would put a process spawn on the hot path.
 func TestDetectMPVProbesShippedRuntimeOnlyOnce(t *testing.T) {
+	requireProbedOS(t)
 	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "runs")
@@ -244,11 +259,57 @@ func TestDarwinMPVCandidatesSkipUserApplicationsWithoutHome(t *testing.T) {
 // and the UI would report their own mpv as in use right up until playback
 // dies.
 func TestSystemMPVSkipsACandidateThatCannotRun(t *testing.T) {
+	requireProbedOS(t)
 	dir := t.TempDir()
 	broken := writeFailingScript(t, dir, "mpv")
 	t.Setenv("PATH", dir)
 
 	if got := systemMPV(); got == broken {
 		t.Fatalf("systemMPV() returned %q, which cannot start", got)
+	}
+}
+
+// TestDetectMPVKeepsTheShippedRuntimeOffDarwin is the v1.0.6 Windows
+// regression. The probe was written for one macOS failure but ran everywhere,
+// so on Windows 11 a bundled mpv.exe that is present and works was vetoed by
+// `--version` not answering the way the probe expected: playback reported "no
+// mpv", and the intro page told a Windows user to install macOS 14. Off
+// darwin, a shipped runtime that is there is used.
+func TestDetectMPVKeepsTheShippedRuntimeOffDarwin(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("darwin probes the shipped runtime on purpose")
+	}
+	t.Setenv("TVREMOTE_DATA_DIR", t.TempDir())
+	dir := t.TempDir()
+	shipped := writeFailingScript(t, dir, "env-mpv")
+	t.Setenv("TVREMOTE_MPV_EXE", shipped)
+	config.SetMpvExe("")
+	t.Setenv("PATH", t.TempDir())
+
+	info := DetectMPV()
+	if info.Source != "env" || info.Path != shipped {
+		t.Fatalf("expected the shipped runtime to be selected, got source=%s path=%s", info.Source, info.Path)
+	}
+	if !info.Available || info.BundledUnusable {
+		t.Fatalf("a present shipped runtime must not be reported as unusable off darwin: %+v", info)
+	}
+}
+
+// TestValidateMPVAcceptsASilentButHealthyBinary pins the other half: the
+// custom-path picker runs ValidateMPV directly, and a Windows mpv.exe is a
+// GUI-subsystem binary that need not write anything to a redirected pipe.
+// Exiting 0 is the only signal there is, and rejecting it would tell the user
+// their own working mpv "does not look like mpv".
+func TestValidateMPVAcceptsASilentButHealthyBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake mpv script requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "silent-mpv")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateMPV(path); err != nil {
+		t.Fatalf("expected a silent, successful --version to validate, got %v", err)
 	}
 }

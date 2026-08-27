@@ -466,10 +466,26 @@ func darwinMPVCandidates(home string) []string {
 // probe must not fork a process each time; it must also not go stale across a
 // reinstall that swaps the binary underneath us, hence the stat identity in
 // the cache key rather than the path alone.
+//
+// The probe is deliberately macOS-only. It exists for exactly one failure —
+// dyld refusing a binary whose deployment target is newer than the running
+// macOS — and that failure is invisible to every stat-based check, which is
+// why an actual `--version` is worth its cost there. Everywhere else the
+// probe can only do harm: it is a heuristic ("the process must exit 0 and
+// print something containing mpv") standing between the user and the player
+// that ships with the app, and on Windows it wrongly failed for the bundled
+// mpv.exe on Windows 11 — turning a working install into "mpv not found",
+// with a macOS-worded notice that could never apply. A shipped runtime that
+// is present is therefore selected as-is off darwin, exactly as it was before
+// the probe existed; if it then fails to start, playback reports that failure
+// instead of detection pretending the player was never there.
 func runnableMPV(path string) bool {
 	st, err := os.Stat(path)
 	if err != nil {
 		return false
+	}
+	if runtime.GOOS != "darwin" {
+		return !st.IsDir()
 	}
 	key := mpvProbeKey{path: path, size: st.Size(), mod: st.ModTime()}
 	mpvProbeMu.Lock()
@@ -561,7 +577,12 @@ func ValidateMPV(path string) error {
 	if err != nil {
 		return fmt.Errorf("%s --version failed: %w", path, err)
 	}
-	if !strings.Contains(strings.ToLower(string(out)), "mpv") {
+	// The identity check only applies when there is output to check. A
+	// GUI-subsystem mpv.exe (what the Windows builds ship) is not guaranteed
+	// to write anything to a redirected pipe, and rejecting a binary that
+	// started and exited 0 would tell a Windows user their own, working mpv
+	// "does not look like mpv".
+	if trimmed := strings.TrimSpace(string(out)); trimmed != "" && !strings.Contains(strings.ToLower(trimmed), "mpv") {
 		return fmt.Errorf("%s does not look like mpv", path)
 	}
 	return nil
