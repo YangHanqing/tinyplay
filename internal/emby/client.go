@@ -3,7 +3,7 @@
 //
 // IMPORTANT: this package must stay decoupled from the HTTP server and the mpv
 // player. Its only internal dependency is config. That keeps it reusable for a
-// future tvOS app (via gomobile, or mirrored into Swift) — see CLAUDE.md.
+// future tvOS app (via gomobile, or mirrored into Swift) — see AGENTS.md.
 package emby
 
 import (

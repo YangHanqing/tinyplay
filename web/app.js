@@ -1679,7 +1679,7 @@ function setSpeed(speed) {
 }
 
 // The volume slider controls the OS output level, not mpv's own gain (mpv
-// is pinned at unity gain by the backend) — see docs/CLAUDE.md.
+// is pinned at unity gain by the backend) — see AGENTS.md.
 let _systemVolume = { volume: 80, muted: false };
 
 async function fetchSystemVolume() {
@@ -5479,12 +5479,27 @@ function onServerFormBackdropClick(event) {
   if (event.target.id === 'server-form-backdrop') closeServerForm();
 }
 
+// An address worth splitting into fields: a full URL, or a scheme-less host
+// that still carries a path ("nas.local:5244/dav"). A bare host or host:port
+// stays exactly as typed.
+function isSplittableSourceAddress(raw) {
+  const text = String(raw || '').trim();
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(text) || text.includes('/');
+}
+
 function normalizeSourceInput(type, protocol, hosts, port, rootPath = '', share = '', basePath = '') {
-  if (!hosts.length || !/^[a-z][a-z0-9+.-]*:\/\//i.test(hosts[0])) return { protocol, hosts, port, rootPath, share, basePath };
+  if (!hosts.length || !isSplittableSourceAddress(hosts[0])) return { protocol, hosts, port, rootPath, share, basePath };
   try {
-    const url = new URL(hosts[0]);
+    const raw = hosts[0].trim();
+    const schemeTyped = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
+    // A scheme-less address is read with the selected protocol, and keeps the
+    // port field unless the address names one — only the path was added.
+    const url = new URL(schemeTyped ? raw : `${protocol}://${raw}`);
+    const portTyped = !schemeTyped && /:\d+$/.test(raw.split('/')[0]);
     protocol = type === 'smb' ? protocol : url.protocol.replace(':', '');
-    port = url.port ? Number(url.port) : (protocol === 'https' ? 443 : sourceDefaultPort(type, protocol));
+    if (url.port) port = Number(url.port);
+    else if (portTyped) port = protocol === 'https' ? 443 : 80; // URL drops the scheme's own port
+    else if (schemeTyped) port = protocol === 'https' ? 443 : sourceDefaultPort(type, protocol);
     hosts = [url.hostname, ...hosts.slice(1)].filter(Boolean);
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     if (type === 'webdav' && parts.length && !rootPath) rootPath = parts.join('/');
@@ -5503,7 +5518,7 @@ function normalizeSourceInput(type, protocol, hosts, port, rootPath = '', share 
 function syncPrimaryAddressInput() {
   const input = document.getElementById('form-host0');
   const type = document.getElementById('form-type')?.value || 'emby';
-  if (!input || !/^[a-z][a-z0-9+.-]*:\/\//i.test(input.value.trim())) return;
+  if (!input || !isSplittableSourceAddress(input.value)) return;
   let normalized;
   try {
     normalized = normalizeSourceInput(
@@ -5526,10 +5541,10 @@ function syncPrimaryAddressInput() {
 }
 
 // Once a normalized host is edited, an old hidden base path must not silently
-// follow it to a different server. A complete URL gets its path back on blur.
+// follow it to a different server. An address with a path gets it back on blur.
 function clearBasePathForPlainAddress() {
   const input = document.getElementById('form-host0');
-  if (input && !/^[a-z][a-z0-9+.-]*:\/\//i.test(input.value.trim())) {
+  if (input && !isSplittableSourceAddress(input.value)) {
     const basePath = document.getElementById('form-base-path');
     if (basePath) basePath.value = '';
   }
@@ -5591,7 +5606,8 @@ async function saveAndLogin() {
     const username  = document.getElementById('form-username').value.trim();
     const password  = passwordValueForSave();
     // Hidden state carriers: never directly typed, only ever set by the
-    // folder picker (or, for share, by SMB's share-enumeration browse step).
+    // folder picker (or, for share, by SMB's share-enumeration browse step),
+    // or split out of a pasted full address such as https://host/dav.
     let share       = document.getElementById('form-share').value.trim();
     let rootPath    = document.getElementById('form-root-path').value.trim();
     const domain      = type === 'smb' ? document.getElementById('form-domain').value.trim() : '';
@@ -5604,7 +5620,10 @@ async function saveAndLogin() {
     const operation = beginServerFormOperation();
     setStatus(tr('connecting'));
     if (saveButton) saveButton.disabled = true;
-    const payload = { name, type, protocol, hosts, port, username, share, domain };
+    // root_path must travel with the first save: many WebDAV servers only
+    // answer under a sub-path (/dav, /remote.php/dav/...), so verifying
+    // against the bare host would fail before the picker can open.
+    const payload = { name, type, protocol, hosts, port, username, share, root_path: rootPath, domain };
     try {
       let id = serverId;
       if (serverId) {
@@ -5763,7 +5782,7 @@ function onSourceTypeChange(updatePort = true) {
   const host = document.getElementById('form-host0');
   if (host) {
     host.placeholder = type === 'smb' ? tr('smbHostPlaceholder')
-      : (type === 'webdav' ? 'dav.example.com' : tr('mediaHostPlaceholder'));
+      : (type === 'webdav' ? 'https://dav.example.com/dav' : tr('mediaHostPlaceholder'));
   }
   const username = document.getElementById('form-username');
   const password = passwordInput();
