@@ -19,9 +19,10 @@
 # users may still see a SmartScreen "unknown publisher" prompt.
 #
 # The Intel macOS leg cross-builds from the arm64 runner: the Go core and
-# Swift shell cross-compile natively, but bundling a real x86_64 mpv binary
-# needs an x86_64 Homebrew prefix, which this job installs under Rosetta
-# (adds a few minutes of extra job time versus the native arm64 leg).
+# Swift shell cross-compile natively. Its mpv cannot come from Homebrew any
+# more - the installer aborts on anything but arm64 and mpv has no x86_64
+# macOS bottles - so it ships a frozen, already self-contained x86_64 mpv
+# bundle pinned by SHA-256 (see the intel-only fetch step below).
 
 name: release
 
@@ -147,39 +148,36 @@ jobs:
       - name: Install packaging tools (dylibbundler, create-dmg)
         run: brew install dylibbundler create-dmg
 
-      - name: Install x86_64 Homebrew under Rosetta (intel leg only)
+      - name: Fetch pinned x86_64 mpv bundle (intel leg only)
         if: matrix.arch == 'x86_64'
+        # Homebrew dropped Intel macOS (2026-10: install.sh aborts unless
+        # uname -m is arm64, and mpv's bottles are arm64-only), so the old
+        # "x86_64 Homebrew under Rosetta" step can never succeed again. This
+        # tarball is the dylibbundler output shipped inside the 1.0.7 Intel
+        # DMG (mpv 0.41.0, bin/mpv + bin/libs with @executable_path load
+        # paths), so it needs no further bundling; signing below replaces its
+        # old signatures. Bump the URL and hash together, never one alone.
+        env:
+          MPV_X86_64_URL: https://github.com/YangHanqing/tinyplay/releases/download/deps-mpv-0.41.0-macos-x86_64/mpv-0.41.0-macos-x86_64.tar.gz
+          MPV_X86_64_SHA256: 12d940e9ad906539f7e98f70a24506ba4e90b7304bceccf39e9f99bce03a90eb
         run: |
           set -euo pipefail
-          softwareupdate --install-rosetta --agree-to-license
-          if [ ! -x /usr/local/bin/brew ]; then
-            NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-          fi
-          # GitHub's runner image ships a pre-existing python.org install under
-          # /Library/Frameworks/Python.framework with matching /usr/local/bin
-          # symlinks (idle3, pip3, ...). --overwrite only applies to the
-          # formula named on the command line, not transitive build
-          # dependencies, so when brewing mpv pulls in python@3.x (only to
-          # build man pages) as a dependency, `brew link` on THAT dependency
-          # still aborts on those pre-existing symlinks even with --overwrite
-          # here. mpv itself finishes installing regardless, so tolerate the
-          # failure and verify mpv is actually present instead of treating any
-          # non-zero exit as fatal.
-          arch -x86_64 /usr/local/bin/brew install --overwrite mpv || true
-          if ! arch -x86_64 /usr/local/bin/brew list mpv >/dev/null 2>&1; then
-            echo "mpv did not install successfully" >&2
+          curl -fsSL --retry 3 -o mpv-x86_64.tar.gz "$MPV_X86_64_URL"
+          echo "$MPV_X86_64_SHA256  mpv-x86_64.tar.gz" | shasum -a 256 -c -
+          mkdir -p mpvstage
+          tar -xzf mpv-x86_64.tar.gz -C mpvstage
+          archs=$(lipo -archs mpvstage/bin/mpv)
+          if [ "$archs" != "x86_64" ]; then
+            echo "pinned Intel mpv is $archs, expected x86_64" >&2
             exit 1
           fi
 
       - name: Download & bundle mpv (self-contained via dylibbundler)
+        if: matrix.arch == 'arm64'
         run: |
           set -euo pipefail
-          if [ "${{ matrix.arch }}" = "x86_64" ]; then
-            real_mpv=$(readlink -f /usr/local/bin/mpv)
-          else
-            brew install mpv
-            real_mpv=$(readlink -f "$(brew --prefix)/bin/mpv")
-          fi
+          brew install mpv
+          real_mpv=$(readlink -f "$(brew --prefix)/bin/mpv")
           mkdir -p mpvstage/bin/libs
           cp "$real_mpv" mpvstage/bin/mpv
           chmod u+w mpvstage/bin/mpv
