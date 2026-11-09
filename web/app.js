@@ -514,7 +514,7 @@ function paintWebsiteRemote() {
   if (!searchAvailable && websiteSearchIsOpen()) closeWebsiteSearchSheet();
   // Speed is an allowlisted per-site capability, not a universal control: the
   // server names the mode for the site actually on screen and the phone shows
-  // only that form. Anything else (iQIYI, Youku, Douyin, Netflix, personal
+  // only that form. Anything else (iQIYI, Douyin, Netflix, personal
   // URLs) gets no speed section at all.
   const speedMode = reported ? (_websiteState?.speed_mode || '') : '';
   document.getElementById('website-speed-section')?.classList.toggle('hidden', !speedMode);
@@ -6373,6 +6373,8 @@ const _VIDEO_ICON = '<svg class="file-icon" viewBox="0 0 24 24" fill="none" stro
 // Lucide "music" — decorative; row button carries the accessible label.
 // Path data lives in _LUCIDE_MUSIC_INNER (shared with the remote poster fallback).
 const _AUDIO_ICON = `<svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${_LUCIDE_MUSIC_INNER}</svg>`;
+// Lucide "image" — decorative; row button carries the accessible label.
+const _IMAGE_ICON = '<svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>';
 const _CHEVRON_ICON = '<svg class="file-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
 
 function fileRowHtml(e) {
@@ -6383,6 +6385,13 @@ function fileRowHtml(e) {
       <span class="file-name">${esc(e.name)}</span>
       ${_CHEVRON_ICON}
     </button>`;
+  }
+  if (e.is_image) {
+    return `<button class="file-row file-video file-image" onclick="showImage('${jsStr(e.path)}', '${jsStr(e.name)}', '${jsStr(serverId)}')">
+    ${_IMAGE_ICON}
+    <span class="file-name">${esc(e.name)}</span>
+    <span class="file-size">${fmtSize(e.size)}</span>
+  </button>`;
   }
   const icon = e.is_audio ? _AUDIO_ICON : _VIDEO_ICON;
   return `<button class="file-row file-video" onclick="playFile('${jsStr(e.path)}', '${jsStr(e.name)}', '${jsStr(serverId)}', ${e.is_audio ? 'true' : 'false'})">
@@ -6430,6 +6439,30 @@ async function playFile(path, name, serverId, isAudio = false) {
   } catch (e) {
     toast(e.message, true);
     setNowPlaying('');
+  }
+}
+
+// A picture goes to the TV full-screen, but the phone stays in the folder:
+// browsing photos is tap, look, tap the next one — a jump to the remote tab
+// after every picture would make that a two-step chore.
+async function showImage(path, name, serverId) {
+  if (!serverId) return;
+  _hadProps = false;
+  _loopFile = false;
+  currentItemId = '';
+  currentSeriesId = '';
+  currentSeasonId = '';
+  currentSeriesTitle = '';
+  currentEpisodeLabel = '';
+  currentPosterItemId = '';
+  currentItemIsSeries = false;
+  currentItemIsAudioOnly = false;
+  _playbackServerId = serverId;
+  setNowPlaying(name, {});
+  try {
+    await api('POST', '/api/player/play', { server_id: serverId, path, title: name });
+  } catch (e) {
+    toast(e.message, true);
   }
 }
 

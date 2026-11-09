@@ -124,6 +124,9 @@ type PlayOptions struct {
 	// never reports EOF while it is set, the autoplay chain is deliberately
 	// bypassed for these titles.
 	LoopFile bool
+	// SubtitleURLs are external subtitle files (sidecar .srt/.ass next to a
+	// file-source video) loaded as extra subtitle tracks. See subfiles.go.
+	SubtitleURLs []string
 }
 
 // Player owns the mpv process and its IPC connection.
@@ -1375,6 +1378,10 @@ func initialMPVArgs(url, socket string) []string {
 		// what audio-only playback used to request on its own (a song with no
 		// embedded cover art otherwise opens no window at all) — see audioart.go.
 		"--force-window=yes",
+		// A picture from a file source must stay on screen until the viewer
+		// moves on. mpv's default (1s) would end it at once, leaving the
+		// forced black window behind. No effect on audio or video items.
+		"--image-display-duration=inf",
 	}
 }
 
@@ -1461,6 +1468,9 @@ func (p *Player) loadInReusedProcess(url string, opt PlayOptions, startValue str
 	// artwork — left in place it outranks the incoming item's video track
 	// and the film plays as a still image.
 	p.applyAudioPresentation(audioPresentation{opt.AudioOnly, opt.CoverArtURL})
+	// Same timing and same "always set, also to empty" rule as cover art.
+	p.applySubtitleFiles(opt.SubtitleURLs)
+	p.send([]any{"set_property", "image-display-duration", "inf"})
 	result := p.send([]any{"loadfile", url, "replace"})
 	if !mpvCommandOK(result) {
 		// Nothing was loaded, so the settings below would only decorate the
@@ -1599,6 +1609,7 @@ func (p *Player) Play(url string, opt PlayOptions) map[string]any {
 		}
 		args = append(args, aspectArgs()...)
 		args = append(args, audioPresentation{opt.AudioOnly, opt.CoverArtURL}.args()...)
+		args = append(args, subtitleFileArgs(opt.SubtitleURLs)...)
 		args = append(args, mpvHTTPHeaderArgs(opt.HTTPHeaders)...)
 		// Startup flags, not set_property: the IPC pipe is not connected yet
 		// on a fresh process. Explicit --speed also covers keep_playback_speed

@@ -234,7 +234,8 @@ const (
 // Speed modes. Playback speed is not a universal capability: it is offered only
 // where we have verified a way to change it that respects the site's own player.
 //
-//	SpeedModeRate — write playbackRate directly (fixed 1×/1.25×/1.5×/2× buttons).
+//	SpeedModeRate — absolute rate (fixed 1×/1.25×/1.5×/2× buttons), through
+//	                a verified site API where required.
 //	SpeedModeStep — no absolute set; press the site's own faster/slower shortcut
 //	                and let it walk its own speed ladder.
 //	SpeedModeNone — no speed control at all, and the phone hides the section.
@@ -254,7 +255,7 @@ const (
 // Unknown/custom hosts get SpeedModeNone.
 func SpeedModeForSite(siteID string) string {
 	switch strings.TrimSpace(siteID) {
-	case SiteBilibili, SiteTencent:
+	case SiteBilibili, SiteTencent, SiteYouku:
 		return SpeedModeRate
 	case SiteYouTube:
 		// YouTube has documented Shift+> / Shift+< shortcuts that move through

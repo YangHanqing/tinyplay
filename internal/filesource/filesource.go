@@ -39,7 +39,10 @@ type Entry struct {
 	// IsAudio is independent of IsVideo: a playable audio file, never a
 	// video. Clients that only understand is_video keep working; the phone
 	// UI uses is_audio for the music glyph.
-	IsAudio bool  `json:"is_audio"`
+	IsAudio bool `json:"is_audio"`
+	// IsImage marks a picture (photo). It is shown full-screen on the TV and
+	// never takes part in autoplay — see NextVideo.
+	IsImage bool  `json:"is_image"`
 	Size    int64 `json:"size"`
 }
 type Crumb struct {
@@ -97,9 +100,29 @@ func isVideo(name string) bool { return videoExtensions[strings.ToLower(filepath
 // that decision must be made from this one table — never guessed.
 func IsAudio(name string) bool { return audioExtensions[strings.ToLower(filepath.Ext(name))] }
 
-// isListedFile keeps directories plus playable video/audio; everything else
-// (subs, nfo, images, …) stays hidden from the folder browser.
-func isListedFile(name string) bool { return isVideo(name) || IsAudio(name) }
+// imageExtensions are still pictures mpv (FFmpeg) decodes and shows full-screen.
+// HEIC is left out: the bundled FFmpeg builds do not all decode it, and a row
+// that opens a black screen is worse than no row.
+var imageExtensions = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+	".bmp": true, ".tif": true, ".tiff": true,
+}
+
+// subtitleExtensions are text subtitle formats loaded next to a video as
+// external tracks. VobSub (.idx/.sub) is excluded: it is a pair of files and
+// .sub alone is ambiguous with MicroDVD.
+var subtitleExtensions = map[string]bool{".srt": true, ".ass": true, ".ssa": true, ".vtt": true}
+
+// IsImage reports whether name's extension is a displayable picture.
+func IsImage(name string) bool { return imageExtensions[strings.ToLower(filepath.Ext(name))] }
+
+func isSubtitle(name string) bool {
+	return subtitleExtensions[strings.ToLower(filepath.Ext(name))]
+}
+
+// isListedFile keeps directories plus playable video/audio and pictures;
+// everything else (subs, nfo, …) stays hidden from the folder browser.
+func isListedFile(name string) bool { return isVideo(name) || IsAudio(name) || IsImage(name) }
 func segments(path string) ([]string, error) {
 	out := []string{}
 	for _, raw := range strings.Split(strings.ReplaceAll(path, "\\", "/"), "/") {
@@ -149,6 +172,7 @@ func entry(segs []string, name string, dir bool, size int64) Entry {
 		IsDir:   dir,
 		IsVideo: !dir && isVideo(name),
 		IsAudio: !dir && IsAudio(name),
+		IsImage: !dir && IsImage(name),
 		Size:    size,
 	}
 }
@@ -167,13 +191,20 @@ func (c *Client) ListDir(path string) (Listing, error) {
 	if e != nil {
 		return Listing{}, e
 	}
+	return c.listDir(segs, isListedFile)
+}
+
+// listDir lists one folder keeping directories plus the files keep accepts.
+// ListDir uses the browser's filter; SidecarSubtitles asks for subtitles,
+// which the browser deliberately hides.
+func (c *Client) listDir(segs []string, keep func(string) bool) (Listing, error) {
 	switch c.kind() {
 	case "local", "nfs":
-		return c.listLocal(segs)
+		return c.listLocal(segs, keep)
 	case "webdav":
-		return c.listWebDAV(segs)
+		return c.listWebDAV(segs, keep)
 	case "smb":
-		return c.listSMB(segs)
+		return c.listSMB(segs, keep)
 	default:
 		return Listing{}, errf(400, "Unsupported file source type: %s", c.kind())
 	}
@@ -265,7 +296,7 @@ func (c *Client) localPath(segs []string) (string, error) {
 	return full, nil
 }
 
-func (c *Client) listLocal(segs []string) (Listing, error) {
+func (c *Client) listLocal(segs []string, keep func(string) bool) (Listing, error) {
 	if _, _, drivePicker := c.localBase(segs); drivePicker {
 		return c.listing(segs, driveEntries()), nil
 	}
@@ -286,7 +317,7 @@ func (c *Client) listLocal(segs []string) (Listing, error) {
 	out := []Entry{}
 	for _, item := range items {
 		dir := item.IsDir()
-		if !dir && !isListedFile(item.Name()) {
+		if !dir && !keep(item.Name()) {
 			continue
 		}
 		size := int64(0)
@@ -368,7 +399,7 @@ func fmtPort(p int) string {
 	return fmt.Sprintf("%d", p)
 }
 
-func (c *Client) listWebDAV(segs []string) (Listing, error) {
+func (c *Client) listWebDAV(segs []string, keep func(string) bool) (Listing, error) {
 	u, e := c.remoteURL(segs)
 	if e != nil {
 		return Listing{}, e
@@ -423,7 +454,7 @@ func (c *Client) listWebDAV(segs []string) (Listing, error) {
 				size = ps.Prop.Length
 			}
 		}
-		if !dir && !isListedFile(name) {
+		if !dir && !keep(name) {
 			continue
 		}
 		out = append(out, entry(segs, name, dir, size))
@@ -538,7 +569,7 @@ func (c *Client) withSMBContext(ctx context.Context, segs []string, fn func(*smb
 //     already clicked into and segs[1:] is the sub-path within it.
 //   - Share != "": the normal, already-configured case — browse
 //     RootPath+segs within the stored share.
-func (c *Client) listSMB(segs []string) (Listing, error) {
+func (c *Client) listSMB(segs []string, keep func(string) bool) (Listing, error) {
 	share := strings.TrimSpace(c.server.Share)
 	pathSegs := append(segments0(c.server.RootPath), segs...)
 	if share == "" {
@@ -579,7 +610,7 @@ func (c *Client) listSMB(segs []string) (Listing, error) {
 		}
 		for _, item := range items {
 			dir := item.IsDir()
-			if !dir && !isListedFile(item.Name()) {
+			if !dir && !keep(item.Name()) {
 				continue
 			}
 			out = append(out, entry(segs, item.Name(), dir, item.Size()))

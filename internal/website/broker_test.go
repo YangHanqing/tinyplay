@@ -495,6 +495,7 @@ func TestSpeedFormsAreSiteScoped(t *testing.T) {
 	}{
 		{SiteBilibili, "https://www.bilibili.com/video/BV1", SpeedModeRate, true, false},
 		{SiteTencent, "https://v.qq.com/x/cover/1", SpeedModeRate, true, false},
+		{SiteYouku, "https://v.youku.com/v_show/id_test.html", SpeedModeRate, true, false},
 		{SiteYouTube, "https://www.youtube.com/watch?v=x", SpeedModeStep, false, true},
 		{SiteIQIYI, "https://www.iqiyi.com/v_1.html", SpeedModeNone, false, false},
 		{SiteNetflix, "https://www.netflix.com/watch/1", SpeedModeNone, false, false},
@@ -834,7 +835,7 @@ func TestControllerJSHintAndSiteContracts(t *testing.T) {
 		t.Fatal("bilibili/iqiyi SITE_KEYS host tests missing")
 	}
 	// Version gate must re-inject after controller upgrades.
-	if !contains(js, "__version >= 25") {
+	if !contains(js, "__version >= 28") {
 		t.Fatal("controller version gate missing")
 	}
 	// Site profiles keep their shortcut contracts even though speed is gone

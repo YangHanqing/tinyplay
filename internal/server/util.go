@@ -35,6 +35,20 @@ func applyFileAudioPresentation(opts *player.PlayOptions, path string, port int)
 	opts.CoverArtURL = player.FallbackCoverArtURL(port)
 }
 
+// sidecarSubtitleURLs pairs the subtitle files beside a file-source video and
+// returns them as loopback proxy URLs, the same way the video itself reaches
+// mpv. Audio and pictures never get subtitles.
+func (s *Server) sidecarSubtitleURLs(files *filesource.Client, serverID, path string) []string {
+	if files == nil || filesource.IsAudio(path) || filesource.IsImage(path) {
+		return nil
+	}
+	var urls []string
+	for _, sub := range files.SidecarSubtitles(path) {
+		urls = append(urls, s.fileStreamPlayURL(serverID, sub))
+	}
+	return urls
+}
+
 // fileStreamPlayURL builds the loopback streaming-proxy URL used for every
 // file-source play (manual handler and host autoplay). Kept in one place so
 // the two call sites cannot drift on query shape or host/port.

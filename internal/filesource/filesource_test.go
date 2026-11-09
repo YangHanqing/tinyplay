@@ -97,11 +97,18 @@ func TestLocalBrowseIncludesAudio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listing.Entries) != 3 {
-		t.Fatalf("want 3 audio files, got %#v", listing.Entries)
+	// 3 audio files + the cover picture (listed as an image since issue #5).
+	if len(listing.Entries) != 4 {
+		t.Fatalf("want 3 audio files + 1 image, got %#v", listing.Entries)
 	}
 	for _, e := range listing.Entries {
-		if e.IsDir || e.IsVideo || !e.IsAudio {
+		if e.Name == "cover.jpg" {
+			if !e.IsImage || e.IsAudio || e.IsVideo {
+				t.Fatalf("cover.jpg must be is_image only: %#v", e)
+			}
+			continue
+		}
+		if e.IsDir || e.IsVideo || !e.IsAudio || e.IsImage {
 			t.Fatalf("audio listing entry must be is_audio only: %#v", e)
 		}
 	}
@@ -122,14 +129,17 @@ func TestLocalBrowseMixedVideoAndAudio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// dirs first, then files sorted by name: episode.mkv, theme.mp3
-	if len(listing.Entries) != 3 {
-		t.Fatalf("want folder + video + audio, got %#v", listing.Entries)
+	// dirs first, then files sorted by name: episode.mkv, poster.png, theme.mp3
+	if len(listing.Entries) != 4 {
+		t.Fatalf("want folder + video + image + audio, got %#v", listing.Entries)
 	}
 	if !listing.Entries[0].IsDir || listing.Entries[0].Name != "Folder" {
 		t.Fatalf("first entry should be Folder: %#v", listing.Entries[0])
 	}
-	vid, aud := listing.Entries[1], listing.Entries[2]
+	vid, img, aud := listing.Entries[1], listing.Entries[2], listing.Entries[3]
+	if img.Name != "poster.png" || !img.IsImage || img.IsVideo || img.IsAudio {
+		t.Fatalf("image contract broken: %#v", img)
+	}
 	if vid.Name != "episode.mkv" || !vid.IsVideo || vid.IsAudio {
 		t.Fatalf("video contract broken: %#v", vid)
 	}

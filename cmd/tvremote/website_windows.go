@@ -343,8 +343,9 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 	// WebView2 deliberately does not resize its host HWND when a page enters
 	// the DOM Fullscreen API. Edge owns its top-level window and does that work
 	// itself; an embedded WebView2 expects the app to react to the fullscreen
-	// state. ControllerJS reports fullscreenchange from every document/frame,
-	// and this bridge promotes the one website HWND to true monitor fullscreen.
+	// state. ControllerJS reports DOM fullscreenchange from every document/frame
+	// AND successful phone CSS/shortcut fullscreen actions, and this bridge
+	// promotes the one website HWND to true monitor fullscreen.
 	// Exiting (including Esc) restores the normal maximized browsing window.
 	var fs winFullscreen
 	_ = w.Bind("tinyplayWebsiteSetFullscreen", func(enter bool) error {
@@ -364,8 +365,8 @@ func (h *websiteHost) runWindow(initial websiteCmd, dispatch <-chan websiteCmd) 
 	// system title bar (close / maximize) and the taskbar, so the user can always
 	// close it natively — the message loop's WM_CLOSE path then destroys it
 	// cleanly and the deferred cleanup reports window_closed to the broker. A
-	// site's ordinary page remains here. Only an actual DOM fullscreen
-	// transition temporarily promotes this host window to monitor fullscreen.
+	// site's ordinary page remains here. A DOM fullscreen transition or a
+	// confirmed phone fullscreen action temporarily promotes the host window.
 	hwnd := uintptr(w.Window())
 	if hwnd != 0 {
 		maximizeWindow(hwnd)

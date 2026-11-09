@@ -4,16 +4,14 @@
  */
 (function () {
   'use strict';
-  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 25) {
+  if (window.__tinyplayWebsite && window.__tinyplayWebsite.__version >= 28) {
     return;
   }
 
   var HOST = location.hostname || '';
 
-  // Per-site tables are the only per-site knowledge this file carries. Both
-  // are small and additive: an unmatched host falls back to the generic
-  // (site-agnostic) path below, it never breaks. Prefer adding a table row
-  // here over hunting a site's DOM/CSS, which drifts on every redesign.
+  // Prefer small per-site tables. Explicit player/Hint adapters below are
+  // additive too: missing APIs or changed markup fall back to generic paths.
   var SEARCH_URL_TEMPLATES = [
     { test: /(^|\.)bilibili\.com$/i, url: 'https://search.bilibili.com/all?keyword={q}' },
     { test: /(^|\.)iqiyi\.com$/i, url: 'https://www.iqiyi.com/search?q={q}' },
@@ -101,6 +99,7 @@
     map: Object.create(null),
     root: null,
     style: null,
+    heldPlayer: null,
   };
 
   function setNativeValue(el, value) {
@@ -983,23 +982,60 @@
   }
 
   // ── Playback speed ─────────────────────────────────────────────────────
-  // Speed is NOT a universal control. Go decides per site which of the two
-  // forms below (if either) a phone may send, so the direct playbackRate write
-  // never reaches a player that serves adverts through the same <video> as the
-  // programme, or one whose own governor would snap the value back.
+  // Go decides which form a phone may send. Youku uses its own settings path;
+  // it must never fall through to a generic video.playbackRate write when that
+  // API changes or is unavailable.
 
-  //   setSpeed  — absolute rate (bilibili, tencent).
+  //   setSpeed — absolute rate (bilibili, tencent; Youku through its adapter).
   function setSpeed(text) {
-    var video = primaryVideo();
-    if (!video) return failed('no_player');
     var rate = parseFloat(text);
     if (!isFinite(rate) || rate <= 0) return failed('bad_rate');
+    if (/(^|\.)youku\.com$/i.test(HOST)) return setYoukuSpeed(rate);
+    var video = primaryVideo();
+    if (!video) return failed('no_player');
     video.playbackRate = rate;
     return confirmAfter(350, function () {
       return Math.abs(video.playbackRate - rate) < 0.01;
     }).then(function (kept) {
       return kept ? { ok: true, status: 'speed' } : failed('effect_unconfirmed');
     });
+  }
+
+  function setYoukuSpeed(rate) {
+    var player = youkuPlayer();
+    // Explicitly scoped private-API adapter, verified in kuplayer 4.22.2.
+    // This is exactly what the site's media.rate menu callback calls. The
+    // public setPlayerConfig({rate: ...}) currently ignores rate entirely.
+    var ui = player && player._player && player._player.ui;
+    if (!ui || typeof ui.setSettings !== 'function') return failed('action_unavailable');
+    if (player.adPlaying) return failed('action_unavailable');
+    var video = document.querySelector('#ykPlayer .video-layer video');
+    if (!video) return failed('no_player');
+    // Only use a rate the current player actually offers. Missing/drifted menu
+    // markup is an unavailable action, rather than an invented speed ladder.
+    var options = document.querySelectorAll('#youku-dashboard play-rate [data-val]');
+    var offered = false;
+    for (var i = 0; i < options.length; i++) {
+      if (Number(options[i].getAttribute('data-val')) === rate && !options[i].disabled &&
+          options[i].getAttribute('aria-disabled') !== 'true') {
+        offered = true;
+        break;
+      }
+    }
+    if (!offered) return failed('action_unavailable');
+    try {
+      var rejected = false;
+      // The observed setter is synchronous. Catch a future Promise rejection,
+      // but keep confirmation bounded even if a changed API never settles.
+      Promise.resolve(ui.setSettings('rate', rate)).catch(function () { rejected = true; });
+      return confirmAfter(350, function () {
+        return !rejected && youkuPlayer() === player && !player.adPlaying &&
+          document.querySelector('#ykPlayer .video-layer video') === video &&
+          Math.abs(video.playbackRate - rate) < 0.01;
+      }).then(function (kept) {
+        return kept ? { ok: true, status: 'speed' } : failed('effect_unconfirmed');
+      });
+    } catch (_) { return failed('effect_unconfirmed'); }
   }
 
   //   stepSpeed — one notch along the site's own rate ladder via its documented
@@ -1072,13 +1108,12 @@
   }
 
   // ── Fullscreen: generic CSS pin, not the Fullscreen API ────────────────
-  // The native website window is already a full-bleed screen surface, so
-  // "fullscreen" only means: make the player fill the page. requestFullscreen
-  // needs transient user activation, which injected script does not have —
-  // so the reliable generic path is our own 网页全屏: pin the player container
-  // over the viewport with plain CSS, nudge the site's resize handling, and
-  // hide fixed chrome that still paints above it. Verified end-to-end on
-  // bilibili (video resized to fill; header/login mask hidden; clean restore).
+  // requestFullscreen needs transient user activation, which injected script
+  // does not have. The generic path therefore pins the player over the page
+  // viewport, nudges the site's resize handling, and hides occluding chrome.
+  // This only fills the WebView: a successful phone action must ALSO promote
+  // the Windows host through the native bridge below, since CSS pinning emits
+  // no fullscreenchange event.
 
   var pinState = null; // { el, savedStyle, savedHtmlOverflow, savedBodyOverflow, hidden: [{el, visibility}] }
 
@@ -1245,6 +1280,64 @@
     return r.width > restingSize.w * 1.2 && r.height > restingSize.h * 1.2;
   }
 
+  // Verified against Youku's pc-playpage-v2 4.2.89 / kuplayer 4.22.2-xmedia
+  // (2026-10-25). The page publishes this instance; do not reach into its
+  // private context/event bus or guess minified implementation names. The
+  // narrowly verified _player.ui.setSettings rate adapter is the exception.
+  function youkuPlayer() {
+    if (!/(^|\.)youku\.com$/i.test(HOST)) return null;
+    var player = window.videoPlayer;
+    return player && typeof player.getPlayerState === 'function' ? player : null;
+  }
+
+  function youkuPlayerState() {
+    try {
+      var player = youkuPlayer();
+      return player ? player.getPlayerState() : null;
+    } catch (_) { return null; }
+  }
+
+  function tryYoukuFullscreen(video) {
+    var player = youkuPlayer();
+    if (!player) return Promise.resolve(false);
+    // enterFullscreen() ends at documentElement.requestFullscreen(), but its
+    // current wrapper discards that Promise. Call the same browser entry point
+    // directly so user-activation rejection is caught, not left unhandled.
+    // Youku's own fullscreenchange listener still owns layout/state updates.
+    var target = document.documentElement;
+    var request = target.requestFullscreen || target.webkitRequestFullscreen;
+    var native = Promise.resolve(false);
+    if (typeof player.enterFullscreen === 'function' && request) {
+      try {
+        native = Promise.resolve(request.call(target)).then(function () {
+          return settle(function () {
+            return !!(document.fullscreenElement || document.webkitFullscreenElement) && viewportFilled(video);
+          }, 700);
+        }, function () { return false; });
+      } catch (_) {}
+    }
+    return native.then(function (entered) {
+      if (entered) return true;
+      // Remote Eval usually lacks transient activation. Youku's own web-full
+      // API preserves its controls/danmaku without that browser requirement;
+      // fullscreenResult then promotes the Windows host to monitor fullscreen.
+      if (typeof player.webFullscreen !== 'function') return false;
+      try {
+        return Promise.resolve(player.webFullscreen(true)).then(function () {
+          return settle(function () {
+            var state = youkuPlayerState();
+            return state && state.webFullscreen === true && viewportFilled(video);
+          }, 900);
+        }, function () { return false; }).then(function (filled) {
+          if (filled) return true;
+          // Roll back a partial site transition before generic CSS takes over.
+          try { return Promise.resolve(player.webFullscreen(false)).then(function () { return false; }, function () { return false; }); }
+          catch (_) { return false; }
+        });
+      } catch (_) { return false; }
+    });
+  }
+
   // Live, not remembered: the user can exit fullscreen with their own mouse
   // or a real Esc between two phone button presses, so "are we fullscreen"
   // is re-derived fresh on every call from observable signals, never from a
@@ -1255,28 +1348,66 @@
   function currentlyFullscreen(video) {
     if (document.fullscreenElement || document.webkitFullscreenElement) return true;
     if (pinState) return true;
+    var state = youkuPlayerState();
+    if (state && state.webFullscreen === true && viewportFilled(video)) return true;
     return grownFullscreen(video);
   }
 
   // WebView2's renderer can put an element into the DOM Fullscreen API, but
   // unlike a full browser it cannot change the embedding Win32 host window.
-  // Report the real document state to the Windows shell so a user's own click
-  // on a site's fullscreen button gets true monitor fullscreen (no title bar
-  // or taskbar), and Esc / the site's exit button restores the normal window.
+  // Both real DOM transitions and successful phone CSS/shortcut actions must
+  // promote the Windows host (no title bar or taskbar). DOM events alone miss
+  // the CSS fallback used by sites such as Youku.
   // AddScriptToExecuteOnDocumentCreated runs in child frames too, which matters
   // for cross-origin embedded players. Other hosts simply do not expose the
   // optional binding, so this remains harmless in WKWebView and unit tests.
-  function reportNativeFullscreen(active) {
+  function setNativeFullscreen(active) {
+    if (typeof window.tinyplayWebsiteSetFullscreen !== 'function') return Promise.resolve();
     try {
-      if (typeof window.tinyplayWebsiteSetFullscreen !== 'function') return;
-      var result = window.tinyplayWebsiteSetFullscreen(!!active);
-      if (result && typeof result.catch === 'function') result.catch(function () {});
-    } catch (_) {}
+      return Promise.resolve(window.tinyplayWebsiteSetFullscreen(!!active));
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  function reportNativeFullscreen(active) {
+    setNativeFullscreen(active).catch(function () {});
+  }
+
+  function fullscreenResult(enter) {
+    // Await the typed RPC: do not acknowledge monitor fullscreen if the host
+    // failed to change its window. Hosts without this optional bridge already
+    // own their window presentation and retain the DOM-only behavior.
+    return setNativeFullscreen(enter).then(function () {
+      return { ok: true, status: enter ? 'fullscreen_enter' : 'fullscreen_exit' };
+    }, function () {
+      return failed('effect_unconfirmed');
+    });
   }
 
   function onNativeFullscreenChange() {
-    reportNativeFullscreen(!!(document.fullscreenElement || document.webkitFullscreenElement));
+    var active = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    // A user can enter real fullscreen after a phone CSS pin. Leaving through
+    // the site's own button must restore both layers, not reveal the old pin.
+    if (!active && pinState) cssPinExit();
+    reportNativeFullscreen(active);
   }
+
+  // Real Escape must also leave a phone CSS pin, which the browser cannot
+  // dismiss itself. Synthetic Escape from exitFullscreen still goes through
+  // the normal effect-checked waterfall below.
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape' || !event.isTrusted) return;
+    if (pinState) cssPinExit();
+    var player = youkuPlayer();
+    var state = youkuPlayerState();
+    try {
+      if (state && state.webFullscreen && player && typeof player.webFullscreen === 'function') {
+        Promise.resolve(player.webFullscreen(false)).catch(function () {});
+      }
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) reportNativeFullscreen(false);
+    } catch (_) {}
+  }, true);
 
   document.addEventListener('fullscreenchange', onNativeFullscreenChange);
   document.addEventListener('webkitfullscreenchange', onNativeFullscreenChange);
@@ -1296,20 +1427,23 @@
       // Already there (including via the user's own native double-click) —
       // report success without touching anything, since a site's dblclick
       // handler is commonly itself a toggle and would exit if we double-hit it.
-      return { ok: true, status: 'fullscreen_enter' };
+      return fullscreenResult(true);
     }
-    // Enter waterfall: ① verified site web-fullscreen key (keeps the site's
-    // own chrome/danmaku behavior) ② generic CSS pin ③ Fullscreen API as a
-    // last resort — it needs user activation, so it usually cannot work from
-    // injected script, but it is free to try and its oracle is exact.
+    // Prefer the verified Youku API, then site shortcuts, then generic CSS.
+    return tryYoukuFullscreen(video).then(function (entered) {
+      return entered ? fullscreenResult(true) : enterFullscreenGeneric(video);
+    });
+  }
+
+  function enterFullscreenGeneric(video) {
     var key = siteKey('fullscreen');
     var viaKey = key && dispatchKey(key)
       ? settle(function () { return grownFullscreen(video) || !!document.fullscreenElement; }, 900)
       : Promise.resolve(false);
     return viaKey.then(function (keyed) {
-      if (keyed) return { ok: true, status: 'fullscreen_enter' };
+      if (keyed) return fullscreenResult(true);
       return cssPinEnter(video).then(function (pinned) {
-        if (pinned) return { ok: true, status: 'fullscreen_enter' };
+        if (pinned) return fullscreenResult(true);
         var target = fullscreenTarget(video);
         var req = target.requestFullscreen || target.webkitRequestFullscreen;
         if (req) {
@@ -1320,7 +1454,7 @@
           return settle(function () {
             return !!(document.fullscreenElement || document.webkitFullscreenElement);
           }, 500).then(function (native) {
-            return native ? { ok: true, status: 'fullscreen_enter' } : failed('effect_unconfirmed');
+            return native ? fullscreenResult(true) : failed('effect_unconfirmed');
           });
         }
         return failed('effect_unconfirmed');
@@ -1333,14 +1467,14 @@
     if (!currentlyFullscreen(video)) {
       // Nothing to do — safe to call unconditionally, e.g. right after the
       // user already exited natively with their own mouse/Esc.
-      return { ok: true, status: 'fullscreen_exit' };
+      return fullscreenResult(false);
     }
     // Escape is the universal way to leave fullscreen — every supported site
     // honors it the same way a real keyboard would, so it is tried first
     // regardless of site before falling back to native/CSS-pin/toggle-key state.
     if (dispatchKey('Escape')) {
       return settle(function () { return !currentlyFullscreen(video); }, 900).then(function (exited) {
-        return exited ? { ok: true, status: 'fullscreen_exit' } : exitFullscreenGeneric(video);
+        return exited ? fullscreenResult(false) : exitFullscreenGeneric(video);
       });
     }
     return exitFullscreenGeneric(video);
@@ -1351,21 +1485,44 @@
       var exit = document.exitFullscreen || document.webkitExitFullscreen;
       if (exit) {
         try {
-          exit.call(document);
-          return { ok: true, status: 'fullscreen_exit' };
+          return Promise.resolve(exit.call(document)).then(function () {
+            return settle(function () {
+              return !document.fullscreenElement && !document.webkitFullscreenElement;
+            }, 500);
+          }).then(function (exited) {
+            if (!exited) return failed('effect_unconfirmed');
+            if (pinState) cssPinExit();
+            return fullscreenResult(false);
+          });
         } catch (_) {}
       }
     }
+    var player = youkuPlayer();
+    var state = youkuPlayerState();
+    if (state && state.webFullscreen && player && typeof player.webFullscreen === 'function') {
+      try {
+        return Promise.resolve(player.webFullscreen(false)).then(function () {
+          return settle(function () {
+            var current = youkuPlayerState();
+            return current && !current.webFullscreen;
+          }, 700);
+        }).then(function (exited) {
+          if (!exited) return failed('effect_unconfirmed');
+          if (pinState) cssPinExit();
+          return fullscreenResult(false);
+        });
+      } catch (_) {}
+    }
     if (pinState) {
       cssPinExit();
-      return { ok: true, status: 'fullscreen_exit' };
+      return fullscreenResult(false);
     }
     // Left: a site's own (non-native) web-fullscreen, detected only via
     // grownFullscreen above — exit through the same verified key that enters it.
     var key = siteKey('fullscreen');
     if (key && video && dispatchKey(key)) {
       return settle(function () { return !viewportFilled(video); }, 900).then(function (exited) {
-        return exited ? { ok: true, status: 'fullscreen_exit' } : failed('effect_unconfirmed');
+        return exited ? fullscreenResult(false) : failed('effect_unconfirmed');
       });
     }
     return failed('effect_unconfirmed');
@@ -1429,7 +1586,7 @@
     return { ok: false, status: 'error', error: 'no_enter_target' };
   }
 
-  function clearHints() {
+  function clearHints(keepPlayer) {
     if (hintState.root && hintState.root.parentNode) {
       hintState.root.parentNode.removeChild(hintState.root);
     }
@@ -1440,6 +1597,10 @@
     hintState.style = null;
     hintState.map = Object.create(null);
     hintState.active = false;
+    if (keepPlayer !== true && hintState.heldPlayer) {
+      try { hintState.heldPlayer.releaseDashboard(); } catch (_) {}
+      hintState.heldPlayer = null;
+    }
   }
 
   // Fixed 12-key phone alphabet (matches Go website.HintAlphabet). Every label
@@ -1639,6 +1800,14 @@
   // Bilibili playlist rows keep Vue's bubbled click on the outer .pod-item
   // (do not dive into inner title spans).
   function collectSiteAdapterTargets(doc, acc, seen, frameOffset) {
+    if (/(^|\.)youku\.com$/i.test(HOST)) {
+      // The shipped dashboard uses custom <icon com="icon"> controls without
+      // semantic roles/tabindex/onclick. Generic link/row scans cannot see them.
+      var icons = doc.querySelectorAll('#youku-dashboard icon[com="icon"]');
+      for (var u = 0; u < icons.length; u++) {
+        pushHintTarget(acc, seen, icons[u], frameOffset);
+      }
+    }
     if (/(^|\.)bilibili\.com$/i.test(HOST)) {
       var rows;
       try {
@@ -1722,7 +1891,7 @@
   // right-hand episode panel just as the phone taps "select page element";
   // callers that see no targets may retry this snapshot shortly afterwards.
   function enterHintsOnce() {
-    clearHints();
+    clearHints(true);
     var targets = [];
     var seen = new Set();
     collectTargets(document, targets, seen, { x: 0, y: 0 });
@@ -1778,16 +1947,31 @@
   }
 
   function enterHints() {
+    clearHints();
+    var player = youkuPlayer();
+    if (player && typeof player.holdDashboard === 'function' && typeof player.releaseDashboard === 'function') {
+      try {
+        player.holdDashboard();
+        hintState.heldPlayer = player;
+      } catch (_) {}
+    }
     var attempts = 0;
     function tryEnter() {
       var result = enterHintsOnce();
       // Only retry the transient empty-DOM case. Any other result is either a
       // successful overlay or a real error that should be reported as-is.
-      if (result.ok || result.error !== 'no_targets' || attempts >= 2) return result;
+      if (result.ok || result.error !== 'no_targets' || attempts >= 2) {
+        if (!result.ok) clearHints();
+        return result;
+      }
       attempts++;
       return new Promise(function (resolve) {
         window.setTimeout(function () { resolve(tryEnter()); }, 350);
       });
+    }
+    // Allow the site's dashboard render to run before measuring its controls.
+    if (hintState.heldPlayer) {
+      return new Promise(function (resolve) { window.setTimeout(function () { resolve(tryEnter()); }, 100); });
     }
     return tryEnter();
   }
@@ -1847,6 +2031,12 @@
     }
   }
 
+  function anchorNavigationURL(el) {
+    if (!el || el.tagName !== 'A') return null;
+    var href = (el.getAttribute('href') || '').trim();
+    return href && !/^(#|javascript:)/i.test(href) ? el.href : null;
+  }
+
   function selectHint(label) {
     if (!hintState.active) {
       return { ok: false, status: 'error', error: 'hint_inactive', hint_active: false };
@@ -1858,10 +2048,12 @@
       return { ok: false, status: 'error', error: 'unknown_label', hint_active: false };
     }
     try {
-      // Video-site result links commonly target a new tab, which an embedded
-      // WebView may discard. Keep Hint navigation in this dedicated TV window.
-      if (el.tagName === 'A' && el.href) {
-        window.location.assign(el.href);
+      // Real result URLs stay in this WebView. Placeholder/fragment/javascript
+      // links (Youku navigation, history, player menus) need their click handler:
+      // assigning '#' or 'javascript:void(0)' silently bypasses the real action.
+      var url = anchorNavigationURL(el);
+      if (url) {
+        window.location.assign(url);
         return { ok: true, status: 'hint_label', hint_active: false };
       }
     } catch (_) {}
@@ -1953,7 +2145,10 @@
     var t = effectiveTarget(link);
     if (t !== '_blank' && t !== '_new') return;
     event.preventDefault();
-    navigateHere(link.href);
+    // A placeholder needs the site's bubbled click handler, not a navigation
+    // to '#'. Its handler can still window.open a real URL via the guard above.
+    var url = anchorNavigationURL(link);
+    if (url) navigateHere(url);
   }, true);
 
   // Forms: rewrite a _blank target at submit time so the result renders in-page.
@@ -1979,6 +2174,7 @@
         }
         document.documentElement.style.overflow = stale.savedHtmlOverflow;
         if (document.body) document.body.style.overflow = stale.savedBodyOverflow;
+        reportNativeFullscreen(false);
       }
     });
     mo.observe(document.documentElement, { childList: true, subtree: true });
@@ -2077,7 +2273,7 @@
   }
 
   window.__tinyplayWebsite = {
-    __version: 25,
+    __version: 28,
     handle: handle,
     clearHints: clearHints,
     isHintActive: function () { return !!hintState.active; },

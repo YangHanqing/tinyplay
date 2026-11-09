@@ -144,6 +144,7 @@ func (s *Server) playItem(w http.ResponseWriter, r *http.Request) {
 		// video item makes mpv deselect the real video track (see player/
 		// audioart.go).
 		applyFileAudioPresentation(&opts, req.Path, s.port)
+		opts.SubtitleURLs = s.sidecarSubtitleURLs(files, playbackServer.ID, req.Path)
 		if !s.isCurrentPlay(generation) {
 			supersededPlay(w)
 			return

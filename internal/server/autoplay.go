@@ -593,6 +593,7 @@ func (s *Server) playResolvedFileItem(generation uint64, next autoplayNext) map[
 	// Same audio presentation as a manual play of this path — autoplay must
 	// not drop cover art / force-window for the next track.
 	applyFileAudioPresentation(&opts, path, s.port)
+	opts.SubtitleURLs = s.sidecarSubtitleURLs(files, next.ServerID, path)
 	if !s.isCurrentPlay(generation) {
 		return map[string]any{"ok": false, "superseded": true}
 	}

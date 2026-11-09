@@ -193,7 +193,7 @@ func TestIsKnownAction(t *testing.T) {
 	}
 }
 
-// Playback speed is an allowlist, not a default. Only Bilibili/Tencent may set
+// Playback speed is an allowlist, not a default. Bilibili/Tencent/Youku may set
 // an absolute rate, only YouTube gets the step form, and every other catalog
 // site (notably iQIYI, whose adverts share the programme's <video>) gets none.
 func TestSpeedModeIsPerSiteAllowlist(t *testing.T) {
@@ -202,7 +202,7 @@ func TestSpeedModeIsPerSiteAllowlist(t *testing.T) {
 		SiteTencent:  SpeedModeRate,
 		SiteYouTube:  SpeedModeStep,
 		SiteIQIYI:    SpeedModeNone,
-		SiteYouku:    SpeedModeNone,
+		SiteYouku:    SpeedModeRate,
 		SiteDouyin:   SpeedModeNone,
 		SiteNetflix:  SpeedModeNone,
 		"":           SpeedModeNone,
