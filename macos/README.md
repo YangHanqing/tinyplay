@@ -45,12 +45,12 @@ falling back to the deprecated pre-13 login-item API — every other feature
 (playback, web view, tray) works down to 12.0.
 
 The **bundled mpv** is the one exception, and it is not ours to fix from here:
-it is a Homebrew bottle built on the CI runner, so it carries that runner's
-deployment target (`minos 14.0` on `macos-14`) and dyld refuses to start it on
-macOS 12/13. Detection probes it and falls through to a user-installed mpv,
+it is a Homebrew build, so it carries the deployment target of the machine
+that built it (`minos 14.0` for the mpv in official releases) and dyld refuses
+to start it on macOS 12/13. If you build with `release-local.sh`, your own
+Homebrew mpv decides that floor. Detection probes it and falls through to a user-installed mpv,
 and the README documents that as the supported path for those systems. The Go
-core *is* pinned to 12.0 (see `Makefile`'s `build-core-mac` and the release
-workflow); check any Mach-O you ship with `otool -l <bin> | grep -A3
+core *is* pinned to 12.0 (see `Makefile`'s `build-core-mac`); check any Mach-O you ship with `otool -l <bin> | grep -A3
 LC_BUILD_VERSION` rather than trusting `LSMinimumSystemVersion`.
 
 If `MPV_DIR` is not set, the app falls back to `mpv` on `PATH`. Release builds

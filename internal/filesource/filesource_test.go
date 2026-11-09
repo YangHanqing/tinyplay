@@ -193,9 +193,16 @@ func TestLocalRelativeRootPathResolvesFromOSRootNotCWD(t *testing.T) {
 	if err != nil {
 		t.Skip("OS root not listable in this sandbox")
 	}
+	// Pick the first top-level folder this process can actually read: a
+	// protected one (Windows' "System Volume Information", which GitHub's
+	// Windows runner lists first on D:\) fails for reasons unrelated to how
+	// the relative root is resolved.
 	var name string
 	for _, e := range entries {
-		if e.IsDir() {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.ReadDir(filepath.Join(osRoot, e.Name())); err == nil {
 			name = e.Name()
 			break
 		}

@@ -1,28 +1,16 @@
-# Builds the double-click TinyPlay desktop apps for Windows and macOS (both
-# Apple Silicon and Intel), with mpv bundled, and attaches them to a GitHub
-# Release when you push a v* tag.
+# Builds the Windows installer, with mpv bundled, and attaches it to the GitHub
+# Release when you push a v* tag:
 #
 #   Windows → TinyPlay-Setup-x64.exe      (install / upgrade in place)
-#   macOS   → TinyPlay-macos-arm64.dmg    (Apple Silicon)
-#             TinyPlay-macos-intel.dmg    (Intel)
-#                                          signed+notarized, drag TinyPlay.app to
-#                                          Applications. Before the signing
-#                                          secrets exist each falls back to an
-#                                          unsigned TinyPlay-macos-<arch>.zip so
-#                                          the build still runs.
 #
-# macOS is Developer ID signed + notarized + stapled when the signing secrets
-# are present, so users are not blocked by Gatekeeper ("unidentified developer").
-# The signing job only runs on tag pushes / manual dispatch — never on pull
-# requests — so the certificate secrets are never exposed to untrusted forks.
 # Windows artifacts are UNSIGNED for now (no Windows code-signing certificate);
 # users may still see a SmartScreen "unknown publisher" prompt.
 #
-# The Intel macOS leg cross-builds from the arm64 runner: the Go core and
-# Swift shell cross-compile natively. Its mpv cannot come from Homebrew any
-# more - the installer aborts on anything but arm64 and mpv has no x86_64
-# macOS bottles - so it ships a frozen, already self-contained x86_64 mpv
-# bundle pinned by SHA-256 (see the intel-only fetch step below).
+# The macOS DMGs (TinyPlay-macos-arm64.dmg, TinyPlay-macos-intel.dmg) are not
+# built here. Since 1.0.9 they are built, Developer ID signed, notarized and
+# uploaded to the same release from the maintainer's Mac, which keeps the
+# signing certificate off CI and the bundled mpv pinned to builds that run on
+# macOS 14. See macos/README.md for building the app yourself.
 
 name: release
 
@@ -94,149 +82,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/TinyPlay-Setup-x64.exe
-
-  macos:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            goarch: arm64
-            label: arm64
-          - arch: x86_64
-            goarch: amd64
-            label: intel
-    runs-on: macos-14 # Apple Silicon; the intel leg cross-builds (see notes above)
-    env:
-      # 'true' only when the signing secrets exist; gates the sign step so the
-      # build still succeeds (unsigned) before you've added them.
-      HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.SIGN_IDENTITY != '' }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
-
-      - name: Build Go core (${{ matrix.goarch }})
-        # Pin the deployment target, do not turn cgo off. On the native arm64
-        # leg cgo is on, the external linker runs, and it stamps
-        # LC_BUILD_VERSION minos with the runner's SDK (14.0 on macos-14) -
-        # dyld then refuses to start the core on macOS 12/13, which is
-        # invisible here and fatal there. Pinning gives minos 12.0 against the
-        # newer SDK and changes nothing else; CGO_ENABLED=0 would also fix the
-        # floor but would silently swap darwin's cgo DNS resolver for the pure
-        # Go one on every Apple Silicon install, which is a behaviour change
-        # for users who are not affected by the bug. The x86_64 leg
-        # cross-compiles with cgo off already, where these vars are inert.
-        run: MACOSX_DEPLOYMENT_TARGET=12.0 CGO_CFLAGS=-mmacosx-version-min=12.0 CGO_LDFLAGS=-mmacosx-version-min=12.0 GOOS=darwin GOARCH=${{ matrix.goarch }} go build -o build/tvremote-core-darwin-${{ matrix.goarch }} ./cmd/tvremote
-
-      - name: Verify the core's deployment target
-        # The bug this pin fixes shipped because nothing checked: v1.0.5
-        # advertised macOS 12 in LSMinimumSystemVersion and shipped a core
-        # stamped minos 14.0. LSMinimumSystemVersion is a claim; LC_BUILD_VERSION
-        # is the fact dyld enforces. Fail the build rather than ship that again.
-        run: |
-          set -euo pipefail
-          bin="build/tvremote-core-darwin-${{ matrix.goarch }}"
-          minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
-          echo "core minos: ${minos:-<none>}"
-          case "$minos" in
-            10.*|11.*|12.0) ;;
-            *) echo "core requires macOS $minos but TinyPlay advertises 12.0" >&2; exit 1 ;;
-          esac
-
-      - name: Install packaging tools (dylibbundler, create-dmg)
-        run: brew install dylibbundler create-dmg
-
-      - name: Fetch pinned x86_64 mpv bundle (intel leg only)
-        if: matrix.arch == 'x86_64'
-        # Homebrew dropped Intel macOS (2026-10: install.sh aborts unless
-        # uname -m is arm64, and mpv's bottles are arm64-only), so the old
-        # "x86_64 Homebrew under Rosetta" step can never succeed again. This
-        # tarball is the dylibbundler output shipped inside the 1.0.7 Intel
-        # DMG (mpv 0.41.0, bin/mpv + bin/libs with @executable_path load
-        # paths), so it needs no further bundling; signing below replaces its
-        # old signatures. Bump the URL and hash together, never one alone.
-        env:
-          MPV_X86_64_URL: https://github.com/YangHanqing/tinyplay/releases/download/deps-mpv-0.41.0-macos-x86_64/mpv-0.41.0-macos-x86_64.tar.gz
-          MPV_X86_64_SHA256: 12d940e9ad906539f7e98f70a24506ba4e90b7304bceccf39e9f99bce03a90eb
-        run: |
-          set -euo pipefail
-          curl -fsSL --retry 3 -o mpv-x86_64.tar.gz "$MPV_X86_64_URL"
-          echo "$MPV_X86_64_SHA256  mpv-x86_64.tar.gz" | shasum -a 256 -c -
-          mkdir -p mpvstage
-          tar -xzf mpv-x86_64.tar.gz -C mpvstage
-          archs=$(lipo -archs mpvstage/bin/mpv)
-          if [ "$archs" != "x86_64" ]; then
-            echo "pinned Intel mpv is $archs, expected x86_64" >&2
-            exit 1
-          fi
-
-      - name: Download & bundle mpv (self-contained via dylibbundler)
-        if: matrix.arch == 'arm64'
-        run: |
-          set -euo pipefail
-          brew install mpv
-          real_mpv=$(readlink -f "$(brew --prefix)/bin/mpv")
-          mkdir -p mpvstage/bin/libs
-          cp "$real_mpv" mpvstage/bin/mpv
-          chmod u+w mpvstage/bin/mpv
-          # Copy every non-system dylib next to the binary and rewrite load paths
-          # so the bundle runs on a machine without Homebrew. -cd/-of/-od keep it
-          # non-interactive (it otherwise prompts to create/overwrite and aborts).
-          dylibbundler -cd -of -od -b -x mpvstage/bin/mpv -d mpvstage/bin/libs -p @executable_path/libs/
-
-      - name: Build .app
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="0.0.0-dev"; fi
-          ARCH="${{ matrix.arch }}" VERSION="$VER" MPV_DIR="$PWD/mpvstage" REQUIRE_BUNDLED_MPV=1 ./macos/build-app.sh
-
-      # Import the Developer ID cert into a keychain that persists for the whole
-      # job, so both the app-signing and DMG-signing steps below can use it.
-      - name: Import signing certificate
-        if: ${{ env.HAS_SIGNING == 'true' }}
-        env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-        run: ./macos/import-cert.sh
-
-      - name: Sign & notarize app
-        if: ${{ env.HAS_SIGNING == 'true' }}
-        env:
-          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
-          AC_API_KEY: ${{ secrets.AC_API_KEY }}
-          AC_KEY_ID: ${{ secrets.AC_KEY_ID }}
-          AC_ISSUER_ID: ${{ secrets.AC_ISSUER_ID }}
-        run: ./macos/sign-notarize.sh "$PWD/build/TinyPlay.app"
-
-      - name: Package signed DMG
-        if: ${{ env.HAS_SIGNING == 'true' }}
-        env:
-          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
-          AC_API_KEY: ${{ secrets.AC_API_KEY }}
-          AC_KEY_ID: ${{ secrets.AC_KEY_ID }}
-          AC_ISSUER_ID: ${{ secrets.AC_ISSUER_ID }}
-        run: ./macos/make-dmg.sh "$PWD/build/TinyPlay.app" "$PWD/TinyPlay-macos-${{ matrix.label }}.dmg"
-
-      - name: Package unsigned zip (fallback before secrets exist)
-        if: ${{ env.HAS_SIGNING != 'true' }}
-        run: |
-          cd build
-          ditto -c -k --keepParent "TinyPlay.app" "../TinyPlay-macos-${{ matrix.label }}.zip"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: TinyPlay-macos-${{ matrix.label }}
-          path: |
-            TinyPlay-macos-${{ matrix.label }}.dmg
-            TinyPlay-macos-${{ matrix.label }}.zip
-          if-no-files-found: warn
-
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            TinyPlay-macos-${{ matrix.label }}.dmg
-            TinyPlay-macos-${{ matrix.label }}.zip
